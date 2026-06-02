@@ -1,0 +1,27 @@
+{
+  "name": "jyut-ocr-proofread",
+  "version": "0.1.2",
+  "description": "Proofread historical Chinese OCR Markdown against same-name PDFs, with Cantonese jyut-ocr conventions for page furniture, old glyphs, lists, tables, final audit checks, and GJ.cool as an optional short-deadline helper.",
+  "author": {
+    "name": "laubonghaudoi",
+    "url": "https://github.com/laubonghaudoi"
+  },
+  "homepage": "https://github.com/laubonghaudoi/jyut-ocr-proofread",
+  "repository": "https://github.com/laubonghaudoi/jyut-ocr-proofread",
+  "license": "MIT",
+  "keywords": ["ocr", "proofreading", "chinese", "markdown", "pdf", "jyut-ocr"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Jyut OCR Proofread",
+    "shortDescription": "Proofread Chinese OCR Markdown against PDFs.",
+    "longDescription": "Use a Cantonese jyut-ocr proofreading workflow for historical Chinese OCR Markdown: compare same-name PDFs, preserve printed glyph variants and old punctuation, remove OCR/page furniture, repair low-confidence and high-confidence OCR mistakes, reconstruct headings, lists, and tables, follow bundled detailed rules for long reports, and treat GJ.cool OCR only as an optional short-deadline helper.",
+    "developerName": "laubonghaudoi",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "校對一份 jyut-ocr Markdown，逐頁對同名 PDF。",
+      "清理 OCR 頁面家具同低信心括號。",
+      "逐頁檢查歷史中文 OCR 轉寫。"
+    ]
+  }
+}

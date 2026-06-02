@@ -1,0 +1,4 @@
+interface:
+  display_name: "粵文古籍 OCR 校對"
+  short_description: "用粵文規則按 PDF 校對中文 OCR Markdown。"
+  default_prompt: "校對選定 jyut-ocr Markdown，逐頁對同名 PDF，保留原字形並刪除 OCR/page furniture。"

@@ -1,0 +1,20 @@
+{
+  "name": "jyut-ocr-proofread",
+  "interface": {
+    "displayName": "Jyut OCR Proofread"
+  },
+  "plugins": [
+    {
+      "name": "jyut-ocr-proofread",
+      "source": {
+        "source": "local",
+        "path": "./plugins/jyut-ocr-proofread"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
