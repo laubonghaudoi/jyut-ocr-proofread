@@ -16,10 +16,12 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR
 
 ## 新版更新重點
 
-- 多份獨立 Markdown/PDF pair 時，預設用並行 subagent 分工；主 agent 仍然要 review 改動同做最後驗證。
-- GJ.cool 輔助 OCR 明確用 5 秒 timeout；如果 API 回覆 `wait for ... seconds`，本輪任務餘下部分即刻停止自發重試 GJ.cool。
-- 缺 OCR、跳頁、page marker 斷裂時，先當內容缺漏處理，直接由 PDF render 圖像視覺轉寫補回，再做校對。
-- 完成前檢查更明確：掃 residual OCR/page furniture、檢查一段一行、確認 heading/list/table spacing，並跑 `git diff --check`。
+- 多份獨立 Markdown/PDF pair 時，預設可用並行 subagent 分工；主 agent 仍然要 review 改動同做最後驗證。
+- 新 OCR、補漏 OCR 或 page marker 跳頁時，立即由 PDF render 圖像視覺轉寫；GJ.cool 只係 5 秒內即時可用時先作底稿。
+- 如果 GJ.cool API 回覆 `wait for ... seconds`，本輪任務餘下部分即刻停止自發重試 GJ.cool。
+- 完成前檢查更明確：查 page continuity、掃 residual OCR/page furniture、檢查一段一行、確認 heading/list/table spacing，並跑 `git diff --check`。
+
+詳細版本摘要見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 由 GitHub 安裝
 

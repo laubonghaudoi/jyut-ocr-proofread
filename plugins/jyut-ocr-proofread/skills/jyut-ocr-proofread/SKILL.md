@@ -1,5 +1,5 @@
 ---
-name: 粵文古籍 OCR 校對
+name: jyut-ocr-proofread
 description: 校對同清理 jyut-ocr 類 repo 入面由歷史中文 PDF OCR 出嚟嘅 Markdown；按同名 PDF 核對，刪頁面家具，修低信心括號同高信心錯字，重建 table/表格、forms/票據、figures/圖，完成 Markdown transcription/轉寫。Use when asked to 校對, proofread, clean OCR, page furniture, low-confidence brackets, historical Chinese OCR.
 ---
 
