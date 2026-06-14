@@ -4,6 +4,15 @@
 
 如果當前 repo 有 `AGENTS.md`，先跟 repo 本地指示；呢份只係畀 plugin 發佈後，無原 repo 指示嘅人都有一套 portable baseline。
 
+## 並行分工
+
+- 任務有兩份或以上獨立 Markdown/PDF pair，而且工具同用戶授權容許 subagent/delegation 時，預設分派並行 subagent。
+- 每個 subagent 只負責一份或一組互不重疊嘅 `NAME.md`/`NAME.pdf`；寫入範圍要明確，唔好多人同時改同一份 Markdown。
+- 主 agent 先建立分工清單：檔名、同名 PDF、PDF 頁數或大致頁段、page marker 狀態、表格/尾頁/缺 OCR/跳頁等風險。
+- subagent 必須按 PDF 圖像校對，保留原字形同舊式標點，刪頁面家具，處理低信心括號同高信心錯字，最後跑該檔案 residual scan 同 `git diff --check -- TARGET.md`。
+- 主 agent 要 review subagent 改動，處理衝突、遺漏同跨檔一致性，並統一做完成前驗證。
+- 只有一份 Markdown、同一檔案上下文高度耦合、或 delegation 不可用時，主 agent 直接做；必要時只派 subagent 做只讀疑點、表格、尾頁或頁段審核。
+
 ## 原文依據
 
 - 每份 Markdown 優先對同名 PDF，例如 `NAME.md` 對 `NAME.pdf`。
@@ -18,7 +27,7 @@
 
 - 缺 OCR 時，立即由 PDF render 圖像做視覺轉寫，唔為任何 OCR 服務停低。
 - GJ.cool 古籍 OCR 只係可選背景/並行/極短時間輔助；要已有 `GJCOOL_ACCESS_TOKEN` 或 `GJCOOL_AUTH`，API 正常，未爆 quota。
-- 唔等 25 秒或更長；最多用約兩秒睇有冇即時結果。
+- 唔等 25 秒或更長；用 5 秒 timeout 睇有冇即時結果。
 - GJ.cool 即時返到就用作底稿再核 PDF；timeout、叫等、quota 爆、auth 失敗、服務唔通，就繼續視覺轉寫。
 - Apple/macOS OCR、Gemini、Tesseract、OCR JSON 只係提示，除非用戶明確要求。
 - 外部研究可以幫手識別人名、官職、地名、日期、典故，但唔可以覆蓋 PDF 字形。

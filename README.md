@@ -14,6 +14,13 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR
 - 新 OCR 或補漏時先用視覺識別，GJ.cool 只作背景並行或極短時間輔助；
 - 長文或 final pass 時載入更完整嘅粵文 `jyut-ocr` 校對 reference。
 
+## 新版更新重點
+
+- 多份獨立 Markdown/PDF pair 時，預設用並行 subagent 分工；主 agent 仍然要 review 改動同做最後驗證。
+- GJ.cool 輔助 OCR 明確用 5 秒 timeout；如果 API 回覆 `wait for ... seconds`，本輪任務餘下部分即刻停止自發重試 GJ.cool。
+- 缺 OCR、跳頁、page marker 斷裂時，先當內容缺漏處理，直接由 PDF render 圖像視覺轉寫補回，再做校對。
+- 完成前檢查更明確：掃 residual OCR/page furniture、檢查一段一行、確認 heading/list/table spacing，並跑 `git diff --check`。
+
 ## 由 GitHub 安裝
 
 發佈後，可以直接將呢個 repo 加入 Codex plugin marketplace：

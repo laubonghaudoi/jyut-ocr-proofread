@@ -9,13 +9,21 @@ description: 校對同清理 jyut-ocr 類 repo 入面由歷史中文 PDF OCR 出
 
 如果目標 repo 有本地指示，例如 `AGENTS.md`，先讀同優先跟本地指示；本地指示高於呢個可重用 skill。做全文校對、長報告書、合訂講義、表格、尾頁、或者 final pass 之前，要再讀 `references/jyut-ocr-detailed-rules.md`。
 
+## 並行 subagent 預設
+
+如果任務包含兩份或以上獨立 Markdown/PDF pair，而且目前工具同用戶授權容許 subagent/delegation，預設用並行 subagent 加速。每個 subagent 只負責一份或一組互不重疊嘅 `NAME.md`/`NAME.pdf`，寫入範圍要清楚、互不重疊，唔好畀多個 subagent 同時改同一份 Markdown。
+
+主 agent 要先建立分工清單：檔名、同名 PDF、頁數或大致頁段、特別風險（表格、尾頁、缺 OCR、page marker 跳頁）。交畀 subagent 嘅指示要包含本 skill 同 repo 本地指示嘅核心要求：按 PDF 圖像校對、保留原字形、刪頁面家具、處理低信心括號同高信心錯字、完成後跑該檔案嘅 residual scan 同 `git diff --check -- TARGET.md`。
+
+subagent 回報後，主 agent 必須 review 佢哋改過嘅檔案、處理衝突或遺漏，並統一做最後完成前驗證。即使用咗 subagent，未完成逐頁視覺對照同最終檢查，都唔可以話全文已完成校對。若只有一份 Markdown，或者任務需要同一檔案內緊密上下文判斷，就由主 agent 直接做，最多用 subagent 做只讀疑點/表格/尾頁審核。
+
 ## 核心約定
 
 - 同名 PDF 係最終依據。處理 `NAME.md` 時，優先對 `NAME.pdf`。
 - OCR 可以當可靠底稿，但唔係最終依據；所有疑難字、補漏、刪改都要回到 PDF 圖像判斷。
 - 保留 PDF 原有字形、異體字、舊字形同舊式標點。唔好因現代慣用寫法而改 `粤/粵`、`淸/清`、`决/決`、`吿/告`、`塲/場`、`箚/劄/剳/札` 等字。
 - `[]` 入面嘅字代表 OCR 信心低，要優先查 PDF；冇括號嘅字都可能係高信心錯字，要按語境查。
-- 新 OCR 或補漏 OCR 時，立即由 PDF render 圖像做視覺轉寫，唔好等 GJ.cool 先開始。GJ.cool 古籍 OCR 只係背景並行或極短時間輔助：有 token、API 正常、未爆 quota、幾秒內即時返到，先用佢做底稿；否則即刻繼續視覺識別。GJ.cool 之後補返結果，最多當校對提示。
+- 新 OCR 或補漏 OCR 時，立即由 PDF render 圖像做視覺轉寫，唔好等 GJ.cool 先開始。GJ.cool 古籍 OCR 只係背景並行或極短時間輔助：有 token、API 正常、未爆 quota、5 秒 timeout 內即時返到，先用佢做底稿；否則即刻繼續視覺識別。如果 GJ.cool API 回覆 `wait for ... seconds`，即視為本輪 OCR/校對任務 GJ.cool 不可用，本輪餘下全部用模型視覺識別，唔再自發嘗試任何 GJ.cool API call。GJ.cool 之後補返結果，最多當校對提示。
 - Apple/macOS OCR、Gemini、Tesseract、OCR JSON 等都只係提示；最後仍以 PDF 圖像為準。
 - 外部研究可以幫手判斷人名、官職、地名、年代、典故，但唔可以覆蓋 PDF 原文。
 - 校對目標係忠實轉錄 PDF 原文，唔係現代化整理文本。
@@ -34,8 +42,9 @@ description: 校對同清理 jyut-ocr 類 repo 入面由歷史中文 PDF OCR 出
 5. render PDF 做圖像對照。若 `tmp/pdfs/...` 圖像新鮮又完整，可以沿用；否則用 `magick`、`pdftoppm` 或本機可用工具重新 render。
 6. 需要新 OCR/補漏時：
    - 先直接由 PDF 圖像逐欄視覺轉寫；
-   - 若已有 `GJCOOL_ACCESS_TOKEN` 或 `GJCOOL_AUTH`，可以同時或極短時間試 GJ.cool；
-   - GJ.cool 幾秒內有結果就用作底稿再核 PDF；若 timeout、無回應、叫 `wait for ... seconds`、quota 爆、auth 失敗、服務不可用，就停止等候，繼續視覺轉寫；
+   - 若已有 `GJCOOL_ACCESS_TOKEN` 或 `GJCOOL_AUTH`，可以同時試 GJ.cool，使用 5 秒 timeout（例如 `GJCOOL_OCR_TIMEOUT=5`，需要認證時 `GJCOOL_AUTH_TIMEOUT=5`）；
+   - GJ.cool 5 秒內有結果就用作底稿再核 PDF；若 timeout、無回應、quota 爆、auth 失敗、服務不可用，就停止等候，繼續視覺轉寫；
+   - 若 API 回覆 `wait for ... seconds`，即刻停止本輪任務所有後續 GJ.cool API call；本輪任務餘下缺 OCR/補漏/校對全部改用模型視覺識別。即使懷疑換 IP 或換 token 可能重置用量，同一輪 OCR/校對任務都唔再自發重試；只有用戶另開要求專門測試 API/token 時先單獨測。
    - 其他 OCR 工具只當提示。
 7. 改文前先做機械掃描：
 
@@ -56,7 +65,7 @@ rg -n "\[|\]|<!-- page_|gjcool OCR|^>此頁OCR無有效文字|[A-Za-z]" TARGET.m
 
 - residual scan 乾淨唔等於內容完整。見到章節開頭、page marker、PDF 圖像同 Markdown 明顯跳頁，要停低查缺頁範圍。
 - 先找其他本地底稿：舊 git 版本、`tmp/pdfs/.../cleaned-draft*.md`、OCR JSON、raw OCR draft、repo OCR scripts。
-- GJ.cool 可用時只短促或背景試；唔好為佢停低視覺轉寫。
+- GJ.cool 可用時只用 5 秒 timeout 短促或背景試；唔好為佢停低視覺轉寫。若回 `wait for ... seconds`，本輪缺 OCR/跳頁處理一律停用 GJ.cool，之後直接用模型視覺識別補回內容。
 - Apple Vision/LiveText 對直排 crop 有時有用，但會漏淡字、誤判空白、拆亂表格；只當提示。
 - 唔好貼網上相近文本當原文依據。外部資料只可幫手識別疑難字詞，最後仍按 PDF。
 - 有缺頁或只係盡力轉寫嘅範圍，要清楚講明，唔好當全文已校對。
