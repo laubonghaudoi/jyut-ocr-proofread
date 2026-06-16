@@ -4,6 +4,17 @@
 
 今版將 `jyut-ocr` repo 入面近期香港中文 OCR 校對守則整理成可重用 Codex plugin skill，重點係令 agent 做長文校對、缺 OCR 補漏、表格整理同 final pass 時有一致嘅流程。
 
+### 2026-06-16 同步摘要
+
+本 repo 版本已同本機已安裝嘅 `jyut-ocr-proofread` 0.1.2 skill 對齊；主 `SKILL.md`、詳細規則 reference 同常見陷阱 reference 三份檔案保持一致。呢次整理將最近新增嘅工作約束濃縮成以下幾類：
+
+- OCR 來源次序收緊：缺 OCR 或補漏時即刻用 PDF render 圖像做視覺轉寫，GJ.cool 只係 5 秒內即時可用先作底稿；`wait for ... seconds` 之後本輪任務停止自發重試 GJ.cool。
+- 缺頁同跳頁處理更明確：page marker、section-to-page continuity、最後非空白頁覆蓋情況要喺深入校對前先查；residual scan 乾淨唔等於內容完整。
+- 並行分工有明確邊界：多份互不重疊 Markdown/PDF pair 可以用 subagent，但主 agent 要先分工、避免多人改同一檔，並 review 所有輸出。
+- Markdown 結構要求固定化：page comments 只作臨時定位，final 前刪除；普通正文要一段一行，heading、bullet、table、跨頁續文都要按 PDF 版面整理。
+- 表格、票據、圖、尾頁、淡字空白頁同印章要 render 放大檢查；直排表格要重建欄列，唔可以照 OCR 行序硬排。
+- 完成前驗證變成固定 checklist：掃 brackets、page comments、OCR notice、頁面家具同拉丁殘留，刪 page comments 後查 soft wrap，最後跑 `git diff --check`。
+
 - Skill metadata 用穩定 ID `jyut-ocr-proofread`，方便 Codex 以 skill 名稱載入。
 - 目標 repo 如有 `AGENTS.md` 或其他本地指示，必須先讀並優先跟本地指示；本地指示高於 plugin 內通用規則。
 - 兩份或以上互不重疊 Markdown/PDF pair 時，預設可以用並行 subagent 分工；主 agent 仍要 review 改動、處理遺漏，並統一做最後驗證。
