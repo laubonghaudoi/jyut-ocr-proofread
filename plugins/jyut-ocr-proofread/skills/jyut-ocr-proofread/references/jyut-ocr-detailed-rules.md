@@ -29,7 +29,7 @@
 - GJ.cool 古籍 OCR 只係可選背景/並行/極短時間輔助；要已有 `GJCOOL_ACCESS_TOKEN` 或 `GJCOOL_AUTH`，API 正常，未爆 quota。
 - 唔等 25 秒或更長；用 5 秒 timeout 睇有冇即時結果。
 - GJ.cool 即時返到就用作底稿再核 PDF；timeout、叫等、quota 爆、auth 失敗、服務唔通，就繼續視覺轉寫。
-- Apple/macOS OCR、Gemini、Tesseract、OCR JSON 只係提示，除非用戶明確要求。
+- Apple/macOS 本地 OCR、Gemini、OCR JSON 只可以做提示，除非用戶明確要求。Tesseract/Tessdata 係硬性禁用：任何情況下都唔好安裝、調用、等待、讀取或採納相關輸出，因為佢喺呢類歷史中文直排材料上效果太差，會製造誤導。
 - 外部研究可以幫手識別人名、官職、地名、日期、典故，但唔可以覆蓋 PDF 字形。
 
 ## 頁面家具
