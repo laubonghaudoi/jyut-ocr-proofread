@@ -1,7 +1,7 @@
 {
   "name": "jyut-ocr-proofread",
-  "version": "0.1.2",
-  "description": "Proofread historical Chinese OCR Markdown against same-name PDFs, with Cantonese jyut-ocr conventions for page furniture, old glyphs, lists, tables, final audit checks, and GJ.cool as an optional short-deadline helper.",
+  "version": "0.2.0",
+  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, long-book segmentation, missing-page recovery, page-boundary checks, and deterministic final audits.",
   "author": {
     "name": "laubonghaudoi",
     "url": "https://github.com/laubonghaudoi"
@@ -13,13 +13,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Jyut OCR Proofread",
-    "shortDescription": "Proofread Chinese OCR Markdown against PDFs.",
-    "longDescription": "Use a Cantonese jyut-ocr proofreading workflow for historical Chinese OCR Markdown: compare same-name PDFs, preserve printed glyph variants and old punctuation, remove OCR/page furniture, repair low-confidence and high-confidence OCR mistakes, reconstruct headings, lists, and tables, follow bundled detailed rules for long reports, and treat GJ.cool OCR only as an optional short-deadline helper.",
+    "shortDescription": "Transcribe and audit historical Chinese PDF OCR.",
+    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants and old punctuation, isolate long-book page ranges safely, detect duplicate or missing scans, reconstruct cross-page text, footnotes, headings, lists and tables, and run bundled deterministic audits before delivery.",
     "developerName": "laubonghaudoi",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
     "defaultPrompt": [
       "校對一份 jyut-ocr Markdown，逐頁對同名 PDF。",
+      "識別一份長篇歷史中文 PDF，分段校對後安全合併。",
+      "檢查 PDF 重複掃描、缺失印刷頁同跨頁註腳。",
       "清理 OCR 頁面家具同低信心括號。",
       "逐頁檢查歷史中文 OCR 轉寫。"
     ]

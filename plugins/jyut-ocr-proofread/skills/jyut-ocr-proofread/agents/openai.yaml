@@ -1,4 +1,4 @@
 interface:
   display_name: "Jyut OCR Proofread"
-  short_description: "用粵文規則按 PDF 校對中文 OCR Markdown，多檔時並行分工。"
-  default_prompt: "校對選定 jyut-ocr Markdown；多份獨立檔案時用並行 subagent 分工，逐頁對同名 PDF，保留原字形並刪除 OCR/page furniture。"
+  short_description: "逐頁校對歷史中文 OCR，支援長書分段、缺頁復原同結構驗證。"
+  default_prompt: "用 $jyut-ocr-proofread 逐頁校對呢份歷史中文 PDF／Markdown，並驗證長書頁序、跨頁結構、重複掃描同缺頁。"
