@@ -1,5 +1,25 @@
 # 更新摘要
 
+## 0.2.2 — 2026-08-03
+
+- Boundary contract 新增反向保護：open list item 後嘅縮排續文或 nested item 若誤標 `join`，annotated audit 同 finalizer 都會拒絕，避免 `.strip()` 吞走 `list-cont`／`list-new` 語義後輸出 hard break 或黐爛子項；receipt 同時保留經視覺確認嘅 paragraph／structural list break，唔放寬無證據嘅 loose-list audit。
+- Final audit 使用嘅 notation policy、source-exception ledger 同 page manifest 必須由 assembly receipt 封存；另傳未記錄 interpretation 檔會報 `assembly-audit-input-unsealed`。
+- 新增 `--page-manifest`／`--source-pdf` provenance gate，逐次重算目前 PDF SHA-256、完整 `1..N` scan sequence 同每個 render hash；帶 receipt 時亦會對賬 sealed annotated markers，刻意略去頁必須以 sealed `marker_expected: false` 聲明。
+- Review evidence 改成單向狀態：sidecar 重建唔可以將 `independent-checked` 降級，並要求 reviewer 同 writer 分開、覆核 range 同 evidence ledger／report hash 可追溯。
+- 長目錄對賬要求逐項 disposition；TOC／正文數量相同唔代表文字完全一致，圈號省略、跨頁日期、題名／頁碼／排序真差異要各自按圖保留，唔可以留低未關閉嘅泛稱 `review`。
+- 測試由 27 個增至 33 個，新增 list-cont／nested list 誤標、獨立 lists 結構邊界、unsealed final-audit input、PDF/render provenance 同 sealed marker coverage regression。
+
+## 0.2.1 — 2026-08-03
+
+- 將兩冊長書實作經驗整理成 release gate：先讀本書凡例、收齊所有 writer／auditor、凍結 segment hash，最後一個 patch 後重新 assemble、finalize 同完整 audit。
+- 新增 `notation-policy.json` 支援；凡例證明 ASCII `[ ]` 係來源編者訂正時，final audit 唔再將佢無條件當 OCR confidence residual。
+- 新增 stack-aware 全形 delimiter audit，同 duplicate-safe exact line／column／symbol `source-exceptions.json`；原書本身未閉或錯序標點要保存 scan page、整行文字同核圖說明，失效 exception 會報錯。
+- Finalizer 新增 SHA-256 assembly receipt，同 ordered `--upstream` dependencies；final audit 可以偵測 late segment／manifest／annotated patch同 receipt 後 final 修改，並由目前 annotated + boundary contract byte-for-byte 重建 final，唔靠 mtime。
+- 結構 audit 擴充至 tight-list item／continuation 空行、Markdown table 欄數、space-before-tab、missing final newline 同 EOF 多餘空行。
+- 新增高信心 correction propagation、同名／相似平行篇章互校同 multi-pass OCR disagreement 工作法；全部只產生逐頁核圖候選，絕不自動同步或投票定稿。
+- 收緊一次性 front matter／正文 apparatus 判斷：全書轉錄通常保留扉頁、英文題名、CIP／版權、凡例、圖說同來源資料，唔同重複頁面家具混為一談。
+- 測試由 14 個增至 27 個，覆蓋 hash freshness、hard-link／case alias 防護、notation policy、精確來源例外、delimiter nesting、nested list、table 欄數、code fence 同完整 EOF whitespace。
+
 ## 0.2.0 — 2026-08-03
 
 - 單一長篇 PDF 可以按連續頁段分派，但每個 writer 只寫獨立 segment；主 agent 獨佔最終 Markdown、assemble、頁段交界同 final audit。

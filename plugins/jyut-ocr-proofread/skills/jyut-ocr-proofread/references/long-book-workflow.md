@@ -11,6 +11,8 @@
 - [定義 page marker 邊界](#定義-page-marker-邊界)
 - [重排跨頁正文同註腳](#重排跨頁正文同註腳)
 - [集中合併同定稿](#集中合併同定稿)
+- [對賬長目錄](#對賬長目錄)
+- [凍結同封關](#凍結同封關)
 - [驗證結構不變量](#驗證結構不變量)
 - [檢查未追蹤新檔](#檢查未追蹤新檔)
 
@@ -30,6 +32,8 @@
 | `content` | `body`、`frontmatter`、`blank`、`plate` 等 |
 | `relation` | `unique`、`exact_duplicate`、`partial_duplicate` |
 | `boundary_before` | 同上一掃描頁／前置內容嘅 `start`、`join`、`paragraph`、`list-cont`、`list-new` 或 `structural` |
+| `marker_expected` | 預設 `true`；只有已核實刻意唔設 Markdown marker 嘅 scan 先明寫 `false` |
+| `visual_status` | `ocr-only`、`worker-checked` 或 `independent-checked` |
 | `notes` | 缺頁、遮字、印章、裁邊、重複來源等例外 |
 
 逐頁視覺確認以下情況，並將決定寫入 manifest：
@@ -55,7 +59,9 @@
 
 如果切口無法避開跨頁正文，明確指定邊界 owner。前段保留頁尾正文，後段由下一 scan page 第一個獨有字開始；由中央合併者決定最終 `join` 或 `break`。
 
-合併前先凍結 segments。worker 完成後只做 read-only 覆核；如要再改，先由主 agent 重新分派唯一 owner。保留一輪獨立 visual audit，重點查每個段落交界、表格交界、註腳交界同 heading 層級。
+合併前先凍結 segments，記錄每段 SHA-256。worker 完成後只做 read-only 覆核；如要再改，先由主 agent 重新分派唯一 owner。保留一輪獨立 visual audit，除交界、表格、註腳同 heading 外，亦要掃冇 `[]` 嘅高信心人名、官名、固定搭配同漏句。
+
+交付前收齊所有 writer／auditor final report，確認冇 active 或可能再寫檔嘅 page-range task。任何 late patch 都令 segment hash、assembly、receipt 同舊 final audit 失效；套用修正後重新凍結同完整 assemble，唔可以只喺舊 final 上補一刀就交付。
 
 ## 保存 OCR 來源
 
@@ -70,6 +76,8 @@ Apple Vision、macOS Live Text 或其他本地 OCR 只可以產生有頁面 prov
 將 OCR 結果按 scan page 分隔，或者直接用 `<!-- page_001 -->` 呢類 marker 包住。唔好將無頁碼嘅大段 Apple Vision 輸出貼入正文，否則之後無法證明漏頁、重複或錯序。
 
 將 Apple Vision 當提示：用佢加快建立底稿同尋找可疑字，但逐頁睇 PDF 圖核對直排次序、淡字、跨欄、註腳、表格同 spread。即使用戶明確要求使用 macOS OCR，都唔好將「OCR 已跑完」當成「已視覺校對」。
+
+同頁有 corrected／nocorrected、不同 DPI 或不同 crop OCR 時，比較字數、低信心數、差異率同長 unmatched run，建立 risk queue 並優先核對漏句候選。分歧只係風險訊號，多個 pass 高度一致亦唔證明正確；唔用投票取代 PDF 視覺判斷。
 
 ## 處理原 PDF 真缺頁
 
@@ -162,14 +170,18 @@ Annotated segment 可以保持普通 marker：
 
 每個實際 marker 必須恰好有一條記錄；多一條、少一條、重複 key、無效 label 或 `start` 前有正文都要失敗。唔好用一條會吞掉 marker 前後所有 whitespace 嘅全域 regex。無 JSON manifest 時，finalizer 只可以列出 marker 同左右 context，`--write` 必須拒絕；寫入時亦必須指定另一個 `--output`，永不覆寫 annotated 底稿。任何 heuristic suggestion 都唔係寫入依據。
 
+由 annotated 稿產生 manifest 時，判斷空行可以用 `.strip()`，但分類內容必須保留原始 leading whitespace。同一清單繼續時，下一個非空行若係兩格／tab 縮排普通續文就用 `list-cont`，若本身係 nested bullet 就用 `list-new`；如果 PDF 顯示前後係兩個獨立 lists，則用 `paragraph`／`structural`。先 `.strip()` 再分類會誤標成 `join`，final 會將縮排或子項黐落上一行，甚至產生 Markdown hard break。Bundled audit／finalizer 會拒絕破壞性 `join`，但保留經視覺確認嘅真正 break。Final audit 只有帶相符 assembly receipt 時先承認呢類 verified break；冇 receipt 嘅 final 仍會保守報 `loose-list-blank`。
+
 先 audit annotated 稿，再 dry-run finalizer；兩者輸出都核對後先寫另一個 final 檔：
 
 ```bash
 python3 scripts/audit_ocr_markdown.py combined-annotated.md --mode annotated --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
 python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
-python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output final.md --write
-python3 scripts/audit_ocr_markdown.py final.md --mode final
+python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output final.md --receipt assembly-receipt.json --upstream ordered-segments.json --upstream segments/p001-120.md --upstream segments/p121-240.md --upstream notation-policy.json --upstream source-exceptions.json --upstream page-manifest.json --write
+python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json
 ```
+
+本書冇 notation policy 或 source exception 時，先省略相應 option／upstream；長書 page manifest 唔好省略。Page manifest 每個 scan record 預設都應有 marker；若空白、重複或其他已核實原因刻意唔設 marker，要喺該 record 明寫 `"marker_expected": false`，唔靠未封存嘅 command-line skip 暗示。Final audit 會將 sealed annotated marker inventory 同 sealed page manifest 對賬。
 
 ## 重排跨頁正文同註腳
 
@@ -201,6 +213,24 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final
 先對 annotated 合併稿跑 audit，再用唯一 finalizer 刪 marker。finalizer 要支援 dry-run，列出預期／實際 marker 數量、每種 boundary 數量同異常位置；數量唔符就停止，唔好輸出最終檔。
 
 定稿後再跑 residual scan、一段一行、heading/list/table spacing、重複長段同 whitespace 檢查。另做一輪 read-only visual audit；抽查之外，所有未被 worker 視覺核對嘅頁都要補核，先可以聲稱完成逐頁對照。
+
+如果同一冊或同系列有同名／高度相似篇章，用題名、日期、來源同正文相似度對齊，輸出差異作核圖候選。平行文本可能有真實版次、報源、刪節同標點差異，唔可以自動同步；各自仍以 PDF 為準。
+
+## 對賬長目錄
+
+目錄同正文 heading 分開轉錄，唔用正文自動生成目錄後當作核對完成。建立逐項 ledger，記錄 TOC index、TOC scan／原文／頁碼、body scan／heading、disposition 同視覺證據；圈號註號省略、跨 marker 日期、題名異文或原書異序各自保留。封關時 entry count、body heading count 同 ledger row count 要一致，而且每行由 `exact`、`fixed`、`source-verified-variant`、`source-verified-reordered` 等明確狀態關閉；唔保留未有視覺結論嘅泛稱 `review`。詳細要求見 `release-gate.md`。
+
+## 凍結同封關
+
+最後一輪 assemble 之前，review manifest 要列出每段 owner、`visual_status`、未解決 issue、風險同 frozen hash。只有所有 final report 已收齊、無 active writer／auditor，而且需要獨立覆核嘅頁已標成 `independent-checked`，先可以產生 release candidate。
+
+Review sidecar builder 必須由 durable writer／auditor ledger 重建，狀態只可由 `ocr-only` 單向升至 `worker-checked`、`independent-checked`；重跑前後比較逐頁狀態、reviewer range、`unresolved` 同 evidence hash，禁止降級。`independent-checked` 要記錄同 writer 不同嘅 reviewer、完整覆核頁集合同 report／ledger SHA-256，唔可以只改 top-level 字串。
+
+長書 finalizer 用 `--receipt`，並按 ordered manifest 次序重複傳入 `--upstream` segments；final audit 會讀嘅 notation policy、source exceptions 同 page manifest 亦要加入 `--upstream`。Receipt 會 hash upstream、combined annotated、boundary manifest 同 final output；final audit 用 `--assembly-receipt` 重算。任何 input 或 final 改變都必須重新 assemble／finalize／audit。Annotated target 同 boundary manifest 已自動記錄，唔好重複當 upstream。完整 JSON schema、notation policy、source exception 同指令見 `release-gate.md`。
+
+封關時另用 `audit_ocr_markdown.py --page-manifest ... --source-pdf ...` 驗證目前 PDF SHA、`1..N` scan sequence、annotated marker coverage 同所有 render hash。Manifest 入面舊 source path 可以因搬檔而失效，但所選新路徑內容必須同 `source_sha256` 完全一致；page manifest 本身要由 receipt 封存。
+
+Receipt 只證明記錄後檔案無變，唔自行證明 combined annotated 當初按正確次序產生；所以仍要驗證 ordered segment manifest、marker inventory 同首尾句。唔用 mtime 判 freshness。
 
 ## 驗證結構不變量
 

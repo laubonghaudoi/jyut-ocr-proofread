@@ -1,4 +1,4 @@
 interface:
   display_name: "Jyut OCR Proofread"
-  short_description: "逐頁校對歷史中文 OCR，支援長書分段、缺頁復原同結構驗證。"
-  default_prompt: "用 $jyut-ocr-proofread 逐頁校對呢份歷史中文 PDF／Markdown，並驗證長書頁序、跨頁結構、重複掃描同缺頁。"
+  short_description: "按 PDF 校對歷史中文 OCR，保留校勘符號並驗證長書封關。"
+  default_prompt: "用 $jyut-ocr-proofread 以 PDF 圖像同本書凡例為準逐頁校對呢份歷史中文 PDF／Markdown；保留來源校勘符號，分段合併後驗證頁序、跨頁、缺重頁、來源例外同 final freshness。"

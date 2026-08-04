@@ -11,13 +11,16 @@ from typing import Sequence
 
 from _ocr_markdown import (
     apply_boundary_contract,
+    build_assembly_receipt,
     boundary_contract_problems,
     find_page_markers,
     load_boundary_manifest,
     marker_context,
     marker_sequence_problems,
     parse_page_spec,
+    paths_refer_to_same_file,
     split_lines,
+    write_assembly_receipt,
 )
 
 
@@ -68,7 +71,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-pages",
         action="append",
         metavar="SPEC",
-        help="pages intentionally without markers, for example 17 or 2,5-7",
+        help=(
+            "pages intentionally without markers, for example 17 or 2,5-7; "
+            "also record marker_expected=false in a sealed page manifest"
+        ),
+    )
+    parser.add_argument(
+        "--receipt",
+        type=Path,
+        help=(
+            "write a SHA-256 assembly receipt beside --output; use repeated "
+            "--upstream for segment and assembly-manifest dependencies"
+        ),
+    )
+    parser.add_argument(
+        "--upstream",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "upstream segment or manifest to hash into --receipt; repeat in "
+            "deterministic assembly order"
+        ),
     )
     return parser
 
@@ -102,12 +126,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         errors.append("--write requires --boundary-manifest; inference is forbidden")
     if args.write and args.output is None:
         errors.append("--write requires --output; annotated TARGET is never overwritten")
+    if args.receipt is not None and not args.write:
+        errors.append("--receipt requires --write")
+    if args.upstream and args.receipt is None:
+        errors.append("--upstream requires --receipt")
     if (
         args.write
         and args.output is not None
-        and args.output.resolve() == args.target.resolve()
+        and paths_refer_to_same_file(args.output, args.target)
     ):
         errors.append("--output must differ from annotated TARGET")
+    if (
+        args.write
+        and args.output is not None
+        and args.boundary_manifest is not None
+        and paths_refer_to_same_file(args.output, args.boundary_manifest)
+    ):
+        errors.append("--output must differ from --boundary-manifest")
     if boundary_contract is not None:
         errors.extend(boundary_contract_problems(lines, markers, boundary_contract))
     if errors:
@@ -166,7 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if args.output is not None:
             print(f"DRY-RUN output path not written: {args.output}")
-        print("Use --write to modify TARGET or create --output.")
+        print("Use --write to create --output after reviewing every boundary.")
         return 0
 
     assert boundary_contract is not None
@@ -184,6 +219,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     assert args.output is not None
     destination = args.output
+    receipt_data: dict[str, object] | None = None
+    if args.receipt is not None:
+        assert args.boundary_manifest is not None
+        if not args.receipt.resolve().parent.is_dir():
+            print(
+                f"ERROR {args.receipt}: receipt parent directory does not exist",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            receipt_data = build_assembly_receipt(
+                args.receipt,
+                annotated_path=args.target,
+                boundary_manifest_path=args.boundary_manifest,
+                output_path=destination,
+                output_text=result,
+                upstream_paths=args.upstream,
+            )
+        except (OSError, ValueError) as error:
+            print(f"ERROR {args.receipt}: {error}", file=sys.stderr)
+            return 1
     try:
         _write_utf8(destination, result)
     except (OSError, UnicodeError) as error:
@@ -192,6 +248,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         f"WROTE {destination}: removed {len(markers)} page marker(s); {counts}"
     )
+    if args.receipt is not None:
+        assert receipt_data is not None
+        try:
+            write_assembly_receipt(args.receipt, receipt_data)
+        except (OSError, UnicodeError) as error:
+            print(
+                f"ERROR {args.receipt}: final output was written but receipt failed: "
+                f"{error}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"RECEIPT {args.receipt}: inputs={len(receipt_data['inputs'])} "
+            "algorithm=sha256"
+        )
     return 0
 
 

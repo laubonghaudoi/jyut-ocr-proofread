@@ -10,14 +10,30 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR
 - 保留 PDF 原有字形、異體字、舊字形同舊式標點；
 - 查 PDF 後先刪頁眉、頁腳、書脊、承印資訊、OCR notice 等頁面家具；
 - 優先處理低信心括號同語境唔通嘅高信心 OCR 錯字；
+- 先讀本書凡例，分清 OCR confidence bracket 同原書訂正／增補／缺損符號；
 - 按 PDF 版面重整 heading、段落、bullet list、table；
 - 新 OCR 或補漏時先用視覺識別，GJ.cool 只作背景並行或極短時間輔助；
 - 單一長書可以按頁段寫入獨立 segment，再由主 agent 驗證交界同統一合併；
 - 分辨 PDF scan page 同書內 printed page，記錄旋轉、spread、重複掃描同真正缺頁；
-- 用 bundled scripts 檢查 page marker、跨頁黐行、Markdown 結構同 final residue；
+- 用 bundled scripts 檢查 page marker、跨頁黐行、tight list、table 欄數、成對標點、Markdown 結構、final residue 同 stale assembly；
 - 長文或 final pass 時載入更完整嘅粵文 `jyut-ocr` 校對 reference。
 
-## 新版更新重點
+## 0.2.2 更新重點
+
+- 防止跨頁 list 續文／nested item 因預先 `.strip()` 而被誤標 `join`；audit／finalizer 會要求 `list-cont`、`list-new` 或經視覺確認並由 receipt 保存嘅真正結構 break。
+- Receipt 必須封存 final audit 實際使用嘅 notation policy、source exceptions 同 page manifest，避免定稿後新增白名單改變結果。
+- Final audit 可用目前 PDF 路徑重驗來源 SHA、scan sequence、sealed annotated marker coverage 同每張 render hash；刻意略去 marker 嘅 scan 要喺 manifest 明寫 `marker_expected: false`。
+- Review sidecar 狀態禁止降級，獨立覆核要記 writer 以外嘅 reviewer、頁段同 evidence hash；長目錄每個差異亦要有已核圖 disposition。
+
+## 0.2.1 更新重點
+
+- 新增本書 notation policy：凡例證明 ASCII `[ ]` 係編者訂正時，可以同 OCR 低信心 markup 分開處理，避免機械刪除來源符號。
+- 新增 exact line／column／symbol source exception ledger；原書本身未閉或錯序引號／括號要先核圖，位置、line text 或 issue 改變就會報 stale exception。
+- Finalizer 可以輸出 SHA-256 assembly receipt，hash ordered upstream segments、combined annotated、boundary manifest 同 final；late patch 或 receipt 後修改會令 final audit 失敗。
+- 結構 audit 補 tight-list continuation、table 欄數、delimiter 配對、space-before-tab、missing final newline 同 EOF 多餘空行。
+- 將高信心 correction propagation、平行篇章互校、multi-pass OCR disagreement 同「收齊所有 auditor 後重新 assemble」寫成 release gate；所有差異只產生核圖候選。
+
+## 0.2.0 更新重點
 
 - 長單檔可安全並行：每個 agent 只寫獨立頁段 segment，主 agent 獨佔最終檔、assemble 同跨段覆核。
 - 新增 long-book page manifest 流程，同時追蹤 scan page／printed page、spread、旋轉、空白、完整或局部重複、缺失印刷頁。
@@ -36,11 +52,13 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR
 ```bash
 python3 scripts/audit_ocr_markdown.py TARGET-annotated.md --mode annotated --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
 python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
-python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output TARGET.md --write
-python3 scripts/audit_ocr_markdown.py TARGET.md --mode final
+python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output TARGET.md --receipt assembly-receipt.json --upstream ordered-segments.json --upstream segments/p001-120.md --upstream segments/p121-240.md --upstream notation-policy.json --upstream source-exceptions.json --upstream page-manifest.json --write
+python3 scripts/audit_ocr_markdown.py TARGET.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json
 ```
 
 `boundaries.json` 用 marker page 作 key，label 係 `start`、`join`、`paragraph`、`structural`、`list-cont` 或 `list-new`。每個實際 marker 必須恰好有一條記錄；無 manifest 時 dry-run 只會列 context，任何 `--write` 都會拒絕。寫入亦必須指定另一個 `--output`，腳本永不覆寫 annotated 底稿。完整 schema 同跨頁例子見 `references/long-book-workflow.md`。
+
+長書用 `--receipt` 同按次序重複嘅 `--upstream` 建立 SHA-256 hash receipt；任何 segment、annotated、boundary 或 final 後續修改都要重新 finalize。Final audit 會讀嘅 notation policy、source exception 同 page manifest 亦要列為 upstream；如果本書冇相應來源符號／異常，先省略嗰啲 JSON 選項。完整 completion gate schema 見 `references/release-gate.md`。
 
 ## 由 GitHub 安裝
 
@@ -83,6 +101,7 @@ plugins/jyut-ocr-proofread/
     references/common-ocr-traps.md
     references/jyut-ocr-detailed-rules.md
     references/long-book-workflow.md
+    references/release-gate.md
     scripts/_ocr_markdown.py
     scripts/audit_ocr_markdown.py
     scripts/finalize_page_markers.py

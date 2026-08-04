@@ -1,7 +1,7 @@
 {
   "name": "jyut-ocr-proofread",
-  "version": "0.2.0",
-  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, long-book segmentation, missing-page recovery, page-boundary checks, and deterministic final audits.",
+  "version": "0.2.2",
+  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, book-specific notation policies, long-book segmentation, missing-page recovery, page-boundary checks, source/render provenance, and deterministic release audits.",
   "author": {
     "name": "laubonghaudoi",
     "url": "https://github.com/laubonghaudoi"
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Jyut OCR Proofread",
     "shortDescription": "Transcribe and audit historical Chinese PDF OCR.",
-    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants and old punctuation, isolate long-book page ranges safely, detect duplicate or missing scans, reconstruct cross-page text, footnotes, headings, lists and tables, and run bundled deterministic audits before delivery.",
+    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants, editorial notation and old punctuation; isolate long-book page ranges safely; detect duplicate or missing scans; reconstruct cross-page text, footnotes, headings, lists and tables; and verify source exceptions plus assembly freshness before delivery.",
     "developerName": "laubonghaudoi",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
