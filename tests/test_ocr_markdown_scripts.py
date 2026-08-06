@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +37,855 @@ def run_script(script: Path, *arguments: object) -> subprocess.CompletedProcess[
     )
 
 
+def load_script_module(path: Path, module_name: str):
+    """Import a script under a private name so race guards can be patched."""
+
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not import test module: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(path.parent))
+    return module
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_release_plan(
+    plan_path: Path,
+    annotated: Path,
+    boundary_manifest: Path,
+    *active_artifacts: Path,
+) -> Path:
+    """Create a minimal valid closure rooted at the annotated assembly."""
+
+    base = plan_path.resolve().parent
+
+    def relative(path: Path) -> str:
+        return path.resolve().relative_to(base).as_posix()
+
+    dependencies: list[dict[str, object]] = []
+    artifacts: list[dict[str, object]] = []
+    inputs = (("boundary", boundary_manifest),) + tuple(
+        (f"active-{index}", path)
+        for index, path in enumerate(active_artifacts, 1)
+    )
+    for artifact_id, path in inputs:
+        digest = sha256_file(path)
+        artifacts.append(
+            {
+                "id": artifact_id,
+                "type": "release-input",
+                "path": relative(path),
+                "classification": "include",
+                "lifecycle": "active",
+                "validation": "pass",
+                "sha256": digest,
+                "depends_on": [],
+            }
+        )
+        dependencies.append(
+            {
+                "target": artifact_id,
+                "relation": "sealed-by",
+                "hash": {"mode": "full", "sha256": digest},
+            }
+        )
+    artifacts.append(
+        {
+            "id": "annotated",
+            "type": "annotated-markdown",
+            "path": relative(annotated),
+            "classification": "include",
+            "lifecycle": "active",
+            "validation": "pass",
+            "sha256": sha256_file(annotated),
+            "depends_on": dependencies,
+        }
+    )
+    plan = {
+        "schema_version": 1,
+        "discovery": {
+            "globs": [artifact["path"] for artifact in artifacts]
+        },
+        "release_roots": ["annotated"],
+        "artifacts": artifacts,
+    }
+    plan_path.write_text(
+        json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return plan_path
+
+
 class FinalizePageMarkersTests(unittest.TestCase):
+    def test_summary_only_suppresses_markers_but_keeps_write_summaries(self) -> None:
+        annotated = """<!-- page_001 -->
+正文未
+<!-- page_002 -->
+完。
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            output = root / "final.md"
+            manifest = root / "boundaries.json"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            manifest.write_text(
+                '{"boundaries":{"1":"start","2":"join"}}',
+                encoding="utf-8",
+            )
+            write_release_plan(release_plan, target, manifest)
+
+            verbose = run_script(
+                FINALIZE,
+                target,
+                "--expected-count",
+                2,
+                "--boundary-manifest",
+                manifest,
+            )
+            summarized = run_script(
+                FINALIZE,
+                target,
+                "--expected-count",
+                2,
+                "--boundary-manifest",
+                manifest,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--summary-only",
+                "--write",
+            )
+
+            self.assertEqual(verbose.returncode, 0, verbose.stderr)
+            self.assertIn("MARKER ", verbose.stdout)
+            self.assertEqual(summarized.returncode, verbose.returncode)
+            self.assertNotIn("MARKER ", summarized.stdout)
+            self.assertIn("WROTE ", summarized.stdout)
+            self.assertIn("removed 2 page marker(s)", summarized.stdout)
+            self.assertIn("RECEIPT ", summarized.stdout)
+            self.assertEqual(output.read_text(encoding="utf-8"), "正文未完。\n")
+
+    def test_receipt_requires_a_valid_release_plan_without_bypass(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+
+            dry_run = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+            )
+            bypass = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--write",
+            )
+
+            self.assertEqual(dry_run.returncode, 0, dry_run.stderr)
+            self.assertEqual(bypass.returncode, 1)
+            self.assertIn("--receipt requires --release-plan", bypass.stderr)
+            self.assertFalse(output.exists())
+            self.assertFalse(receipt.exists())
+
+            write_release_plan(release_plan, target, boundary)
+            bad_plan = json.loads(release_plan.read_text(encoding="utf-8"))
+            bad_plan["artifacts"][-1]["sha256"] = "0" * 64
+            release_plan.write_text(json.dumps(bad_plan), encoding="utf-8")
+            invalid = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(invalid.returncode, 1)
+            self.assertIn("release plan validation failed", invalid.stderr)
+            self.assertIn("sha256 mismatch", invalid.stderr)
+            self.assertFalse(output.exists())
+            self.assertFalse(receipt.exists())
+
+    def test_release_plan_enforces_dedicated_input_and_output_roles(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+
+            write_release_plan(release_plan, target, boundary)
+            normal = json.loads(release_plan.read_text(encoding="utf-8"))
+            boundary_only = {
+                **normal,
+                "discovery": {"globs": ["boundaries.json"]},
+                "release_roots": ["boundary"],
+                "artifacts": [normal["artifacts"][0]],
+            }
+            release_plan.write_text(
+                json.dumps(boundary_only), encoding="utf-8"
+            )
+            missing_target = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(missing_target.returncode, 1)
+            self.assertIn(
+                "annotated TARGET must be exactly one active included",
+                missing_target.stderr,
+            )
+
+            annotated_record = normal["artifacts"][-1]
+            annotated_record["depends_on"] = []
+            annotated_only = {
+                **normal,
+                "discovery": {"globs": ["annotated.md"]},
+                "release_roots": ["annotated"],
+                "artifacts": [annotated_record],
+            }
+            release_plan.write_text(
+                json.dumps(annotated_only), encoding="utf-8"
+            )
+            missing_boundary = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(missing_boundary.returncode, 1)
+            self.assertIn(
+                "--boundary-manifest must be exactly one active included",
+                missing_boundary.stderr,
+            )
+
+            old_output = "舊 final。\n"
+            output.write_text(old_output, encoding="utf-8")
+            write_release_plan(release_plan, target, boundary, output)
+            output_is_active = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(output_is_active.returncode, 1)
+            self.assertIn(
+                "--output must not alias any classified", output_is_active.stderr
+            )
+            self.assertEqual(output.read_text(encoding="utf-8"), old_output)
+
+            receipt.write_text('{"old":"receipt"}\n', encoding="utf-8")
+            generated_output = root / "generated-final.md"
+            write_release_plan(release_plan, target, boundary, receipt)
+            receipt_is_active = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                generated_output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(receipt_is_active.returncode, 1)
+            self.assertIn(
+                "--receipt must not alias any classified",
+                receipt_is_active.stderr,
+            )
+            self.assertFalse(generated_output.exists())
+            self.assertEqual(
+                receipt.read_text(encoding="utf-8"), '{"old":"receipt"}\n'
+            )
+
+    def test_release_plan_auto_seals_closure_and_replay_detects_mutation(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            segment = root / "segment.md"
+            decision = root / "decision.json"
+            unclassified = root / "unclassified.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            segment.write_text(annotated, encoding="utf-8")
+            decision.write_text('{"status":"pass"}\n', encoding="utf-8")
+            unclassified.write_text('{"status":"unknown"}\n', encoding="utf-8")
+            write_release_plan(
+                release_plan, target, boundary, segment, decision
+            )
+
+            rejected = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                root / "rejected-final.md",
+                "--receipt",
+                root / "rejected-receipt.json",
+                "--release-plan",
+                release_plan,
+                "--upstream",
+                unclassified,
+                "--write",
+            )
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn(
+                "--upstream is not in the active included release closure",
+                rejected.stderr,
+            )
+
+            written = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--upstream",
+                segment,
+                "--upstream",
+                segment,
+                "--write",
+            )
+            self.assertEqual(written.returncode, 0, written.stderr)
+            receipt_data = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertEqual(receipt_data["schema_version"], 2)
+            release_plan_records = [
+                record
+                for record in receipt_data["inputs"]
+                if record["role"] == "release-plan"
+            ]
+            self.assertEqual(len(release_plan_records), 1)
+            self.assertEqual(
+                Path(release_plan_records[0]["path"]).name,
+                "release-plan.json",
+            )
+            upstream_names = [
+                Path(record["path"]).name
+                for record in receipt_data["inputs"]
+                if record["role"] == "upstream"
+            ]
+            self.assertEqual(
+                upstream_names,
+                ["segment.md", "decision.json"],
+            )
+            current = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+            self.assertEqual(current.returncode, 0, current.stdout + current.stderr)
+
+            decision.write_text('{"status":"changed"}\n', encoding="utf-8")
+            changed_artifact = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+            self.assertEqual(changed_artifact.returncode, 1)
+            self.assertIn("[assembly-input-changed]", changed_artifact.stdout)
+
+            decision.write_text('{"status":"pass"}\n', encoding="utf-8")
+            release_plan.write_text(
+                release_plan.read_text(encoding="utf-8") + "\n",
+                encoding="utf-8",
+            )
+            changed_plan = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+            self.assertEqual(changed_plan.returncode, 1)
+            self.assertIn("[assembly-input-changed]", changed_plan.stdout)
+
+    def test_legacy_v1_receipt_is_readable_but_final_audit_hard_fails(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            write_release_plan(release_plan, target, boundary)
+            written = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(written.returncode, 0, written.stderr)
+
+            legacy = json.loads(receipt.read_text(encoding="utf-8"))
+            legacy["schema_version"] = 1
+            legacy["inputs"] = [
+                record
+                for record in legacy["inputs"]
+                if record["role"] != "release-plan"
+            ]
+            receipt.write_text(
+                json.dumps(legacy, ensure_ascii=False), encoding="utf-8"
+            )
+            audited = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+
+            self.assertEqual(audited.returncode, 1, audited.stderr)
+            self.assertIn(
+                "[assembly-receipt-release-plan-missing]", audited.stdout
+            )
+            self.assertNotIn("error: assembly receipt", audited.stderr)
+
+    def test_v2_receipt_requires_exact_ordered_release_plan_closure(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            first = root / "first.json"
+            second = root / "second.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            first.write_text('{"first":true}\n', encoding="utf-8")
+            second.write_text('{"second":true}\n', encoding="utf-8")
+            write_release_plan(
+                release_plan, target, boundary, first, second
+            )
+            written = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(written.returncode, 0, written.stderr)
+            original = json.loads(receipt.read_text(encoding="utf-8"))
+            upstream_indexes = [
+                index
+                for index, record in enumerate(original["inputs"])
+                if record["role"] == "upstream"
+            ]
+            self.assertEqual(len(upstream_indexes), 2)
+
+            reordered = json.loads(json.dumps(original))
+            left, right = upstream_indexes
+            reordered["inputs"][left], reordered["inputs"][right] = (
+                reordered["inputs"][right],
+                reordered["inputs"][left],
+            )
+            receipt.write_text(json.dumps(reordered), encoding="utf-8")
+            reordered_audit = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+            self.assertEqual(reordered_audit.returncode, 1)
+            self.assertIn(
+                "[assembly-receipt-release-plan-closure-mismatch]",
+                reordered_audit.stdout,
+            )
+
+            incomplete = json.loads(json.dumps(original))
+            del incomplete["inputs"][upstream_indexes[-1]]
+            receipt.write_text(json.dumps(incomplete), encoding="utf-8")
+            incomplete_audit = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--assembly-receipt",
+                receipt,
+            )
+            self.assertEqual(incomplete_audit.returncode, 1)
+            self.assertIn(
+                "[assembly-receipt-release-plan-closure-mismatch]",
+                incomplete_audit.stdout,
+            )
+
+    def test_excluded_classified_generated_paths_are_rejected(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            output = root / "final.md"
+            generated_output = root / "generated-final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            old_output = "舊 final。\n"
+            old_receipt = '{"old":"receipt"}\n'
+            target.write_text(annotated, encoding="utf-8")
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            output.write_text(old_output, encoding="utf-8")
+            receipt.write_text(old_receipt, encoding="utf-8")
+            write_release_plan(release_plan, target, boundary)
+            plan = json.loads(release_plan.read_text(encoding="utf-8"))
+            for artifact_id, path in (
+                ("old-output", output),
+                ("old-receipt", receipt),
+            ):
+                plan["discovery"]["globs"].append(path.name)
+                plan["artifacts"].append(
+                    {
+                        "id": artifact_id,
+                        "type": "historical-output",
+                        "path": path.name,
+                        "classification": "exclude",
+                        "lifecycle": "historical",
+                        "validation": "provisional",
+                        "sha256": sha256_file(path),
+                        "depends_on": [],
+                        "exclusion_reason": "prior generated artefact",
+                    }
+                )
+            release_plan.write_text(json.dumps(plan), encoding="utf-8")
+
+            output_alias = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                output,
+                "--receipt",
+                root / "new-receipt.json",
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(output_alias.returncode, 1)
+            self.assertIn(
+                "--output must not alias any classified", output_alias.stderr
+            )
+            self.assertEqual(output.read_text(encoding="utf-8"), old_output)
+
+            receipt_alias = run_script(
+                FINALIZE,
+                target,
+                "--boundary-manifest",
+                boundary,
+                "--output",
+                generated_output,
+                "--receipt",
+                receipt,
+                "--release-plan",
+                release_plan,
+                "--write",
+            )
+            self.assertEqual(receipt_alias.returncode, 1)
+            self.assertIn(
+                "--receipt must not alias any classified", receipt_alias.stderr
+            )
+            self.assertFalse(generated_output.exists())
+            self.assertEqual(receipt.read_text(encoding="utf-8"), old_receipt)
+
+    def test_absent_generated_paths_matching_discovery_globs_fail_fast(self) -> None:
+        cases = (
+            ("exact output", "final.md", "receipt.txt", "final.md", "--output"),
+            ("broad receipt", "final.txt", "receipt.json", "*.json", "--receipt"),
+        )
+        for label, output_name, receipt_name, pattern, role in cases:
+            with (
+                self.subTest(label=label),
+                tempfile.TemporaryDirectory() as temporary_directory,
+            ):
+                root = Path(temporary_directory)
+                target = root / "annotated.md"
+                boundary = root / "boundaries.json"
+                output = root / output_name
+                receipt = root / receipt_name
+                release_plan = root / "release-plan.json"
+                target.write_text(
+                    "<!-- page_001 -->\n正文。\n", encoding="utf-8"
+                )
+                boundary.write_text(
+                    '{"boundaries":{"1":"start"}}', encoding="utf-8"
+                )
+                write_release_plan(release_plan, target, boundary)
+                plan = json.loads(release_plan.read_text(encoding="utf-8"))
+                plan["discovery"]["globs"].append(pattern)
+                release_plan.write_text(json.dumps(plan), encoding="utf-8")
+
+                finalized = run_script(
+                    FINALIZE,
+                    target,
+                    "--boundary-manifest",
+                    boundary,
+                    "--output",
+                    output,
+                    "--receipt",
+                    receipt,
+                    "--release-plan",
+                    release_plan,
+                    "--write",
+                )
+
+                self.assertEqual(finalized.returncode, 1)
+                self.assertIn(
+                    f"{role} would be discovered by release-plan glob(s)",
+                    finalized.stderr,
+                )
+                self.assertFalse(output.exists())
+                self.assertFalse(receipt.exists())
+
+    def test_validate_to_receipt_mutation_fails_before_write(self) -> None:
+        finalizer = load_script_module(FINALIZE, "_finalizer_race_test")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            evidence = root / "decision.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(
+                "<!-- page_001 -->\n正文。\n", encoding="utf-8"
+            )
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            evidence.write_text('{"status":"pass"}\n', encoding="utf-8")
+            write_release_plan(release_plan, target, boundary, evidence)
+            original_builder = finalizer.build_assembly_receipt
+
+            def mutate_then_build(*args, **kwargs):
+                evidence.write_text(
+                    '{"status":"mutated"}\n', encoding="utf-8"
+                )
+                return original_builder(*args, **kwargs)
+
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with mock.patch.object(
+                finalizer,
+                "build_assembly_receipt",
+                side_effect=mutate_then_build,
+            ), redirect_stderr(stderr), redirect_stdout(stdout):
+                result = finalizer.main(
+                    [
+                        str(target),
+                        "--boundary-manifest",
+                        str(boundary),
+                        "--output",
+                        str(output),
+                        "--receipt",
+                        str(receipt),
+                        "--release-plan",
+                        str(release_plan),
+                        "--write",
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertIn("sha256 mismatch", stderr.getvalue())
+            self.assertFalse(output.exists())
+            self.assertFalse(receipt.exists())
+
+    def test_post_write_mutation_fails_receipt_revalidation(self) -> None:
+        finalizer = load_script_module(FINALIZE, "_finalizer_post_write_race_test")
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            evidence = root / "decision.json"
+            output = root / "final.md"
+            receipt = root / "receipt.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(
+                "<!-- page_001 -->\n正文。\n", encoding="utf-8"
+            )
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            evidence.write_text('{"status":"pass"}\n', encoding="utf-8")
+            write_release_plan(release_plan, target, boundary, evidence)
+            original_writer = finalizer.write_assembly_receipt
+
+            def write_then_mutate(path, data):
+                original_writer(path, data)
+                evidence.write_text(
+                    '{"status":"mutated-after-write"}\n', encoding="utf-8"
+                )
+
+            stderr = io.StringIO()
+            stdout = io.StringIO()
+            with mock.patch.object(
+                finalizer,
+                "write_assembly_receipt",
+                side_effect=write_then_mutate,
+            ), redirect_stderr(stderr), redirect_stdout(stdout):
+                result = finalizer.main(
+                    [
+                        str(target),
+                        "--boundary-manifest",
+                        str(boundary),
+                        "--output",
+                        str(output),
+                        "--receipt",
+                        str(receipt),
+                        "--release-plan",
+                        str(release_plan),
+                        "--write",
+                    ]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertIn(
+                "[assembly-receipt-release-plan-invalid]", stderr.getvalue()
+            )
+            self.assertTrue(output.is_file())
+            self.assertTrue(receipt.is_file())
+
+    def test_plan_mutation_between_validator_and_parse_is_rejected(self) -> None:
+        finalizer = load_script_module(FINALIZE, "_finalizer_plan_race_test")
+        core = sys.modules[finalizer.load_validated_release_plan.__module__]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            boundary = root / "boundaries.json"
+            release_plan = root / "release-plan.json"
+            target.write_text(
+                "<!-- page_001 -->\n正文。\n", encoding="utf-8"
+            )
+            boundary.write_text(
+                '{"boundaries":{"1":"start"}}', encoding="utf-8"
+            )
+            write_release_plan(release_plan, target, boundary)
+            original_validator = core.validate_plan
+
+            def validate_then_mutate(path):
+                report = original_validator(path)
+                path.write_text(
+                    path.read_text(encoding="utf-8") + "\n",
+                    encoding="utf-8",
+                )
+                return report
+
+            with mock.patch.object(
+                core, "validate_plan", side_effect=validate_then_mutate
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "changed while it was being validated"
+                ):
+                    core.load_validated_release_plan(release_plan)
+
     def test_join_break_and_list_line_boundaries(self) -> None:
         annotated = """<!-- page_001 -->
 # 題名
@@ -213,11 +1065,13 @@ class FinalizePageMarkersTests(unittest.TestCase):
             output = Path(temporary_directory) / "final.md"
             manifest = Path(temporary_directory) / "boundaries.json"
             receipt = Path(temporary_directory) / "assembly-receipt.json"
+            release_plan = Path(temporary_directory) / "release-plan.json"
             target.write_text(annotated, encoding="utf-8")
             manifest.write_text(
                 '{"boundaries":{"1":"start","2":"structural"}}',
                 encoding="utf-8",
             )
+            write_release_plan(release_plan, target, manifest)
 
             result = run_script(
                 FINALIZE,
@@ -230,6 +1084,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 receipt,
+                "--release-plan",
+                release_plan,
                 "--write",
             )
             annotated_audit = run_script(
@@ -434,12 +1290,14 @@ class FinalizePageMarkersTests(unittest.TestCase):
             manifest = Path(temporary_directory) / "boundaries.json"
             output = Path(temporary_directory) / "existing-final.md"
             hard_linked_receipt = Path(temporary_directory) / "receipt-link.json"
+            release_plan = Path(temporary_directory) / "release-plan.json"
             target.write_text(annotated, encoding="utf-8")
             manifest.write_text(
                 '{"boundaries":{"1":"start"}}', encoding="utf-8"
             )
             output.write_text("舊 final。\n", encoding="utf-8")
             os.link(output, hard_linked_receipt)
+            write_release_plan(release_plan, target, manifest)
 
             hard_link_result = run_script(
                 FINALIZE,
@@ -450,6 +1308,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 hard_linked_receipt,
+                "--release-plan",
+                release_plan,
                 "--write",
             )
 
@@ -468,6 +1328,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 case_output,
                 "--receipt",
                 case_receipt,
+                "--release-plan",
+                release_plan,
                 "--write",
             )
 
@@ -555,11 +1417,13 @@ class FinalizePageMarkersTests(unittest.TestCase):
             manifest = Path(temporary_directory) / "boundaries.json"
             output = Path(temporary_directory) / "final.md"
             receipt = Path(temporary_directory) / "assembly-receipt.json"
+            release_plan = Path(temporary_directory) / "release-plan.json"
             target.write_text(annotated, encoding="utf-8")
             segment.write_text(annotated, encoding="utf-8")
             manifest.write_text(
                 '{"boundaries":{"1":"start"}}', encoding="utf-8"
             )
+            write_release_plan(release_plan, target, manifest, segment)
 
             written = run_script(
                 FINALIZE,
@@ -570,6 +1434,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 receipt,
+                "--release-plan",
+                release_plan,
                 "--upstream",
                 segment,
                 "--write",
@@ -636,6 +1502,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
             manifest = Path(temporary_directory) / "boundaries.json"
             output = Path(temporary_directory) / "final.md"
             receipt = Path(temporary_directory) / "assembly-receipt.json"
+            release_plan = Path(temporary_directory) / "release-plan.json"
+            report = Path(temporary_directory) / "audit-report.json"
             notation = Path(temporary_directory) / "notation-policy.json"
             exceptions = Path(temporary_directory) / "source-exceptions.json"
             target.write_text(annotated, encoding="utf-8")
@@ -656,6 +1524,7 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 encoding="utf-8",
             )
             exceptions.write_text('{"exceptions":[]}', encoding="utf-8")
+            write_release_plan(release_plan, target, manifest)
 
             unsealed_write = run_script(
                 FINALIZE,
@@ -666,6 +1535,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 receipt,
+                "--release-plan",
+                release_plan,
                 "--write",
             )
             unsealed_audit = run_script(
@@ -696,6 +1567,10 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 receipt,
+                "--release-plan",
+                write_release_plan(
+                    release_plan, target, manifest, notation, exceptions
+                ),
                 "--upstream",
                 notation,
                 "--upstream",
@@ -713,11 +1588,28 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 exceptions,
                 "--assembly-receipt",
                 receipt,
+                "--json-report",
+                report,
             )
 
             self.assertEqual(sealed_write.returncode, 0, sealed_write.stderr)
             self.assertEqual(
                 sealed_audit.returncode, 0, sealed_audit.stdout + sealed_audit.stderr
+            )
+            report_data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report_data["input_sha256"],
+                {
+                    "assembly_receipt": hashlib.sha256(
+                        receipt.read_bytes()
+                    ).hexdigest(),
+                    "notation_policy": hashlib.sha256(
+                        notation.read_bytes()
+                    ).hexdigest(),
+                    "source_exceptions": hashlib.sha256(
+                        exceptions.read_bytes()
+                    ).hexdigest(),
+                },
             )
 
     def test_receipt_schema_version_rejects_float(self) -> None:
@@ -727,10 +1619,12 @@ class FinalizePageMarkersTests(unittest.TestCase):
             manifest = Path(temporary_directory) / "boundaries.json"
             output = Path(temporary_directory) / "final.md"
             receipt = Path(temporary_directory) / "receipt.json"
+            release_plan = Path(temporary_directory) / "release-plan.json"
             target.write_text(annotated, encoding="utf-8")
             manifest.write_text(
                 '{"boundaries":{"1":"start"}}', encoding="utf-8"
             )
+            write_release_plan(release_plan, target, manifest)
             written = run_script(
                 FINALIZE,
                 target,
@@ -740,6 +1634,8 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 output,
                 "--receipt",
                 receipt,
+                "--release-plan",
+                release_plan,
                 "--write",
             )
             self.assertEqual(written.returncode, 0, written.stderr)
@@ -757,10 +1653,395 @@ class FinalizePageMarkersTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 2)
-            self.assertIn("schema_version must be 1", result.stderr)
+            self.assertIn(
+                "schema_version must be integer 1 or 2", result.stderr
+            )
 
 
 class AuditOcrMarkdownTests(unittest.TestCase):
+    def test_summary_only_reports_deterministic_issue_counts(self) -> None:
+        annotated = """<!-- page_001 -->
+正文[甲]∵。
+
+<!-- page_002 -->
+
+正文[乙]。
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            manifest = root / "boundaries.json"
+            target.write_text(annotated, encoding="utf-8")
+            manifest.write_text(
+                '{"boundaries":{"1":"start","2":"paragraph"}}',
+                encoding="utf-8",
+            )
+
+            verbose = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "annotated",
+                "--expected-count",
+                2,
+                "--boundary-manifest",
+                manifest,
+            )
+            summarized = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "annotated",
+                "--expected-count",
+                2,
+                "--boundary-manifest",
+                manifest,
+                "--summary-only",
+            )
+
+            self.assertEqual(verbose.returncode, 1)
+            self.assertIn("BOUNDARY-SUGGESTION ", verbose.stdout)
+            self.assertIn("[low-confidence-bracket]", verbose.stdout)
+            self.assertEqual(summarized.returncode, verbose.returncode)
+            self.assertIn("MODE annotated", summarized.stdout)
+            self.assertIn("PAGE MARKERS 2", summarized.stdout)
+            self.assertNotIn("BOUNDARY-SUGGESTION ", summarized.stdout)
+            self.assertNotIn("[low-confidence-bracket]", summarized.stdout)
+            error_count = (
+                "ISSUE-COUNT severity=error "
+                "code=low-confidence-bracket count=2"
+            )
+            warning_count = (
+                "ISSUE-COUNT severity=warning "
+                "code=suspicious-ocr-symbol count=1"
+            )
+            self.assertIn(error_count, summarized.stdout)
+            self.assertIn(warning_count, summarized.stdout)
+            self.assertLess(
+                summarized.stdout.index(error_count),
+                summarized.stdout.index(warning_count),
+            )
+            self.assertIn(
+                "SUMMARY errors=2 warnings=1 accepted=0 markers=2",
+                summarized.stdout,
+            )
+
+    def test_json_report_is_deterministic_and_preserves_cli_behavior(self) -> None:
+        line = "原書只有「開引號，並有[低]∵。"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "final.md"
+            exceptions = root / "source-exceptions.json"
+            first_report = root / "first-report.json"
+            second_report = root / "second-report.json"
+            target.write_text(line + "\n", encoding="utf-8")
+            exceptions.write_text(
+                json.dumps(
+                    {
+                        "exceptions": [
+                            {
+                                "code": "unmatched-opening-delimiter",
+                                "line": 1,
+                                "column": 5,
+                                "delimiter": "「",
+                                "text": line,
+                                "scan_page": 9,
+                                "note": "頁圖確認原書未閉合。",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            baseline = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--source-exceptions",
+                exceptions,
+            )
+            first = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--source-exceptions",
+                exceptions,
+                "--json-report",
+                first_report,
+            )
+            second = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--source-exceptions",
+                exceptions,
+                "--json-report",
+                second_report,
+            )
+
+            self.assertEqual(baseline.returncode, 1)
+            self.assertEqual(first.returncode, baseline.returncode)
+            self.assertEqual(second.returncode, baseline.returncode)
+            self.assertEqual(first.stdout, baseline.stdout)
+            self.assertEqual(second.stdout, baseline.stdout)
+            self.assertEqual(first.stderr, baseline.stderr)
+            self.assertEqual(second.stderr, baseline.stderr)
+            self.assertEqual(first_report.read_bytes(), second_report.read_bytes())
+
+            report = json.loads(first_report.read_text(encoding="utf-8"))
+            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["mode"], "final")
+            self.assertEqual(report["exit_status"], 1)
+            self.assertEqual(
+                report["target"],
+                {
+                    "bytes": len((line + "\n").encode("utf-8")),
+                    "sha256": hashlib.sha256(
+                        (line + "\n").encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+            self.assertEqual(
+                report["tool"],
+                {
+                    "name": "audit_ocr_markdown.py",
+                    "sha256": hashlib.sha256(AUDIT.read_bytes()).hexdigest(),
+                },
+            )
+            self.assertEqual(
+                report["audit_profile"],
+                {
+                    "duplicate_min_chars": 120,
+                    "expected_count": None,
+                    "optional_gates": {
+                        "assembly_receipt": False,
+                        "boundary_manifest": False,
+                        "notation_policy": False,
+                        "page_manifest": False,
+                        "source_exceptions": True,
+                        "source_pdf": False,
+                    },
+                    "requested_mode": "final",
+                    "skip_pages": [],
+                },
+            )
+            self.assertEqual(
+                report["input_sha256"],
+                {
+                    "source_exceptions": hashlib.sha256(
+                        exceptions.read_bytes()
+                    ).hexdigest()
+                },
+            )
+            self.assertEqual(
+                report["counts"],
+                {
+                    "accepted_exceptions": 1,
+                    "errors": 1,
+                    "markers": 0,
+                    "warnings": 1,
+                },
+            )
+            self.assertEqual(
+                report["issue_counts"],
+                [
+                    {
+                        "code": "low-confidence-bracket",
+                        "count": 1,
+                        "severity": "error",
+                    },
+                    {
+                        "code": "suspicious-ocr-symbol",
+                        "count": 1,
+                        "severity": "warning",
+                    },
+                    {
+                        "code": "source-exception",
+                        "count": 1,
+                        "severity": "accepted",
+                    },
+                ],
+            )
+            self.assertEqual(
+                report["errors"][0]["code"], "low-confidence-bracket"
+            )
+            self.assertEqual(
+                report["warnings"][0]["code"], "suspicious-ocr-symbol"
+            )
+            self.assertEqual(
+                report["accepted_exceptions"][0]["code"],
+                "source-exception",
+            )
+            self.assertNotIn(str(root), first_report.read_text(encoding="utf-8"))
+
+    def test_json_report_hash_profile_is_path_independent(self) -> None:
+        annotated = "<!-- page_001 -->\n正文。\n"
+        manifest_text = '{"boundaries":{"1":"start"}}'
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            reports: list[bytes] = []
+            for directory_name in ("first-copy", "second-copy"):
+                root = Path(temporary_directory) / directory_name
+                root.mkdir()
+                target = root / "annotated.md"
+                manifest = root / "boundaries.json"
+                report = root / "audit-report.json"
+                target.write_text(annotated, encoding="utf-8")
+                manifest.write_text(manifest_text, encoding="utf-8")
+
+                result = run_script(
+                    AUDIT,
+                    target,
+                    "--mode",
+                    "auto",
+                    "--expected-count",
+                    3,
+                    "--skip-pages",
+                    "3,2",
+                    "--duplicate-min-chars",
+                    77,
+                    "--boundary-manifest",
+                    manifest,
+                    "--json-report",
+                    report,
+                )
+
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    result.stdout + result.stderr,
+                )
+                report_data = json.loads(report.read_text(encoding="utf-8"))
+                self.assertEqual(report_data["mode"], "annotated")
+                self.assertEqual(
+                    report_data["audit_profile"],
+                    {
+                        "duplicate_min_chars": 77,
+                        "expected_count": 3,
+                        "optional_gates": {
+                            "assembly_receipt": False,
+                            "boundary_manifest": True,
+                            "notation_policy": False,
+                            "page_manifest": False,
+                            "source_exceptions": False,
+                            "source_pdf": False,
+                        },
+                        "requested_mode": "auto",
+                        "skip_pages": [2, 3],
+                    },
+                )
+                self.assertEqual(
+                    report_data["target"],
+                    {
+                        "bytes": len(annotated.encode("utf-8")),
+                        "sha256": hashlib.sha256(
+                            annotated.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                )
+                self.assertEqual(
+                    report_data["input_sha256"],
+                    {
+                        "boundary_manifest": hashlib.sha256(
+                            manifest_text.encode("utf-8")
+                        ).hexdigest()
+                    },
+                )
+                self.assertNotIn(
+                    str(Path(temporary_directory)),
+                    report.read_text(encoding="utf-8"),
+                )
+                reports.append(report.read_bytes())
+
+            self.assertEqual(reports[0], reports[1])
+
+    def test_json_report_target_identity_changes_with_audited_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "final.md"
+            first_report = root / "first.json"
+            second_report = root / "second.json"
+            first_text = "正文。\n"
+            second_text = "改寫正文。\n"
+
+            target.write_text(first_text, encoding="utf-8")
+            first = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--json-report",
+                first_report,
+            )
+            target.write_text(second_text, encoding="utf-8")
+            second = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--json-report",
+                second_report,
+            )
+
+            self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertEqual(first.stdout, second.stdout)
+            first_data = json.loads(first_report.read_text(encoding="utf-8"))
+            second_data = json.loads(second_report.read_text(encoding="utf-8"))
+            self.assertNotEqual(first_data["target"], second_data["target"])
+            self.assertEqual(
+                first_data["target"]["sha256"],
+                hashlib.sha256(first_text.encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(
+                second_data["target"]["sha256"],
+                hashlib.sha256(second_text.encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(
+                first_data["audit_profile"], second_data["audit_profile"]
+            )
+            self.assertEqual(first_data["tool"], second_data["tool"])
+
+    def test_json_report_cannot_overwrite_an_audit_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target = Path(temporary_directory) / "final.md"
+            original = "正文。\n"
+            target.write_text(original, encoding="utf-8")
+
+            result = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--json-report",
+                target,
+            )
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--json-report must differ", result.stderr)
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
+
+            tool_alias = Path(temporary_directory) / "audit-tool-alias.py"
+            tool_before = hashlib.sha256(AUDIT.read_bytes()).hexdigest()
+            os.link(AUDIT, tool_alias)
+            tool_result = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--json-report",
+                tool_alias,
+            )
+            self.assertEqual(tool_result.returncode, 2)
+            self.assertIn("--json-report must differ", tool_result.stderr)
+            self.assertEqual(
+                hashlib.sha256(AUDIT.read_bytes()).hexdigest(), tool_before
+            )
+
     def test_page_zero_marker_is_malformed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             target = Path(temporary_directory) / "annotated.md"
@@ -955,6 +2236,84 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             self.assertEqual(changed_source.returncode, 1)
             self.assertIn("[source-pdf-hash-mismatch]", changed_source.stdout)
 
+    def test_annotated_page_manifest_immediately_checks_marker_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "annotated.md"
+            source = root / "source.pdf"
+            render_one = root / "page-001.jpg"
+            render_two = root / "page-002.jpg"
+            manifest = root / "page-manifest.json"
+            source.write_bytes(b"source-pdf")
+            render_one.write_bytes(b"render-one")
+            render_two.write_bytes(b"render-two")
+
+            def write_manifest(*, second_marker_expected: bool) -> None:
+                manifest.write_text(
+                    json.dumps(
+                        {
+                            "source_sha256": hashlib.sha256(
+                                source.read_bytes()
+                            ).hexdigest(),
+                            "expected_scan_pages": 2,
+                            "pages": [
+                                {
+                                    "scan_page": 1,
+                                    "render_file": render_one.name,
+                                    "render_sha256": hashlib.sha256(
+                                        render_one.read_bytes()
+                                    ).hexdigest(),
+                                },
+                                {
+                                    "scan_page": 2,
+                                    "render_file": render_two.name,
+                                    "render_sha256": hashlib.sha256(
+                                        render_two.read_bytes()
+                                    ).hexdigest(),
+                                    "marker_expected": second_marker_expected,
+                                },
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            def audit() -> subprocess.CompletedProcess[str]:
+                return run_script(
+                    AUDIT,
+                    target,
+                    "--mode",
+                    "annotated",
+                    "--page-manifest",
+                    manifest,
+                    "--source-pdf",
+                    source,
+                )
+
+            target.write_text("<!-- page_001 -->\n正文一。\n", encoding="utf-8")
+            write_manifest(second_marker_expected=True)
+            missing = audit()
+            self.assertEqual(missing.returncode, 1)
+            self.assertIn("[page-manifest-marker-coverage]", missing.stdout)
+            self.assertIn("missing page markers: 2", missing.stdout)
+
+            write_manifest(second_marker_expected=False)
+            intentional_skip = audit()
+            self.assertEqual(
+                intentional_skip.returncode,
+                0,
+                intentional_skip.stdout + intentional_skip.stderr,
+            )
+
+            target.write_text(
+                "<!-- page_001 -->\n正文一。\n<!-- page_002 -->\n正文二。\n",
+                encoding="utf-8",
+            )
+            unexpected = audit()
+            self.assertEqual(unexpected.returncode, 1)
+            self.assertIn("[page-manifest-marker-coverage]", unexpected.stdout)
+            self.assertIn("unexpected page markers: 2", unexpected.stdout)
+
     def test_sealed_page_manifest_controls_annotated_marker_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -962,6 +2321,8 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             boundaries = root / "boundaries.json"
             final = root / "final.md"
             receipt = root / "assembly-receipt.json"
+            report = root / "audit-report.json"
+            release_plan = root / "release-plan.json"
             source = root / "source.pdf"
             render_one = root / "page-001.jpg"
             render_two = root / "page-002.jpg"
@@ -1007,6 +2368,9 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                 )
 
             def finalize_with_manifest() -> subprocess.CompletedProcess[str]:
+                write_release_plan(
+                    release_plan, annotated, boundaries, page_manifest
+                )
                 return run_script(
                     FINALIZE,
                     annotated,
@@ -1016,6 +2380,8 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                     final,
                     "--receipt",
                     receipt,
+                    "--release-plan",
+                    release_plan,
                     "--upstream",
                     page_manifest,
                     "--write",
@@ -1033,6 +2399,8 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                     source,
                     "--assembly-receipt",
                     receipt,
+                    "--json-report",
+                    report,
                 )
 
             write_page_manifest(skip_second_marker=False)
@@ -1049,6 +2417,19 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                 explicit_skip.returncode,
                 0,
                 explicit_skip.stdout + explicit_skip.stderr,
+            )
+            report_data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(
+                report_data["input_sha256"],
+                {
+                    "assembly_receipt": hashlib.sha256(
+                        receipt.read_bytes()
+                    ).hexdigest(),
+                    "page_manifest": hashlib.sha256(
+                        page_manifest.read_bytes()
+                    ).hexdigest(),
+                    "source_pdf": hashlib.sha256(source.read_bytes()).hexdigest(),
+                },
             )
 
     def test_final_audit_reports_soft_break_heading_and_loose_list(self) -> None:
@@ -1125,6 +2506,161 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             self.assertIn("[low-confidence-bracket]", unclassified.stdout)
             self.assertEqual(classified.returncode, 0, classified.stdout)
             self.assertIn("[source-notation-policy]", classified.stdout)
+
+    def test_notation_policy_inventories_each_supported_source_symbol(self) -> None:
+        final = "據[原件]及［增］、〔疑〕、〈篇〉，缺□、▭並存疑〔?〕。\n"
+        policies = {
+            "ascii_square_brackets": "source-editorial",
+            "fullwidth_square_brackets": "source-editorial",
+            "lenticular_brackets": "source-apparatus",
+            "angle_brackets": "source-apparatus",
+            "white_square": "source-illegible",
+            "rectangle": "source-damage",
+            "explicit_uncertain_marker": "source-uncertain",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target = root / "final.md"
+            policy = root / "notation-policy.json"
+            target.write_text(final, encoding="utf-8")
+            policy.write_text(
+                json.dumps(
+                    {
+                        notation: {
+                            "meaning": meaning,
+                            "scan_page": index,
+                            "note": f"凡例證明 {notation}。",
+                        }
+                        for index, (notation, meaning) in enumerate(
+                            reversed(tuple(policies.items())), 1
+                        )
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            unclassified = run_script(AUDIT, target, "--mode", "final")
+            classified = run_script(
+                AUDIT,
+                target,
+                "--mode",
+                "final",
+                "--notation-policy",
+                policy,
+            )
+
+            self.assertEqual(unclassified.returncode, 1)
+            self.assertIn("[low-confidence-bracket]", unclassified.stdout)
+            self.assertIn(
+                "[unclassified-source-placeholder]", unclassified.stdout
+            )
+            self.assertIn(
+                "[unclassified-uncertain-marker]", unclassified.stdout
+            )
+            self.assertEqual(
+                classified.returncode,
+                0,
+                classified.stdout + classified.stderr,
+            )
+            self.assertEqual(
+                classified.stdout.count("[source-notation-policy]"), 7
+            )
+            for notation in policies:
+                self.assertIn(notation, classified.stdout)
+            self.assertIn("inventory=1", classified.stdout)
+
+    def test_notation_authorization_is_specific_and_final_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            final = root / "final.md"
+            annotated = root / "annotated.md"
+            white_policy = root / "white-policy.json"
+            lenticular_policy = root / "lenticular-policy.json"
+            ascii_policy = root / "ascii-policy.json"
+            final.write_text("正文[低]□及〔?〕。\n", encoding="utf-8")
+            annotated.write_text(
+                "<!-- page_001 -->\n正文[低]。\n", encoding="utf-8"
+            )
+            white_policy.write_text(
+                json.dumps(
+                    {
+                        "white_square": {
+                            "meaning": "source-illegible",
+                            "scan_page": 2,
+                            "note": "凡例明定缺字符號。",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            lenticular_policy.write_text(
+                json.dumps(
+                    {
+                        "lenticular_brackets": {
+                            "meaning": "source-apparatus",
+                            "scan_page": 2,
+                            "note": "凡例明定校勘括號。",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            ascii_policy.write_text(
+                json.dumps(
+                    {
+                        "ascii_square_brackets": {
+                            "meaning": "source-editorial",
+                            "scan_page": 2,
+                            "note": "凡例明定半形方括號。",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            white_only = run_script(
+                AUDIT,
+                final,
+                "--mode",
+                "final",
+                "--notation-policy",
+                white_policy,
+            )
+            lenticular_only = run_script(
+                AUDIT,
+                final,
+                "--mode",
+                "final",
+                "--notation-policy",
+                lenticular_policy,
+            )
+            annotated_ascii = run_script(
+                AUDIT,
+                annotated,
+                "--mode",
+                "annotated",
+                "--notation-policy",
+                ascii_policy,
+            )
+
+            self.assertEqual(white_only.returncode, 1)
+            self.assertIn("[low-confidence-bracket]", white_only.stdout)
+            self.assertIn(
+                "[unclassified-uncertain-marker]", white_only.stdout
+            )
+            self.assertEqual(lenticular_only.returncode, 1)
+            self.assertIn(
+                "[unclassified-uncertain-marker]", lenticular_only.stdout
+            )
+            self.assertEqual(annotated_ascii.returncode, 1)
+            self.assertIn(
+                "[notation-policy-requires-final]", annotated_ascii.stdout
+            )
+            self.assertIn("[low-confidence-bracket]", annotated_ascii.stdout)
 
     def test_exact_source_exception_accepts_printed_unclosed_quote(self) -> None:
         line = "原書只有「開引號。"

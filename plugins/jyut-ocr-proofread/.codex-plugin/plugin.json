@@ -1,7 +1,7 @@
 {
   "name": "jyut-ocr-proofread",
-  "version": "0.2.2",
-  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, book-specific notation policies, long-book segmentation, missing-page recovery, page-boundary checks, source/render provenance, and deterministic release audits.",
+  "version": "0.2.4",
+  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, scoped TOC reconciliation, typed release evidence, replayable long-book assembly, source/render provenance, and deterministic release audits.",
   "author": {
     "name": "laubonghaudoi",
     "url": "https://github.com/laubonghaudoi"
@@ -14,16 +14,15 @@
   "interface": {
     "displayName": "Jyut OCR Proofread",
     "shortDescription": "Transcribe and audit historical Chinese PDF OCR.",
-    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants, editorial notation and old punctuation; isolate long-book page ranges safely; detect duplicate or missing scans; reconstruct cross-page text, footnotes, headings, lists and tables; and verify source exceptions plus assembly freshness before delivery.",
+    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants, editorial notation and old punctuation; isolate long-book page ranges safely; reconcile full or volume-scoped TOCs with explicit partitions; detect duplicate or missing scans; reconstruct cross-page text, footnotes, headings, lists and tables; and replay assembly while validating typed evidence, source exceptions and release dependency closure before delivery.",
     "developerName": "laubonghaudoi",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
     "defaultPrompt": [
       "校對一份 jyut-ocr Markdown，逐頁對同名 PDF。",
       "識別一份長篇歷史中文 PDF，分段校對後安全合併。",
-      "檢查 PDF 重複掃描、缺失印刷頁同跨頁註腳。",
-      "清理 OCR 頁面家具同低信心括號。",
-      "逐頁檢查歷史中文 OCR 轉寫。"
+      "對賬長目錄、分組同正文題名，獨立覆核實質異文。",
+      "重播長書 assembly，驗證 release plan 同 evidence closure。"
     ]
   }
 }

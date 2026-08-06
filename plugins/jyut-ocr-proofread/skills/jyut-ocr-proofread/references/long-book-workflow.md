@@ -12,6 +12,7 @@
 - [重排跨頁正文同註腳](#重排跨頁正文同註腳)
 - [集中合併同定稿](#集中合併同定稿)
 - [對賬長目錄](#對賬長目錄)
+- [建立 release plan 同證據圖](#建立-release-plan-同證據圖)
 - [凍結同封關](#凍結同封關)
 - [驗證結構不變量](#驗證結構不變量)
 - [檢查未追蹤新檔](#檢查未追蹤新檔)
@@ -31,10 +32,10 @@
 | `layout` | `single`、`spread`、折頁、插頁等 |
 | `content` | `body`、`frontmatter`、`blank`、`plate` 等 |
 | `relation` | `unique`、`exact_duplicate`、`partial_duplicate` |
-| `boundary_before` | 同上一掃描頁／前置內容嘅 `start`、`join`、`paragraph`、`list-cont`、`list-new` 或 `structural` |
 | `marker_expected` | 預設 `true`；只有已核實刻意唔設 Markdown marker 嘅 scan 先明寫 `false` |
-| `visual_status` | `ocr-only`、`worker-checked` 或 `independent-checked` |
 | `notes` | 缺頁、遮字、印章、裁邊、重複來源等例外 |
+
+Page manifest 封存 source/render 身份、scan facts 同 marker policy；`boundaries.json` 另行封存 Markdown 邊界契約，writer／independent reviewer、page coverage、status 同 report hash 另存 durable review sidecar。三者可以用 scan page 對齊並一齊入 release plan，但唔好將一個 page-manifest `visual_status` 當成獨立覆核證據，亦唔要求將 reviewer 狀態硬塞返 page manifest。
 
 逐頁視覺確認以下情況，並將決定寫入 manifest：
 
@@ -61,7 +62,7 @@
 
 合併前先凍結 segments，記錄每段 SHA-256。worker 完成後只做 read-only 覆核；如要再改，先由主 agent 重新分派唯一 owner。保留一輪獨立 visual audit，除交界、表格、註腳同 heading 外，亦要掃冇 `[]` 嘅高信心人名、官名、固定搭配同漏句。
 
-交付前收齊所有 writer／auditor final report，確認冇 active 或可能再寫檔嘅 page-range task。任何 late patch 都令 segment hash、assembly、receipt 同舊 final audit 失效；套用修正後重新凍結同完整 assemble，唔可以只喺舊 final 上補一刀就交付。
+交付前收齊所有 writer／auditor final report，確認冇 active 或可能再寫檔嘅 page-range task。任何 late patch 都令 segment hash、assembly、receipt 同舊 final audit 失效；若 patch 發生喺獨立覆核之後，受影響 scan 要重新獨立覆核，或者由另一 reviewer 核實一份 exact sealed amendment ledger。套用修正後重新凍結同完整 assemble，唔可以只喺舊 final 上補一刀就交付。
 
 ## 保存 OCR 來源
 
@@ -139,7 +140,7 @@ Annotated segment 可以保持普通 marker：
 成，下一頁繼續。
 ```
 
-但要喺 manifest 對 page 42 記 `boundary_before: join`，並由 finalizer 產生：
+但要喺獨立 `boundaries.json` 對 page 42 記成 `join`，並由 finalizer 產生：
 
 ```markdown
 這句在頁尾尚未完成，下一頁繼續。
@@ -155,7 +156,7 @@ Annotated segment 可以保持普通 marker：
 下一段開始。
 ```
 
-將 page manifest 嘅 `boundary_before` 匯出成獨立 JSON；key 係 marker page，唔係印刷頁碼：
+根據逐頁視覺 boundary ledger 建立獨立 JSON；key 係 marker page，唔係印刷頁碼。舊 rich page manifest 若已有 `boundary_before`，只可以經明確 projection／crosswalk 搬入，唔由新 parser 猜：
 
 ```json
 {
@@ -172,16 +173,22 @@ Annotated segment 可以保持普通 marker：
 
 由 annotated 稿產生 manifest 時，判斷空行可以用 `.strip()`，但分類內容必須保留原始 leading whitespace。同一清單繼續時，下一個非空行若係兩格／tab 縮排普通續文就用 `list-cont`，若本身係 nested bullet 就用 `list-new`；如果 PDF 顯示前後係兩個獨立 lists，則用 `paragraph`／`structural`。先 `.strip()` 再分類會誤標成 `join`，final 會將縮排或子項黐落上一行，甚至產生 Markdown hard break。Bundled audit／finalizer 會拒絕破壞性 `join`，但保留經視覺確認嘅真正 break。Final audit 只有帶相符 assembly receipt 時先承認呢類 verified break；冇 receipt 嘅 final 仍會保守報 `loose-list-blank`。
 
-先 audit annotated 稿，再 dry-run finalizer；兩者輸出都核對後先寫另一個 final 檔：
+先 deterministic assemble／replay，再 audit annotated 稿同 dry-run finalizer；建立並驗證 pre-final plan 後，先寫另一個 final 檔：
 
 ```bash
-python3 scripts/audit_ocr_markdown.py combined-annotated.md --mode annotated --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
+python3 scripts/assemble_ocr_segments.py ordered-segments.json
+python3 scripts/assemble_ocr_segments.py ordered-segments.json --output combined-annotated.md --write --receipt segment-assembly-receipt.json
+python3 scripts/assemble_ocr_segments.py ordered-segments.json --output combined-annotated.md
+python3 scripts/audit_ocr_markdown.py combined-annotated.md --mode annotated --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf
 python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
-python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output final.md --receipt assembly-receipt.json --upstream ordered-segments.json --upstream segments/p001-120.md --upstream segments/p121-240.md --upstream notation-policy.json --upstream source-exceptions.json --upstream page-manifest.json --write
-python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json
+python3 scripts/validate_release_evidence.py release-plan.json
+python3 scripts/finalize_page_markers.py combined-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output final.md --receipt assembly-receipt.json --release-plan release-plan.json --write
+python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json --json-report final-audit.json
 ```
 
-本書冇 notation policy 或 source exception 時，先省略相應 option／upstream；長書 page manifest 唔好省略。Page manifest 每個 scan record 預設都應有 marker；若空白、重複或其他已核實原因刻意唔設 marker，要喺該 record 明寫 `"marker_expected": false`，唔靠未封存嘅 command-line skip 暗示。Final audit 會將 sealed annotated marker inventory 同 sealed page manifest 對賬。
+第一次核對 boundary／issue 必須保留預設 verbose 輸出。全部位置已人工處理後，長書重跑可加 `--summary-only`；audit 仍按 severity/code 列 deterministic `ISSUE-COUNT`，finalizer 仍保留 dry-run、write 同 receipt 摘要，exit code 不變。見到任何非零 issue count，就移除 `--summary-only` 重跑定位，唔可以只憑摘要放行。
+
+Annotated 命令故意唔帶 notation policy：即使來源符號已核圖，佢只可以係 known annotated-stage issue，唔可以將該 gate 稱為 clean；final mode 先按 exact policy accept。本書冇 notation policy 或 source exception 時，先省略相應 final options；長書 page manifest 唔好省略。每個 scan record 預設都應有 marker；若空白、重複或其他已核實原因刻意唔設 marker，要喺該 record 明寫 `"marker_expected": false`，唔靠未封存嘅 command-line skip 暗示。Assembler 同 audit 都會將實際 annotated markers 同 sealed policy 對賬。
 
 ## 重排跨頁正文同註腳
 
@@ -210,6 +217,8 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy no
 5. 缺失印刷頁 marker 同 evidence manifest 一一對應；
 6. heading、list、table 同註腳跨 segment 後仍然完整。
 
+用 strict ordered manifest：root 恰好有 `schema_version`、`separator_utf8`、總 `scan_start`／`scan_end`、sealed `page_manifest: {path, sha256}` 同 `segments`；每段恰好有 `path`、`sha256`、`scan_start`、`scan_end`。`separator_utf8` 只可係空字串或全由 LF newline characters 組成，唔接受文字、CR、tab 或 space。`assemble_ocr_segments.py` 會驗 segment hashes、ranges 無縫無重疊，同每段實際 canonical markers exact 等於 sealed page manifest 喺該 range 內 `marker_expected: true` 嘅 pages；按 separator 重播 bytes 後，再驗組裝後 marker sequence exact 等於 ordered segment inventory。用 `--output combined-annotated.md` dry-run 會 byte-for-byte 比較現有檔；replay 不一致要停止 finalize。首尾句、metadata ownership 同跨段語義仍由 assembly review sidecar 核實，唔屬 strict parser 保證。
+
 先對 annotated 合併稿跑 audit，再用唯一 finalizer 刪 marker。finalizer 要支援 dry-run，列出預期／實際 marker 數量、每種 boundary 數量同異常位置；數量唔符就停止，唔好輸出最終檔。
 
 定稿後再跑 residual scan、一段一行、heading/list/table spacing、重複長段同 whitespace 檢查。另做一輪 read-only visual audit；抽查之外，所有未被 worker 視覺核對嘅頁都要補核，先可以聲稱完成逐頁對照。
@@ -218,7 +227,35 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy no
 
 ## 對賬長目錄
 
-目錄同正文 heading 分開轉錄，唔用正文自動生成目錄後當作核對完成。建立逐項 ledger，記錄 TOC index、TOC scan／原文／頁碼、body scan／heading、disposition 同視覺證據；圈號註號省略、跨 marker 日期、題名異文或原書異序各自保留。封關時 entry count、body heading count 同 ledger row count 要一致，而且每行由 `exact`、`fixed`、`source-verified-variant`、`source-verified-reordered` 等明確狀態關閉；唔保留未有視覺結論嘅泛稱 `review`。詳細要求見 `release-gate.md`。
+目錄同正文 heading 分開轉錄，唔用正文自動生成目錄後當作核對完成。先按 TOC scan 建立「末端印刷參照 inventory」：每一條目記 scan、欄／閱讀次序、條目序號、原樣印刷參照同 render hash。逐 scan 比較 OCR 抽取數同圖上實際數；漏抽、誤併、誤拆或跨欄錯序另寫 recovery ledger，記原候選、復原結果、原因同圖像證據。完成後由唔同 reviewer 對 inventory 每一行嘅末端參照做 100% 圖像覆核，唔可以只抽查異常行；主抽取 ledger 同獨立 reference-audit ledger 嘅 count、次序、scan 同原樣參照必須完全對得上。
+
+正式 mapping 前先定義 machine-readable `reconciliation_scope`。目錄橫跨多卷、多冊或交付只包含部分正文時，將全部 TOC items 分入互斥而完備嘅 partitions；每項恰好屬於一個 partition。每個 partition 要記 scope id、TOC index／scan 範圍、對應 body 範圍、預期 mapping cardinality，同係 `in-scope` 定 `out-of-scope`。Scope 外條目仍要逐項用具體 disposition 關閉，例如屬另一卷冊、屬另一交付單元或本 scope 無對應正文，唔可以靜靜略去或留成泛稱 `not-mapped`。
+
+分開保存三套結構證據：
+
+1. TOC item ledger：逐項題名、日期、末端印刷參照同 body mapping；
+2. TOC group ledger：分組題名、開始／結束 item、TOC scan 同正文 group heading；分組唔計入 item count；
+3. body heading inventory：每個 heading 記 `toc_eligible`，不適合映射目錄嘅後記、附記、參考資料或內部小節逐項寫明 exclusion reason。
+
+建立逐項 reconciliation ledger，記錄 TOC index、TOC scan／原文／原樣印刷參照、body scan／heading、mapping 同視覺證據。圈號註號、來源標籤等例行 apparatus 省略可以用獨立 disposition，唔好同實質題名異文混成一類。涉及人名、官職、地名、日期、數字或文義嘅 semantic／high-risk variant，以及每一個頁碼差額或重排，都要由第二位 reviewer 同時 challenge TOC 同正文頁圖；「兩邊讀得通」唔足以證明係來源異文。
+
+頁碼對賬要將「目錄印刷參照」同「正文實際 mapping」分欄保存。可用 `page-exact`、`fixed-ocr-reference`、`source-printed-ref-differs-from-body-start`、`source-printed-ref-maps-to-body-range`、`source-verified-reordered`、`unresolved` 等細分類 disposition；名稱可以按項目 schema 調整，但唔可以用一個泛稱 `page-difference` 遮住原因。無論 mapping 結論係乜，TOC transcription 都保留圖上原樣印刷參照，唔改成正文起頁。
+
+封關時逐個 `reconciliation_scope` 驗證預期 cardinality；要求一對一嘅 in-scope partition，其 TOC item、TOC-eligible body heading 同 reconciliation rows 數量先要一致。Group count 另行對賬；每邊每項只映射一次；全部 in-scope mappings 同 out-of-scope dispositions 都要關閉。所有行要由 `exact`、`fixed`、`source-verified-apparatus-variant`、`source-verified-semantic-variant`、`source-verified-reordered` 等明確狀態關閉，唔保留未有視覺結論嘅泛稱 `review`。詳細 schema 同 gate 見 `release-gate.md`。
+
+Release plan 有 scope 時，`evidence_ids` 必須同時綁定 TOC item ledger、body heading inventory、reconciliation ledger、variant challenge ledger 同 invariants QA 五項 active evidence。留意 `validate_release_evidence.py` 只驗 partition arithmetic、五項 IDs／types 同 sealed closure binding；佢唔讀 ledger rows、disposition 語義、reviewer coverage 或 challenge 結論。上述逐項 gate 必須另由項目 semantic invariant／challenge 工具驗證，或者人工 100% 審核並封存報告；缺呢層證據唔可以因 scope validator pass 就聲稱目錄對賬完成。
+
+## 建立 release plan 同證據圖
+
+完成 replay、finalize 前建立 strict `release-plan.json`。用窄而固定嘅 `discovery.globs` 列出 pre-final evidence roots，避開之後先生成嘅 final／receipt／audit 目錄；按 path 排序建立 inventory。Plan 本身以外，每個 discovered regular file 都要恰好有一個 artifact classification，classified path 亦必須被 glob 發現。Output／receipt 唔可以 alias plan 或任何 classified artifact；即使檔案未存在，只要生成後會新命中 pre-final discovery glob，finalizer 都要喺寫入前拒絕。
+
+每項 required fields 係 `id`、`type`、`path`、`classification`、`lifecycle`、`validation`、`sha256`、`depends_on`；optional 只係 `exclusion_reason`、`superseded_by`、`singleton_role`。Current evidence 用 `classification: include`、`lifecycle: active`、`validation: pass`；working／舊版用 `exclude` 加 `historical` 或 `superseded` 同理由，後者先可以用 `superseded_by` 指向 active replacement。重複 active `singleton_role` 會失敗。
+
+`sha256` 直接封 artifact 完整 bytes。每條 `depends_on` 用 exact `{target, relation, hash}`；hash 係 `full`，或者列 non-overlapping RFC 6901 `pointers` 嘅 `canonical-subset`。Roots 嘅 transitive closure 必須恰好等於全部 active included artifacts；dependency／supersession graph 要各自無循環。完整 schema、五項 reconciliation evidence types 同 canonical serialization 見 `release-gate.md`。
+
+舊 rich manifest／policy 唔交俾 strict parser 猜。保留舊 hash，產生 current-schema projection 同 sealed field crosswalk，將舊檔分類 historical／superseded、新檔分類 active，再驗 plan 同重新封存；若原有逐頁 OCR／review evidence 仍可對返目前文字同 renders，毋須因此重做 OCR。
+
+Pre-final plan 必須包括 combined annotated 同 boundary manifest，但唔包括待生成 final、receipt 或 final audit。只要 active artifacts 出現 `toc-item-ledger`、`body-heading-inventory`、`toc-body-reconciliation-ledger`、`variant-challenge-ledger` 或 `invariants-qa` 任一專用 type，`reconciliation_scope` 就唔再 optional；缺少即 fail closed。先跑 `validate_release_evidence.py`；finalizer 寫 receipt 時帶 `--release-plan`，會再驗並自動封存 plan 同 active closure。Final audit JSON 完成後，如要完整 bundle，再另建 `release-bundle-plan.json`，唔好回餵舊 finalizer 造成 hash cycle。
 
 ## 凍結同封關
 
@@ -226,11 +263,13 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final --notation-policy no
 
 Review sidecar builder 必須由 durable writer／auditor ledger 重建，狀態只可由 `ocr-only` 單向升至 `worker-checked`、`independent-checked`；重跑前後比較逐頁狀態、reviewer range、`unresolved` 同 evidence hash，禁止降級。`independent-checked` 要記錄同 writer 不同嘅 reviewer、完整覆核頁集合同 report／ledger SHA-256，唔可以只改 top-level 字串。
 
-長書 finalizer 用 `--receipt`，並按 ordered manifest 次序重複傳入 `--upstream` segments；final audit 會讀嘅 notation policy、source exceptions 同 page manifest 亦要加入 `--upstream`。Receipt 會 hash upstream、combined annotated、boundary manifest 同 final output；final audit 用 `--assembly-receipt` 重算。任何 input 或 final 改變都必須重新 assemble／finalize／audit。Annotated target 同 boundary manifest 已自動記錄，唔好重複當 upstream。完整 JSON schema、notation policy、source exception 同指令見 `release-gate.md`。
+獨立覆核之後如要 patch，唔可以只更新 segment hash 再繼承舊 status。要由第二位 reviewer 重新覆核所有受影響 scan；跨頁 join、heading、list、table 或註腳改動要連相鄰頁一併覆核。另一條可接受路徑係建立 exact sealed amendment ledger，逐項記 `before`、`after`、`scan_page`、目前 `render_sha256`、`independent_verifier`、證據 artifact 路徑同 `evidence_sha256`。兩條路都要更新 durable review evidence，將新 review／amendment ledger 列入 pre-final plan 嘅 active closure，再重新凍結、assemble、finalize 同 audit。
+
+長書 finalizer 寫 `--receipt` 必須帶 `--release-plan`；佢會重驗 plan，確認 annotated target 同 boundary manifest 各自恰好係 active included artifact，再以 schema v2 寫入恰好一個 `release-plan` role 同 ordered complete active closure。`--upstream` 只係 optional membership assertion，唔再用嚟人手列齊 sidecars。Final audit 用 `--assembly-receipt` 重新驗 plan、classified hashes、annotated／boundary membership 同 receipt upstreams exact 等於 plan ordered active closure；legacy v1 receipt 雖可讀，但必報 `assembly-receipt-release-plan-missing`，唔提供 verified-break exemption，必須重新 finalize。任何 input 或 final 改變都必須重新 replay assembly、重建 plan、finalize 同 audit。完整 schema、notation policy、source exception 同指令見 `release-gate.md`。
 
 封關時另用 `audit_ocr_markdown.py --page-manifest ... --source-pdf ...` 驗證目前 PDF SHA、`1..N` scan sequence、annotated marker coverage 同所有 render hash。Manifest 入面舊 source path 可以因搬檔而失效，但所選新路徑內容必須同 `source_sha256` 完全一致；page manifest 本身要由 receipt 封存。
 
-Receipt 只證明記錄後檔案無變，唔自行證明 combined annotated 當初按正確次序產生；所以仍要驗證 ordered segment manifest、marker inventory 同首尾句。唔用 mtime 判 freshness。
+Schema v2 receipt 加 final audit 重驗可以證明當前 plan closure、recorded inputs 同 final 冇漂移，但唔自行證明 combined annotated 當初語義上按正確次序產生；所以仍要驗證 ordered segment manifest、marker inventory 同首尾句。唔用 mtime 判 freshness。
 
 ## 驗證結構不變量
 

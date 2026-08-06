@@ -1,5 +1,26 @@
 # 更新摘要
 
+## 0.2.4 — 2026-08-05
+
+- 長目錄 reconciliation 新增明確 `reconciliation_scope` 同分冊／分卷 partitions；合訂本只交付其中一冊時，範圍外目錄項仍要逐項記錄 disposition。只要 active closure 出現 TOC reconciliation 專用 evidence type 就強制要 scope，唔可以靠省略欄位繞過。
+- 新增 typed release evidence lifecycle：sidecar 明分 `active`、`historical`、`superseded`，active artifact 唔可以係 provisional／failing；dependency graph 要無環，並用 canonical subset hash 避免 ledger 互相封完整 hash 形成循環。
+- 新增 `assemble_ocr_segments.py`，按 sealed page manifest、ordered segment SHA-256、連續 scan ranges 同 LF-only separator 重建 combined annotated；逐段同整體 markers 都要 exact 對上 `marker_expected`，dry-run 可 byte-for-byte replay 現有輸出。
+- 新增 `validate_release_evidence.py`，驗證 `release-plan.json` 對所有 discovery 命中嘅 release artifacts 做 `classification: include`，或者 `exclude` 加理由；同時驗 dependency closure、singleton roles、supersession、typed scope evidence、partitions 同 canonical subset hashes。
+- Finalizer receipt 升級至 schema v2，強制唯一 `release-plan` role並自動封存 plan-order active closure；output／receipt 唔可覆寫任何 classified evidence或新命中 pre-final globs。Final audit 會重驗目前 plan、全部 classified hashes同 exact closure；legacy v1 receipt只可作遷移診斷，唔可再封關。
+- Annotated audit 會喺提供 page manifest 時即時核對 `marker_expected`，唔再等 final receipt 先發現 marker policy 錯配；notation policy 可逐類 inventory 全形方括號、六角括號、角括號、缺字方框同明示存疑符號。
+- `audit_ocr_markdown.py` 新增 opt-in `--json-report`，輸出穩定嘅 machine-readable errors、warnings、accepted exceptions、issue counts 同 exit status，方便 release plan 封存及重播。
+- 測試由 35 個增至 69 個，新增 assembly／release-plan／receipt v2、schema spoof、path alias、TOCTOU、legacy migration 同 adversarial closure regressions。
+
+## 0.2.3 — 2026-08-05
+
+- 長目錄先按每個 TOC scan 建立末端印刷頁碼 inventory，保存黐入題名／日期嘅 recovery，同時逐頁獨立核對全部引用；唔再用 parser 輸出或總項數代替目錄完整性。
+- 將目錄條目、目錄分組同正文結構分成獨立 ledger：只比較有明確納入／排除理由嘅 TOC-eligible headings，並以正文分隔頁、running header 同首項互證分組起點。
+- `source-verified-*` 新增獨立 challenge gate：除純註號等 routine apparatus 外，題名、日期、人名、官職、數字、機構等實質異文，以及所有頁碼差異／異序，都要由另一 reviewer 同時核對 TOC 同正文頁圖。
+- 頁碼差異用 `page-exact`、`fixed-ocr-reference`、`source-printed-ref-differs-from-body-start` 等細分類，保留原目錄頁碼、正文實際起頁同鄰頁證據；唔再壓成普通文字異文或靜靜改正來源。
+- Independent review 後嘅 late patch 要重新核對受影響頁，或者用包含 exact before/after、scan/render hash、獨立 verifier 同 evidence hash 嘅 amendment ledger 封存；所有 release decision sidecars 都要加入 assembly receipt upstream。
+- `audit_ocr_markdown.py` 同 `finalize_page_markers.py` 新增 opt-in `--summary-only`，長書封關時可隱藏逐頁 context，同時保留 deterministic issue counts、exit code、write／receipt 摘要；預設 verbose 行為不變。
+- 測試由 33 個增至 35 個，新增兩個 summary-only regression。
+
 ## 0.2.2 — 2026-08-03
 
 - Boundary contract 新增反向保護：open list item 後嘅縮排續文或 nested item 若誤標 `join`，annotated audit 同 finalizer 都會拒絕，避免 `.strip()` 吞走 `list-cont`／`list-new` 語義後輸出 hard break 或黐爛子項；receipt 同時保留經視覺確認嘅 paragraph／structural list break，唔放寬無證據嘅 loose-list audit。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
 import hashlib
 import json
 import os
@@ -10,6 +11,12 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Iterable, Sequence
+
+from validate_release_evidence import (
+    _artifact_path as release_artifact_path,
+    _load_json as load_release_plan_json,
+    validate_plan,
+)
 
 
 PAGE_MARKER_RE = re.compile(
@@ -47,6 +54,19 @@ class MarkerBoundary:
     kind: str
     previous_line: int | None
     next_line: int | None
+
+
+@dataclass(frozen=True)
+class ReleasePlanInventory:
+    """Validated release artifacts captured from one stable plan snapshot."""
+
+    plan_path: Path
+    plan_sha256: str
+    active_paths: tuple[Path, ...]
+    active_sha256: tuple[str, ...]
+    classified_paths: tuple[Path, ...]
+    classified_sha256: tuple[str, ...]
+    discovery_globs: tuple[str, ...]
 
 
 def split_lines(text: str) -> list[str]:
@@ -760,6 +780,161 @@ def paths_refer_to_same_file(first: Path, second: Path) -> bool:
     return portable_name(first) == portable_name(second)
 
 
+def load_validated_release_plan(plan_path: Path) -> ReleasePlanInventory:
+    """Validate and strictly parse one unchanged release-plan snapshot."""
+
+    try:
+        sealed_plan = plan_path.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise ValueError(f"release plan does not exist: {plan_path}") from error
+    if not sealed_plan.is_file():
+        raise ValueError(f"release plan is not a regular file: {plan_path}")
+
+    before_validation = file_sha256(sealed_plan)
+    report = validate_plan(sealed_plan)
+    after_validation = file_sha256(sealed_plan)
+    if before_validation != after_validation:
+        raise ValueError("release plan changed while it was being validated")
+    if not report["ok"]:
+        details = "; ".join(str(error) for error in report["errors"])
+        raise ValueError(f"release plan validation failed: {details}")
+
+    plan = load_release_plan_json(sealed_plan)
+    after_parse = file_sha256(sealed_plan)
+    if after_parse != after_validation:
+        raise ValueError("release plan changed between validation and strict parsing")
+    if not isinstance(plan, dict):
+        raise ValueError("release plan root must be a JSON object")
+    raw_artifacts = plan.get("artifacts")
+    if not isinstance(raw_artifacts, list):
+        raise ValueError("release plan artifacts must be an array")
+    discovery = plan.get("discovery")
+    if not isinstance(discovery, dict) or not isinstance(
+        discovery.get("globs"), list
+    ):
+        raise ValueError("release plan discovery.globs must be an array")
+
+    base = sealed_plan.parent.resolve(strict=True)
+    classified_paths: list[Path] = []
+    classified_sha256: list[str] = []
+    active_paths: list[Path] = []
+    active_sha256: list[str] = []
+    for index, artifact in enumerate(raw_artifacts):
+        if not isinstance(artifact, dict):
+            raise ValueError(f"release plan artifacts[{index}] must be an object")
+        path = release_artifact_path(
+            base,
+            artifact.get("path"),
+            f"release plan artifacts[{index}].path",
+        )
+        classified_paths.append(path)
+        declared_sha256 = artifact.get("sha256")
+        if not isinstance(declared_sha256, str):
+            raise ValueError(
+                f"release plan artifacts[{index}].sha256 must be a string"
+            )
+        current_sha256 = file_sha256(path)
+        if current_sha256 != declared_sha256:
+            raise ValueError(
+                f"release artifact changed after plan validation: {path}"
+            )
+        classified_sha256.append(declared_sha256)
+        if (
+            artifact.get("classification") == "include"
+            and artifact.get("lifecycle") == "active"
+            and artifact.get("validation") == "pass"
+        ):
+            active_paths.append(path)
+            active_sha256.append(declared_sha256)
+
+    globs = discovery["globs"]
+    if not all(isinstance(pattern, str) for pattern in globs):
+        raise ValueError("release plan discovery.globs must contain only strings")
+    if file_sha256(sealed_plan) != after_parse:
+        raise ValueError("release plan changed while artifact closure was parsed")
+    return ReleasePlanInventory(
+        plan_path=sealed_plan,
+        plan_sha256=after_parse,
+        active_paths=tuple(active_paths),
+        active_sha256=tuple(active_sha256),
+        classified_paths=tuple(classified_paths),
+        classified_sha256=tuple(classified_sha256),
+        discovery_globs=tuple(globs),
+    )
+
+
+def release_plan_snapshot_problems(
+    inventory: ReleasePlanInventory,
+) -> list[str]:
+    """Detect plan or classified-evidence drift from a validated snapshot."""
+
+    problems: list[str] = []
+    if not inventory.plan_path.is_file():
+        problems.append(f"release plan disappeared: {inventory.plan_path}")
+    elif file_sha256(inventory.plan_path) != inventory.plan_sha256:
+        problems.append("release plan changed after validation")
+    for path, expected in zip(
+        inventory.classified_paths, inventory.classified_sha256, strict=True
+    ):
+        if not path.is_file():
+            problems.append(f"classified release artifact disappeared: {path}")
+        elif file_sha256(path) != expected:
+            problems.append(
+                f"classified release artifact changed after validation: {path}"
+            )
+    return problems
+
+
+def release_plan_discovery_matches(
+    inventory: ReleasePlanInventory, candidate: Path
+) -> tuple[str, ...]:
+    """Return discovery globs that would classify a not-yet-created path."""
+
+    # Resolve the parent but preserve the final directory-entry name.  A
+    # dangling symlink does not satisfy ``Path.exists()``, yet writing through
+    # it can make the symlink itself become a regular-file discovery match.
+    lexical_candidate = candidate.parent.resolve(strict=False) / candidate.name
+    try:
+        relative = lexical_candidate.relative_to(inventory.plan_path.parent)
+    except ValueError:
+        return ()
+    parts = relative.parts
+
+    def matches(pattern: str) -> bool:
+        # A trailing separator asks pathlib for directories only.  Generated
+        # output and receipt paths are files, so such a glob cannot select one.
+        if pattern.endswith(os.sep):
+            return False
+        pattern_parts = Path(pattern).parts
+
+        def visit(pattern_index: int, path_index: int) -> bool:
+            if pattern_index == len(pattern_parts):
+                return path_index == len(parts)
+            current = pattern_parts[pattern_index]
+            if current == "**":
+                if pattern_index + 1 == len(pattern_parts):
+                    # ``base.glob('prefix/**')`` selects descendants and the
+                    # prefix directory, but not a file at the prefix itself.
+                    return path_index < len(parts)
+                return visit(pattern_index + 1, path_index) or (
+                    path_index < len(parts)
+                    and visit(pattern_index, path_index + 1)
+                )
+            if path_index >= len(parts):
+                return False
+            direct = fnmatch.fnmatchcase(parts[path_index], current)
+            portable = fnmatch.fnmatchcase(
+                parts[path_index].casefold(), current.casefold()
+            )
+            return (direct or portable) and visit(
+                pattern_index + 1, path_index + 1
+            )
+
+        return visit(0, 0)
+
+    return tuple(pattern for pattern in inventory.discovery_globs if matches(pattern))
+
+
 def _receipt_path(receipt_path: Path, target_path: Path) -> str:
     """Store a path relative to the receipt so a project tree can be moved."""
 
@@ -771,6 +946,7 @@ def build_assembly_receipt(
     *,
     annotated_path: Path,
     boundary_manifest_path: Path,
+    release_plan_path: Path,
     output_path: Path,
     output_text: str,
     upstream_paths: Sequence[Path] = (),
@@ -780,6 +956,7 @@ def build_assembly_receipt(
     named_inputs = [
         ("annotated", annotated_path),
         ("boundary-manifest", boundary_manifest_path),
+        ("release-plan", release_plan_path),
         *(("upstream", path) for path in upstream_paths),
     ]
 
@@ -816,7 +993,7 @@ def build_assembly_receipt(
         raise ValueError("receipt path must differ from output path")
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "inputs": inputs,
         "output": {
             "path": _receipt_path(receipt_path, output_path),
@@ -869,7 +1046,7 @@ def _receipt_record(
 
 def _load_assembly_receipt(
     receipt_path: Path,
-) -> tuple[list[dict[str, str]], dict[str, str]]:
+) -> tuple[int, list[dict[str, str]], dict[str, str]]:
     """Load and validate receipt schema before any trust decision is made."""
 
     with receipt_path.open("r", encoding="utf-8") as handle:
@@ -879,12 +1056,13 @@ def _load_assembly_receipt(
         context="assembly receipt root",
         expected_keys={"schema_version", "inputs", "output"},
     )
+    schema_version = root["schema_version"]
     if (
-        not isinstance(root["schema_version"], int)
-        or isinstance(root["schema_version"], bool)
-        or root["schema_version"] != 1
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in {1, 2}
     ):
-        raise ValueError("assembly receipt schema_version must be 1")
+        raise ValueError("assembly receipt schema_version must be integer 1 or 2")
 
     raw_inputs = root["inputs"]
     if not isinstance(raw_inputs, list) or isinstance(raw_inputs, _JsonObject):
@@ -899,18 +1077,23 @@ def _load_assembly_receipt(
 
     roles = [record["role"] for record in records]
     allowed_roles = {"annotated", "boundary-manifest", "upstream"}
+    if schema_version == 2:
+        allowed_roles.add("release-plan")
     unexpected_roles = sorted(set(roles) - allowed_roles)
     if unexpected_roles:
         raise ValueError(
             "assembly receipt has invalid input role(s): "
             + ", ".join(unexpected_roles)
         )
-    for required in ("annotated", "boundary-manifest"):
+    required_roles = ["annotated", "boundary-manifest"]
+    if schema_version == 2:
+        required_roles.append("release-plan")
+    for required in required_roles:
         if roles.count(required) != 1:
             raise ValueError(
                 f"assembly receipt must contain exactly one {required!r} input"
             )
-    return records, output
+    return schema_version, records, output
 
 
 def _resolve_receipt_path(receipt_path: Path, recorded_path: str) -> Path:
@@ -918,6 +1101,99 @@ def _resolve_receipt_path(receipt_path: Path, recorded_path: str) -> Path:
     if not path.is_absolute():
         path = receipt_path.resolve().parent / path
     return path.resolve()
+
+
+def _normalized_path(path: Path) -> str:
+    return unicodedata.normalize(
+        "NFC", os.path.normcase(str(path.resolve(strict=False)))
+    ).casefold()
+
+
+def _release_plan_receipt_problems(
+    receipt_path: Path,
+    records: Sequence[dict[str, str]],
+    output: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Revalidate a v2 plan and bind receipt upstreams to its active closure."""
+
+    problems: list[tuple[str, str]] = []
+    by_role: dict[str, list[Path]] = {}
+    for record in records:
+        by_role.setdefault(record["role"], []).append(
+            _resolve_receipt_path(receipt_path, record["path"])
+        )
+    plan_path = by_role["release-plan"][0]
+    try:
+        inventory = load_validated_release_plan(plan_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        return [
+            (
+                "assembly-receipt-release-plan-invalid",
+                f"current release plan is invalid: {error}",
+            )
+        ]
+
+    annotated_path = by_role["annotated"][0]
+    boundary_path = by_role["boundary-manifest"][0]
+
+    def active_matches(path: Path) -> list[Path]:
+        return [
+            candidate
+            for candidate in inventory.active_paths
+            if paths_refer_to_same_file(path, candidate)
+        ]
+
+    if len(active_matches(annotated_path)) != 1:
+        problems.append(
+            (
+                "assembly-receipt-annotated-not-active",
+                "receipt annotated input is not exactly one active included "
+                "release-plan artifact",
+            )
+        )
+    if len(active_matches(boundary_path)) != 1:
+        problems.append(
+            (
+                "assembly-receipt-boundary-not-active",
+                "receipt boundary manifest is not exactly one active included "
+                "release-plan artifact",
+            )
+        )
+
+    recorded_output = _resolve_receipt_path(receipt_path, output["path"])
+    for role, generated in (
+        ("assembly output", recorded_output),
+        ("assembly receipt", receipt_path.resolve()),
+    ):
+        if any(
+            paths_refer_to_same_file(generated, artifact)
+            for artifact in inventory.classified_paths
+        ):
+            problems.append(
+                (
+                    "assembly-receipt-generated-path-classified",
+                    f"{role} aliases a classified release-plan artifact: {generated}",
+                )
+            )
+
+    expected_upstreams = [
+        path
+        for path in inventory.active_paths
+        if not paths_refer_to_same_file(path, annotated_path)
+        and not paths_refer_to_same_file(path, boundary_path)
+    ]
+    actual_upstreams = by_role.get("upstream", [])
+    if [_normalized_path(path) for path in actual_upstreams] != [
+        _normalized_path(path) for path in expected_upstreams
+    ]:
+        problems.append(
+            (
+                "assembly-receipt-release-plan-closure-mismatch",
+                "receipt upstream paths do not exactly match the ordered active "
+                "release-plan closure after annotated/boundary exclusions",
+            )
+        )
+    return problems
 
 
 def assembly_receipt_verified_break_lines(receipt_path: Path) -> frozenset[int]:
@@ -928,7 +1204,9 @@ def assembly_receipt_verified_break_lines(receipt_path: Path) -> frozenset[int]:
     :func:`assembly_receipt_problems`.
     """
 
-    records, output = _load_assembly_receipt(receipt_path)
+    schema_version, records, output = _load_assembly_receipt(receipt_path)
+    if schema_version != 2:
+        return frozenset()
     records_by_role = {
         role: next(record for record in records if record["role"] == role)
         for role in ("annotated", "boundary-manifest")
@@ -938,6 +1216,8 @@ def assembly_receipt_verified_break_lines(receipt_path: Path) -> frozenset[int]:
     annotated_path = _resolve_receipt_path(receipt_path, annotated_record["path"])
     boundary_path = _resolve_receipt_path(receipt_path, boundary_record["path"])
     output_path = _resolve_receipt_path(receipt_path, output["path"])
+    if _release_plan_receipt_problems(receipt_path, records, output):
+        return frozenset()
     if not all(
         path.is_file() for path in (annotated_path, boundary_path, output_path)
     ):
@@ -979,9 +1259,21 @@ def assembly_receipt_problems(
     input, closing the gap between render provenance and Markdown coverage.
     """
 
-    records, output = _load_assembly_receipt(receipt_path)
+    schema_version, records, output = _load_assembly_receipt(receipt_path)
 
     problems: list[tuple[str, str]] = []
+    if schema_version == 1:
+        problems.append(
+            (
+                "assembly-receipt-release-plan-missing",
+                "legacy v1 receipt has no dedicated release-plan input; "
+                "re-finalize with a validated release plan",
+            )
+        )
+    else:
+        problems.extend(
+            _release_plan_receipt_problems(receipt_path, records, output)
+        )
     recorded_output = _resolve_receipt_path(receipt_path, output["path"])
     if recorded_output != expected_output_path.resolve():
         problems.append(

@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -22,14 +24,17 @@ from _ocr_markdown import (
     LIST_ITEM_RE,
     MarkerBoundary,
     PAGE_MARKER_CANDIDATE_RE,
+    file_sha256,
     find_page_markers,
     is_blank,
     is_structural_line,
     line_body,
     load_boundary_manifest,
     marker_sequence_problems,
+    page_manifest_marker_coverage_problems,
     page_manifest_problems,
     parse_page_spec,
+    paths_refer_to_same_file,
     split_lines,
 )
 
@@ -52,6 +57,65 @@ SOURCE_EXCEPTION_CODES = frozenset(
         "unmatched-closing-delimiter",
         "misnested-closing-delimiter",
     }
+)
+NOTATION_POLICY_KEYS = (
+    "ascii_square_brackets",
+    "fullwidth_square_brackets",
+    "lenticular_brackets",
+    "angle_brackets",
+    "white_square",
+    "rectangle",
+    "explicit_uncertain_marker",
+)
+NOTATION_POLICY_LABELS = {
+    "ascii_square_brackets": "ASCII square brackets",
+    "fullwidth_square_brackets": "fullwidth square brackets ［］",
+    "lenticular_brackets": "lenticular brackets 〔〕",
+    "angle_brackets": "angle brackets 〈〉",
+    "white_square": "white square □",
+    "rectangle": "rectangle ▭",
+    "explicit_uncertain_marker": "explicit uncertain marker 〔?〕",
+}
+NOTATION_ALLOWED_MEANINGS = {
+    "ascii_square_brackets": frozenset({"source-editorial"}),
+    "fullwidth_square_brackets": frozenset(
+        {"source-apparatus", "source-editorial", "source-uncertain"}
+    ),
+    "lenticular_brackets": frozenset(
+        {"source-apparatus", "source-editorial", "source-uncertain"}
+    ),
+    "angle_brackets": frozenset(
+        {"source-apparatus", "source-editorial"}
+    ),
+    "white_square": frozenset(
+        {
+            "source-apparatus",
+            "source-damage",
+            "source-editorial",
+            "source-illegible",
+            "source-omission",
+        }
+    ),
+    "rectangle": frozenset(
+        {
+            "source-apparatus",
+            "source-damage",
+            "source-editorial",
+            "source-illegible",
+            "source-omission",
+        }
+    ),
+    "explicit_uncertain_marker": frozenset(
+        {"source-apparatus", "source-editorial", "source-uncertain"}
+    ),
+}
+OPTIONAL_GATE_ROLES = (
+    "assembly_receipt",
+    "boundary_manifest",
+    "notation_policy",
+    "page_manifest",
+    "source_exceptions",
+    "source_pdf",
 )
 
 
@@ -90,10 +154,19 @@ class AuditResult:
 
 
 @dataclass(frozen=True)
-class SourceNotationPolicy:
+class SourceNotationRule:
+    notation: str
     meaning: str
     scan_page: int
     note: str
+
+
+@dataclass(frozen=True)
+class SourceNotationPolicy:
+    rules: tuple[SourceNotationRule, ...]
+
+    def declares(self, notation: str) -> bool:
+        return any(rule.notation == notation for rule in self.rules)
 
 
 @dataclass(frozen=True)
@@ -129,29 +202,63 @@ def _load_json(path: Path) -> object:
 
 
 def load_notation_policy(path: Path) -> SourceNotationPolicy:
-    """Load a book-specific declaration that ASCII brackets are source text."""
+    """Load explicit, book-specific declarations for source notation.
 
-    root = _json_mapping(
-        _load_json(path),
-        context="notation policy root",
-        expected_keys={"ascii_square_brackets"},
-    )
-    policy = _json_mapping(
-        root["ascii_square_brackets"],
-        context="ascii_square_brackets policy",
-        expected_keys={"meaning", "scan_page", "note"},
-    )
-    if policy["meaning"] != "source-editorial":
+    The original one-key ``ascii_square_brackets`` schema remains valid.  A
+    policy may now contain any non-empty subset of the known top-level keys,
+    with one evidence record per notation.  Keeping the declarations separate
+    prevents a policy for harmless source apparatus from blanket-authorizing
+    unresolved OCR confidence brackets or uncertainty markers.
+    """
+
+    raw_root = _load_json(path)
+    if not isinstance(raw_root, _JsonObject):
+        raise ValueError("notation policy root must be a JSON object")
+    root: dict[str, object] = {}
+    for key, value in raw_root:
+        if key in root:
+            raise ValueError(f"duplicate notation policy root key: {key!r}")
+        root[key] = value
+    if not root:
+        raise ValueError("notation policy root must not be empty")
+    unexpected = sorted(set(root) - set(NOTATION_POLICY_KEYS))
+    if unexpected:
         raise ValueError(
-            "ascii_square_brackets meaning must be 'source-editorial'"
+            "notation policy has unsupported key(s): " + ", ".join(unexpected)
         )
-    scan_page = policy["scan_page"]
-    if not isinstance(scan_page, int) or isinstance(scan_page, bool) or scan_page < 1:
-        raise ValueError("notation policy scan_page must be a positive integer")
-    note = policy["note"]
-    if not isinstance(note, str) or not note.strip():
-        raise ValueError("notation policy note must be a non-empty string")
-    return SourceNotationPolicy("source-editorial", scan_page, note)
+
+    rules: list[SourceNotationRule] = []
+    for notation in NOTATION_POLICY_KEYS:
+        if notation not in root:
+            continue
+        record = _json_mapping(
+            root[notation],
+            context=f"{notation} policy",
+            expected_keys={"meaning", "scan_page", "note"},
+        )
+        meaning = record["meaning"]
+        allowed_meanings = NOTATION_ALLOWED_MEANINGS[notation]
+        if not isinstance(meaning, str) or meaning not in allowed_meanings:
+            allowed = ", ".join(sorted(allowed_meanings))
+            raise ValueError(
+                f"{notation} meaning must be one of: {allowed}"
+            )
+        scan_page = record["scan_page"]
+        if (
+            not isinstance(scan_page, int)
+            or isinstance(scan_page, bool)
+            or scan_page < 1
+        ):
+            raise ValueError(
+                f"{notation} scan_page must be a positive integer"
+            )
+        note = record["note"]
+        if not isinstance(note, str) or not note.strip():
+            raise ValueError(f"{notation} note must be a non-empty string")
+        rules.append(
+            SourceNotationRule(notation, meaning, scan_page, note)
+        )
+    return SourceNotationPolicy(tuple(rules))
 
 
 def load_source_exceptions(path: Path) -> tuple[SourceException, ...]:
@@ -664,8 +771,66 @@ def _duplicate_paragraph_issues(
     return issues
 
 
+def _notation_occurrence_count(
+    lines: Sequence[str], notation: str
+) -> tuple[int, str]:
+    """Count declared notation outside metadata and fenced code."""
+
+    protected = _protected_lines(lines)
+    bodies = [
+        line_body(line)
+        for index, line in enumerate(lines)
+        if not protected[index]
+    ]
+    if notation == "ascii_square_brackets":
+        count = 0
+        for body in bodies:
+            without_links = re.sub(r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", body)
+            if not re.match(r"^\[[^\]]+\]:", without_links) and any(
+                character in without_links for character in "[]"
+            ):
+                count += 1
+        return count, "line(s)"
+    if notation == "fullwidth_square_brackets":
+        return sum(body.count("［") for body in bodies), "pair candidate(s)"
+    if notation == "lenticular_brackets":
+        return (
+            sum(body.replace("〔?〕", "").count("〔") for body in bodies),
+            "pair candidate(s)",
+        )
+    if notation == "angle_brackets":
+        return sum(body.count("〈") for body in bodies), "pair candidate(s)"
+    if notation == "white_square":
+        return sum(body.count("□") for body in bodies), "occurrence(s)"
+    if notation == "rectangle":
+        return sum(body.count("▭") for body in bodies), "occurrence(s)"
+    if notation == "explicit_uncertain_marker":
+        return sum(body.count("〔?〕") for body in bodies), "occurrence(s)"
+    raise ValueError(f"unknown notation policy key: {notation}")
+
+
+def _notation_policy_issues(
+    lines: Sequence[str], policy: SourceNotationPolicy
+) -> list[Issue]:
+    issues: list[Issue] = []
+    for rule in policy.rules:
+        count, unit = _notation_occurrence_count(lines, rule.notation)
+        issues.append(
+            Issue(
+                "accepted",
+                "source-notation-policy",
+                None,
+                f"{NOTATION_POLICY_LABELS[rule.notation]} are declared as "
+                f"{rule.meaning}; inventory={count} {unit}, evidence scan page "
+                f"{rule.scan_page}: {rule.note}",
+                token=rule.notation,
+            )
+        )
+    return issues
+
+
 def _residue_issues(
-    lines: Sequence[str], mode: str, ascii_brackets_are_source: bool
+    lines: Sequence[str], mode: str, authorized_notations: frozenset[str]
 ) -> list[Issue]:
     issues: list[Issue] = []
     protected = _protected_lines(lines)
@@ -715,7 +880,7 @@ def _residue_issues(
                 )
             )
         without_links = re.sub(r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", body)
-        if not ascii_brackets_are_source and not re.match(
+        if "ascii_square_brackets" not in authorized_notations and not re.match(
             r"^\[[^\]]+\]:", without_links
         ) and (
             "[" in without_links or "]" in without_links
@@ -726,6 +891,33 @@ def _residue_issues(
                     "low-confidence-bracket",
                     line_number,
                     "square bracket remains; verify whether it is OCR confidence markup",
+                )
+            )
+        if (
+            "explicit_uncertain_marker" not in authorized_notations
+            and "〔?〕" in body
+        ):
+            issues.append(
+                Issue(
+                    "error",
+                    "unclassified-uncertain-marker",
+                    line_number,
+                    "explicit uncertainty marker 〔?〕 remains; verify it or "
+                    "declare that exact notation from the source",
+                    token="〔?〕",
+                )
+            )
+        for notation, symbol in (("white_square", "□"), ("rectangle", "▭")):
+            if notation in authorized_notations or symbol not in body:
+                continue
+            issues.append(
+                Issue(
+                    "error",
+                    "unclassified-source-placeholder",
+                    line_number,
+                    f"source placeholder {symbol} remains without an explicit "
+                    f"{notation} notation policy",
+                    token=symbol,
                 )
             )
         if "∵" in body or "≡" in body:
@@ -850,7 +1042,12 @@ def audit_text(
     if mode != "auto":
         resolved_mode = mode
 
-    issues = _residue_issues(lines, resolved_mode, notation_policy is not None)
+    authorized_notations = (
+        frozenset(rule.notation for rule in notation_policy.rules)
+        if notation_policy is not None and resolved_mode == "final"
+        else frozenset()
+    )
+    issues = _residue_issues(lines, resolved_mode, authorized_notations)
     issues.extend(_protected_region_issues(text))
     if not text:
         issues.append(
@@ -875,27 +1072,7 @@ def audit_text(
             )
         )
     if notation_policy is not None:
-        protected = _protected_lines(lines)
-        bracket_lines = sum(
-            not protected[index]
-            and any(
-                character in re.sub(
-                    r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", line_body(line)
-                )
-                for character in "[]"
-            )
-            for index, line in enumerate(lines)
-        )
-        issues.append(
-            Issue(
-                "accepted",
-                "source-notation-policy",
-                None,
-                f"ASCII square brackets are source editorial notation on "
-                f"{bracket_lines} line(s), declared from scan page "
-                f"{notation_policy.scan_page}: {notation_policy.note}",
-            )
-        )
+        issues.extend(_notation_policy_issues(lines, notation_policy))
         if resolved_mode != "final":
             issues.append(
                 Issue(
@@ -1041,6 +1218,114 @@ def _read_utf8(path: Path) -> str:
         return handle.read()
 
 
+def _ordered_issue_counts(
+    issues: Sequence[Issue],
+) -> list[tuple[str, str, int]]:
+    counts = Counter((issue.severity, issue.code) for issue in issues)
+    severity_order = {"error": 0, "warning": 1, "accepted": 2}
+    return [
+        (severity, code, count)
+        for (severity, code), count in sorted(
+            counts.items(),
+            key=lambda item: (
+                severity_order.get(item[0][0], len(severity_order)),
+                item[0][0],
+                item[0][1],
+            ),
+        )
+    ]
+
+
+def _issue_json(issue: Issue) -> dict[str, object]:
+    """Return replay-stable issue identity without host-dependent messages."""
+
+    return {
+        "code": issue.code,
+        "column": issue.column,
+        "line": issue.line,
+        "token": issue.token,
+    }
+
+
+def _write_json_report(
+    path: Path,
+    result: AuditResult,
+    exit_status: int,
+    *,
+    target_text: str,
+    requested_mode: str,
+    expected_count: int | None,
+    skip_pages: set[int],
+    duplicate_min_characters: int,
+    gate_paths: dict[str, Path],
+) -> None:
+    """Write a stable report without timestamps or report-path-dependent data."""
+
+    target_bytes = target_text.encode("utf-8")
+    input_sha256 = {
+        role: (
+            file_sha256(gate_paths[role])
+            if gate_paths[role].is_file()
+            else None
+        )
+        for role in OPTIONAL_GATE_ROLES
+        if role in gate_paths
+    }
+    report = {
+        "accepted_exceptions": [
+            _issue_json(issue)
+            for issue in result.issues
+            if issue.severity == "accepted"
+        ],
+        "audit_profile": {
+            "duplicate_min_chars": duplicate_min_characters,
+            "expected_count": expected_count,
+            "optional_gates": {
+                role: role in gate_paths for role in OPTIONAL_GATE_ROLES
+            },
+            "requested_mode": requested_mode,
+            "skip_pages": sorted(skip_pages),
+        },
+        "counts": {
+            "accepted_exceptions": result.accepted_count,
+            "errors": result.error_count,
+            "markers": result.marker_count,
+            "warnings": result.warning_count,
+        },
+        "errors": [
+            _issue_json(issue)
+            for issue in result.issues
+            if issue.severity == "error"
+        ],
+        "exit_status": exit_status,
+        "issue_counts": [
+            {"code": code, "count": count, "severity": severity}
+            for severity, code, count in _ordered_issue_counts(result.issues)
+        ],
+        "input_sha256": input_sha256,
+        "mode": result.mode,
+        "schema_version": 1,
+        "target": {
+            "bytes": len(target_bytes),
+            "sha256": hashlib.sha256(target_bytes).hexdigest(),
+        },
+        "tool": {
+            "name": "audit_ocr_markdown.py",
+            "sha256": file_sha256(Path(__file__)),
+        },
+        "warnings": [
+            _issue_json(issue)
+            for issue in result.issues
+            if issue.severity == "warning"
+        ],
+    }
+    rendered = json.dumps(
+        report, ensure_ascii=False, indent=2, sort_keys=True
+    ) + "\n"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(rendered)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Audit annotated or final Jyut OCR Markdown without Git dependencies."
@@ -1085,8 +1370,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--notation-policy",
         type=Path,
         help=(
-            "book-specific JSON declaration that ASCII square brackets are "
-            "source editorial notation rather than OCR confidence markup"
+            "book-specific JSON inventory of explicitly authorized source "
+            "notation; OCR confidence markup still requires separate resolution"
         ),
     )
     parser.add_argument(
@@ -1110,8 +1395,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "page/render provenance manifest; use together with --source-pdf to "
-            "rehash the selected PDF and every declared render; with an assembly "
-            "receipt, also verify sealed annotated marker coverage"
+            "rehash the selected PDF and every declared render; annotated mode "
+            "immediately verifies marker_expected coverage, while final mode "
+            "uses a receipt to verify sealed annotated coverage"
         ),
     )
     parser.add_argument(
@@ -1122,6 +1408,23 @@ def build_parser() -> argparse.ArgumentParser:
             "--page-manifest; use together with --page-manifest"
         ),
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help=(
+            "suppress per-boundary and per-issue lines while retaining "
+            "deterministic issue counts and the normal audit summary"
+        ),
+    )
+    parser.add_argument(
+        "--json-report",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "write a deterministic machine-readable audit report; stdout and "
+            "the normal exit status are unchanged"
+        ),
+    )
     return parser
 
 
@@ -1130,6 +1433,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.page_manifest is None) != (args.source_pdf is None):
         parser.error("--page-manifest and --source-pdf must be used together")
+    gate_paths = {
+        role: path
+        for role, path in (
+            ("assembly_receipt", args.assembly_receipt),
+            ("boundary_manifest", args.boundary_manifest),
+            ("notation_policy", args.notation_policy),
+            ("page_manifest", args.page_manifest),
+            ("source_exceptions", args.source_exceptions),
+            ("source_pdf", args.source_pdf),
+        )
+        if path is not None
+    }
+    if args.json_report is not None:
+        input_paths = (args.target, Path(__file__), *gate_paths.values())
+        for input_path in input_paths:
+            if paths_refer_to_same_file(args.json_report, input_path):
+                parser.error(
+                    "--json-report must differ from every audit input: "
+                    f"{input_path}"
+                )
     try:
         skip_pages = parse_page_spec(args.skip_pages)
         boundary_contract = (
@@ -1178,6 +1501,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     source_pdf_path=args.source_pdf,
                 )
             )
+            if result.mode == "annotated":
+                release_issues.extend(
+                    Issue("error", code, None, message)
+                    for code, message in page_manifest_marker_coverage_problems(
+                        args.page_manifest,
+                        annotated_path=args.target,
+                    )
+                )
         if args.assembly_receipt is not None:
             if result.mode != "final":
                 release_issues.append(
@@ -1216,30 +1547,56 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError) as error:
         parser.error(str(error))
 
+    exit_status = 1 if result.error_count else 0
+    if args.json_report is not None:
+        try:
+            _write_json_report(
+                args.json_report,
+                result,
+                exit_status,
+                target_text=text,
+                requested_mode=args.mode,
+                expected_count=args.expected_count,
+                skip_pages=skip_pages,
+                duplicate_min_characters=args.duplicate_min_chars,
+                gate_paths=gate_paths,
+            )
+        except (OSError, UnicodeError, ValueError) as error:
+            parser.error(str(error))
+
     print(f"MODE {result.mode}")
     print(f"PAGE MARKERS {result.marker_count}")
-    for boundary in result.boundaries:
-        marker = boundary.marker
-        print(
-            "BOUNDARY-SUGGESTION "
-            f"line={marker.line_number} page={marker.page} suggested={boundary.kind} "
-            f"previous={boundary.previous_line or '-'} next={boundary.next_line or '-'} "
-            "authority=heuristic-only"
-        )
-    for issue in result.issues:
-        location = str(args.target)
-        if issue.line is not None:
-            location += f":{issue.line}"
-            if issue.column is not None:
-                location += f":{issue.column}"
-        print(
-            f"{issue.severity.upper()} {location} [{issue.code}] {issue.message}"
-        )
+    if args.summary_only:
+        for severity, code, count in _ordered_issue_counts(result.issues):
+            print(
+                f"ISSUE-COUNT severity={severity} code={code} count={count}"
+            )
+    else:
+        for boundary in result.boundaries:
+            marker = boundary.marker
+            print(
+                "BOUNDARY-SUGGESTION "
+                f"line={marker.line_number} page={marker.page} "
+                f"suggested={boundary.kind} "
+                f"previous={boundary.previous_line or '-'} "
+                f"next={boundary.next_line or '-'} "
+                "authority=heuristic-only"
+            )
+        for issue in result.issues:
+            location = str(args.target)
+            if issue.line is not None:
+                location += f":{issue.line}"
+                if issue.column is not None:
+                    location += f":{issue.column}"
+            print(
+                f"{issue.severity.upper()} {location} "
+                f"[{issue.code}] {issue.message}"
+            )
     print(
         f"SUMMARY errors={result.error_count} warnings={result.warning_count} "
         f"accepted={result.accepted_count} markers={result.marker_count}"
     )
-    return 1 if result.error_count else 0
+    return exit_status
 
 
 if __name__ == "__main__":
