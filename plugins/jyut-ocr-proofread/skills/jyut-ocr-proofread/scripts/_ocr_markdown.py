@@ -24,6 +24,13 @@ PAGE_MARKER_RE = re.compile(
 )
 PAGE_MARKER_CANDIDATE_RE = re.compile(r"<!--\s*page_", re.IGNORECASE)
 HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
+ATX_HEADING_CAPTURE_RE = re.compile(
+    r"^ {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+)?[ \t]*$"
+)
+TITLE_NOTE_TERMINAL_STARS_RE = re.compile(
+    r"(?<!\*)(?P<stars>\*{1,2})(?=(?:[ \t]*(?:（[^）]*）|\([^)]*\)))?[ \t]*$)"
+)
+TITLE_NOTE_DEFINITION_RE = re.compile(r"^(?P<stars>\*{1,2})[ \t]+(?P<text>\S.*)$")
 LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+\S")
 TABLE_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
@@ -93,6 +100,219 @@ def line_ending(line: str) -> str:
     if line.endswith("\r"):
         return "\r"
     return ""
+
+
+def mask_nonrendered_markdown(
+    lines: Sequence[str], *, preserve_page_markers: bool = False
+) -> list[str]:
+    """Mask frontmatter, fences, HTML comments, and code spans by column.
+
+    The returned lines retain their exact lengths and line endings.  Canonical
+    page-marker comments may be preserved for page-aware consumers, while
+    marker-looking text inside a fence or an already-open comment remains
+    masked.  Unclosed code-span delimiters are left visible (fail closed).
+    """
+
+    masked = list(lines)
+    protected_lines: set[int] = set()
+
+    if lines:
+        first = line_body(lines[0])
+        if first.startswith("\ufeff"):
+            first = first[1:]
+        if first == "---":
+            for index in range(1, len(lines)):
+                if line_body(lines[index]) in {"---", "..."}:
+                    protected_lines.update(range(index + 1))
+                    break
+
+    fence_character: str | None = None
+    fence_length = 0
+    for index, raw_line in enumerate(lines):
+        if index in protected_lines:
+            continue
+        body = line_body(raw_line)
+        if fence_character is not None:
+            protected_lines.add(index)
+            if re.fullmatch(
+                rf" {{0,3}}{re.escape(fence_character)}{{{fence_length},}}[ \t]*",
+                body,
+            ):
+                fence_character = None
+                fence_length = 0
+            continue
+        match = re.match(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<rest>.*)$", body)
+        if match is not None:
+            fence = match.group("fence")
+            fence_character = fence[0]
+            fence_length = len(fence)
+            protected_lines.add(index)
+
+    for index in protected_lines:
+        masked[index] = " " * len(line_body(lines[index])) + line_ending(lines[index])
+
+    in_comment = False
+    for index, raw_line in enumerate(masked):
+        if index in protected_lines:
+            continue
+        body = line_body(raw_line)
+        if (
+            preserve_page_markers
+            and not in_comment
+            and PAGE_MARKER_CANDIDATE_RE.search(body) is not None
+        ):
+            continue
+        characters = list(body)
+        cursor = 0
+        while cursor < len(body):
+            if in_comment:
+                end = body.find("-->", cursor)
+                stop = len(body) if end < 0 else end + 3
+                for position in range(cursor, stop):
+                    characters[position] = " "
+                if end < 0:
+                    cursor = len(body)
+                else:
+                    in_comment = False
+                    cursor = stop
+                continue
+            start = body.find("<!--", cursor)
+            if start < 0:
+                break
+            end = body.find("-->", start + 4)
+            stop = len(body) if end < 0 else end + 3
+            for position in range(start, stop):
+                characters[position] = " "
+            if end < 0:
+                in_comment = True
+                cursor = len(body)
+            else:
+                cursor = stop
+        masked[index] = "".join(characters) + line_ending(raw_line)
+
+    barrier_lines = {
+        index
+        for index, raw_line in enumerate(lines)
+        if index in protected_lines
+        or not line_body(raw_line).strip()
+        or (
+            preserve_page_markers
+            and PAGE_MARKER_CANDIDATE_RE.search(line_body(raw_line)) is not None
+        )
+    }
+
+    def mask_code_spans(start: int, end: int) -> None:
+        bodies = [line_body(masked[index]) for index in range(start, end)]
+        flattened = "\n".join(bodies)
+        characters = list(flattened)
+        cursor = 0
+        while cursor < len(flattened):
+            if flattened[cursor] != "`":
+                cursor += 1
+                continue
+            opening_end = cursor + 1
+            while opening_end < len(flattened) and flattened[opening_end] == "`":
+                opening_end += 1
+            opening_length = opening_end - cursor
+            search = opening_end
+            closing_end: int | None = None
+            while search < len(flattened):
+                candidate = flattened.find("`", search)
+                if candidate < 0:
+                    break
+                candidate_end = candidate + 1
+                while (
+                    candidate_end < len(flattened)
+                    and flattened[candidate_end] == "`"
+                ):
+                    candidate_end += 1
+                if candidate_end - candidate == opening_length:
+                    closing_end = candidate_end
+                    break
+                search = candidate_end
+            if closing_end is None:
+                cursor = opening_end
+                continue
+            for position in range(cursor, closing_end):
+                if characters[position] != "\n":
+                    characters[position] = " "
+            cursor = closing_end
+        rebuilt = "".join(characters).split("\n")
+        assert len(rebuilt) == end - start
+        for offset, body in enumerate(rebuilt):
+            source_index = start + offset
+            assert len(body) == len(line_body(masked[source_index]))
+            masked[source_index] = body + line_ending(masked[source_index])
+
+    region_start: int | None = None
+    for index in range(len(lines) + 1):
+        is_barrier = index == len(lines) or index in barrier_lines
+        if not is_barrier and region_start is None:
+            region_start = index
+        elif is_barrier and region_start is not None:
+            mask_code_spans(region_start, index)
+            region_start = None
+
+    return masked
+
+
+def parse_atx_heading(body: str) -> tuple[int, str] | None:
+    """Return an ATX heading's level and text, excluding optional closing marks."""
+
+    match = ATX_HEADING_CAPTURE_RE.fullmatch(body)
+    if match is None:
+        return None
+    return len(match.group("marks")), match.group("text").rstrip()
+
+
+def _terminal_title_note_match(heading_text: str) -> re.Match[str] | None:
+    """Return a title-note marker match, excluding full Markdown emphasis."""
+
+    match = TITLE_NOTE_TERMINAL_STARS_RE.search(heading_text)
+    if match is None:
+        return None
+    stars = match.group("stars")
+    stripped = heading_text.strip()
+    # ``## *italic title*`` and ``## **bold title**`` use the same terminal
+    # bytes as this source-apparatus adapter.  A fully wrapped heading is
+    # ordinary Markdown unless project-level visual review says otherwise.
+    if (
+        not heading_text[match.end() :].strip()
+        and stripped.startswith(stars)
+        and len(stripped) > len(stars) * 2
+    ):
+        return None
+    return match
+
+
+def terminal_title_note_stars(heading_text: str) -> str | None:
+    """Return a terminal one- or two-star editorial title-note marker."""
+
+    match = _terminal_title_note_match(heading_text)
+    return match.group("stars") if match else None
+
+
+def terminal_title_note_heading_marker(body: str) -> tuple[str, int] | None:
+    """Return a heading's title-note marker and zero-based source column."""
+
+    heading_match = ATX_HEADING_CAPTURE_RE.fullmatch(body)
+    if heading_match is None:
+        return None
+    heading_text = heading_match.group("text").rstrip()
+    marker_match = _terminal_title_note_match(heading_text)
+    if marker_match is None:
+        return None
+    return (
+        marker_match.group("stars"),
+        heading_match.start("text") + marker_match.start("stars"),
+    )
+
+
+def title_note_definition_marker(body: str) -> str | None:
+    """Return the one- or two-star marker starting a title-note definition."""
+
+    match = TITLE_NOTE_DEFINITION_RE.match(body)
+    return match.group("stars") if match else None
 
 
 def preferred_newline(lines: Sequence[str], index: int) -> str:
@@ -254,11 +474,18 @@ def marker_context(
     return compact(previous), compact(following)
 
 
-def load_boundary_manifest(path: Path) -> dict[int, str]:
-    """Load a duplicate-safe ``{"boundaries": {page: label}}`` manifest."""
+def parse_boundary_manifest(payload: bytes) -> dict[int, str]:
+    """Parse duplicate-safe boundary-manifest bytes.
 
-    with path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle, object_pairs_hook=_JsonObject)
+    Byte-oriented callers can hash and interpret the exact same snapshot,
+    avoiding a time-of-check/time-of-use gap if another writer replaces the
+    manifest while an audit is running.
+    """
+
+    try:
+        raw = json.loads(payload.decode("utf-8"), object_pairs_hook=_JsonObject)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid UTF-8 JSON: {error}") from error
     if not isinstance(raw, _JsonObject):
         raise ValueError("boundary manifest root must be a JSON object")
 
@@ -294,6 +521,12 @@ def load_boundary_manifest(path: Path) -> dict[int, str]:
         boundaries[page] = raw_label
         original_keys[page] = raw_page
     return boundaries
+
+
+def load_boundary_manifest(path: Path) -> dict[int, str]:
+    """Load a duplicate-safe ``{"boundaries": {page: label}}`` manifest."""
+
+    return parse_boundary_manifest(path.read_bytes())
 
 
 def boundary_contract_problems(

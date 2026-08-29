@@ -6,6 +6,8 @@
 
 無括號都要按語境同 PDF 查：
 
+以下詞對只係展示近形、同音、字母／符號混入等錯誤形態，唔係固定替換表。單一材料新見到嘅人名、書脊、頁面家具或錯詞寫入 project-local `correction-ledger`／`project-suspects.txt`；唔好因為完成一本書就繼續擴充核心例詞。
+
 - `禁賭/黎賭`、`重大/重火`、`呈文/呈女`、`查辦/杳辦`、`議决/議次`
 - `綱領/網領`、`總綱/總網`、`聯絡/聯落`、`任期內/任期丙`
 - `本局/本屈`、`籌/薵`、`膏腴/膏膄`、`盤據/盤拔`
@@ -68,7 +70,7 @@
 - 速記錄發言人轉換係強分段訊號：`某號議員謂`、`督部堂代表謂`、`議長謂`。
 - `箚復爲箚復事...` 呢類黐住嘅標題要拆成 heading 加正文；但唔好順手統一全篇 `箚/劄/剳/札`。
 - 同頁可能交錯多份短文件；頁頂短句可能係新案，唔一定係上一段續文。
-- 合訂講義以課目作主要結構，例如 `法學通論`、`政治學`、`憲法講義`、`行政法學`、`大淸會典要義`、`經濟學`。
+- 合訂講義通常以原書印出嘅課名／篇名作主要結構；逐處按版面判斷，唔好預設或硬編一套固定課目。
 - 刪 `<!-- page_... -->` 後要查相鄰普通正文行，避免留下 Markdown soft wrap。
 
 ## 有標點講義
@@ -91,13 +93,12 @@
 ## 完成前搜尋
 
 ```bash
-rg -n "\[|\]|<!--|gjcool|此頁OCR|[A-Za-z]" TARGET.md
-rg -n "廣東1|諮護|薵辦|籌辯|議局籌辦處第|報吿|承印|廣州大典|太典|史部|政書|經濟學K|縱濟學|澄 濟" TARGET.md
-rg -n "投樂|議負|化表|日衣|日小|審杳|投聚|颐|巾學|礼充|膏脾|男增|男籌|男案|男文" TARGET.md
-rg -n "萬員|月費壹員|不無1|箚發1|全體1|建1|陳夔1|收人|錄年|香惱|圡造|寳業" TARGET.md
+rg -n "\[|\]|<!--|gjcool|此頁OCR|[A-Za-z]|�" TARGET.md || true
+rg -n "[[:blank:]]+$" TARGET.md || true
+test ! -s project-suspects.txt || rg -n -f project-suspects.txt TARGET.md || true
 ```
 
-所有命中都要分類成 `fixed`、`source-intentional`、`allowed-format` 或 `unresolved`。英文封面題名、CIP／ISBN／分類號、合法外文同 table `<br>` 可以係正文；乾淨 audit 唔等於要求搜尋零命中。
+`project-suspects.txt` 由目前文件嘅重複頁眉／頁腳、correction ledger、OCR disagreement、專名 inventory 同已核實錯形產生。所有命中都要分類成 `fixed`、`source-intentional`、`allowed-format` 或 `unresolved`。英文封面題名、CIP／ISBN／分類號、合法外文同 table `<br>` 可以係正文；乾淨 audit 唔等於要求搜尋零命中。
 
 刪 page comments 後查 soft wrap：
 

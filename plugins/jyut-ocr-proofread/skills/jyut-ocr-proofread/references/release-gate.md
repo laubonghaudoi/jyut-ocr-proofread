@@ -1,11 +1,14 @@
-# 長書校對封關同來源例外
+# 來源例外同可重播封關
 
-用呢份 reference 處理本書校勘符號、原書本身嘅不配對標點、平行篇章互校，同埋長書最後 assemble／交付。呢啲規則係 release gate，唔係用嚟代替逐頁視覺校對。
+用呢份 reference 處理來源校勘符號、原書本身嘅不配對標點、平行篇章互校，同埋 `release` profile 嘅 assemble／交付。呢啲規則唔係每份 PDF 嘅預設負擔，亦唔係用嚟代替逐頁視覺校對。
+
+開工先寫 applicability matrix：`basic`／`structured`／`release` profile，同 notation、題名註、長目錄、表格、外部復原等 feature gate 係 `enabled` 定 `not-applicable`。只有實際啟用嘅 gate 先需要相應 policy、ledger、inventory 或 receipt；唔好建立空 artifact 冒充完整。
 
 ## 目錄
 
 - [先讀本書凡例](#先讀本書凡例)
 - [保存來源異常](#保存來源異常)
+- [以兩段 audit 建立來源例外](#以兩段-audit-建立來源例外)
 - [傳播已確認錯字](#傳播已確認錯字)
 - [用平行篇章產生候選](#用平行篇章產生候選)
 - [封關長目錄對賬](#封關長目錄對賬)
@@ -13,6 +16,7 @@
 - [建立 release plan 同證據生命週期](#建立-release-plan-同證據生命週期)
 - [遷移舊 sidecar](#遷移舊-sidecar)
 - [寫入同驗證 hash receipt](#寫入同驗證-hash-receipt)
+- [定義 canonical output 同 current completion](#定義-canonical-output-同-current-completion)
 - [驗證來源 PDF 同 renders](#驗證來源-pdf-同-renders)
 - [封關清單](#封關清單)
 
@@ -56,6 +60,8 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final \
 
 未有可靠凡例證據就唔好建立 policy。Residual scan 有命中唔代表一定要刪；逐項分類後先決定。
 
+內容位置凍結後，用 `build_notation_inventory.py` 建立逐 scan／line／column inventory，並封目前 annotated target、authority 同可選 project inventory-profile hash。新見到嘅版次符號用 literal-only profile 加 ID，唔改核心 detector；只有來源確有星號題名註先加 `--include-starred-title-notes`。題注搬位或其他 patch 令 line locator 改變時要重建；inventory 只記位置，唔取代凡例授權。跨冊引用另一冊凡例嘅 edition identity／render evidence 見 `review-evidence.md`。
+
 ## 保存來源異常
 
 日期矛盾、重複字、文句不通、未閉引號／括號或連續開引號，先放大核對 PDF。若印刷本確實如此，原樣保留；唔好為語意合理、年代次序或符號平衡改書。原書用 `□` 表示破損時亦保留 `□`，唔由上下文猜補。
@@ -87,12 +93,18 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final \
 
 Exception 只承認「原書如此」，唔係忽略未核對 issue。保留 scan page、核圖說明同必要 crop 路徑；final 回覆列出 accepted exception 數量同位置。
 
+## 以兩段 audit 建立來源例外
+
+來源 delimiter exception 要由 marker-free provisional candidate 建立，唔可以先寫白名單再搵位置迎合。第一段用 final mode 跑 pre-exception audit，但唔傳 source exceptions；errors 只可係預先界定嘅 delimiter codes，warnings 同任何其他 error 都要先修正。逐個 issue保存 exact line／Unicode column／delimiter／text，再投影返 annotated marker provenance同唯一 scan。
+
+第二位 reviewer要逐張打開對應 individual original／full-resolution render，確認每個 issue真係 source-as-printed，並封 render path／hash／bytes／dimensions同逐 scan/code/delimiter distribution。之後先由 strict config deterministic產生 current exact exceptions，再跑 final audit，要求 errors／warnings／unresolved全部為零而 accepted set exact等於已核 visual set。Candidate line、text、projection、audit tool、boundary或render任何一項漂移，都要重跑 pre-exception inventory同 visual binding；舊 exception唔可以靠相似字串移位繼承。
+
 ## 傳播已確認錯字
 
 獨立視覺 sweep 經常喺冇 `[]` 嘅高信心文字先發現人名、官名同固定搭配錯形。每次確認一處後，記錄簡短 correction ledger：
 
 ```json
-{"wrong":"釣鑒","verified":"鈞鑒","scan_page":88,"evidence":"p088 crop"}
+{"wrong":"錯形","verified":"核圖字形","scan_page":8,"evidence":"scan 8 crop"}
 ```
 
 再做三層候選搜尋：
@@ -174,11 +186,13 @@ Review evidence 係狀態，唔係可以由 sidecar builder 隨時重建嘅裝�
 
 任何 segment、ordered manifest、combined annotated、boundary manifest、finalizer input 或 final Markdown 嘅後續 patch，都令之前嘅 assembly receipt 同 final QA 失效。唔好只重跑最後一個 scanner；要由受影響嘅 assembly 步驟重新開始。
 
-如果 patch 發生喺獨立覆核之後，舊 `independent-checked` 唔會因為更新 hash 自動繼承。二選一：由 writer 以外嘅 reviewer 重新覆核所有受影響 scan（跨頁 join、heading、list、table 或註腳要連相鄰頁）；或者建立 exact sealed amendment ledger，逐項保存 `before`、`after`、`scan_page`、目前 `render_sha256`、`independent_verifier`、證據 artifact 路徑同 `evidence_sha256`。Amendment ledger 要記自身 hash、列入 durable review evidence，同受影響 segment 一齊重新凍結；缺任何欄位都唔可以保留 `independent-checked`。
+如果 patch 發生喺獨立覆核之後，舊 `independent-checked` 唔會因為更新 hash 自動繼承。二選一：由 writer 以外嘅 reviewer 重新覆核所有受影響 scan（跨頁 join、heading、list、table 或註腳要連相鄰頁）；或者建立具體而 sealed 嘅 amendment ledger，逐項保存 `before`、`after`、`scan_page`、目前 `render_sha256`、`independent_verifier`、證據 artifact 路徑同 `evidence_sha256`。Validator 只驗 before／after 非空而相異；佢哋同 baseline／current 內容嘅關係仍要由 reviewer 同 sealed evidence 證明。Amendment ledger 要記自身 hash、列入 durable review evidence，同受影響 segment 一齊重新凍結；缺任何欄位都唔可以保留 `independent-checked`。
+
+新 ledger 用唯一 `ocr-review-amendment` v1 schema同 `independent-pass-after-amendment` status，並先通過 `validate_review_evidence.py`。Current hashes 只放 canonical `current_content_hashes`；唔喺 auditor、inline recheck同外部 amendment重複保存多份互相漂移嘅 current seal。完整 schema見 `review-evidence.md`。
 
 ## 建立 release plan 同證據生命週期
 
-完成 replay、開始 finalizer 前建立 strict v1 `release-plan.json`。Root 必須恰好有 `schema_version`、`discovery`、`release_roots`、`artifacts`，按下述 TOC evidence 規則加 `reconciliation_scope`；unknown 或 duplicate JSON keys 會失敗。`discovery` 只有非空 `globs`，全部 pattern 同 artifact paths 都係 plan 目錄以下嘅安全相對路徑。
+完成 replay、開始 finalizer 前建立 strict v1 `release-plan.json`。Root 必須恰好有 `schema_version`、`discovery`、`release_roots`、`artifacts`，按下述 TOC evidence 規則加 `reconciliation_scope`；unknown 或 duplicate JSON keys 會失敗。`discovery` 只有非空 `globs`，全部 pattern 同 artifact paths 都係 plan 目錄以下嘅安全相對路徑。每種 schema 要明寫相對路徑 base（例如 validation root、manifest directory或 plan directory）；先按該 base canonicalize，再做 containment、alias、case／symlink／hard-link檢查，唔可以依賴 caller CWD。
 
 每個 artifact 必須恰好提供 `id`、`type`、`path`、`classification`、`lifecycle`、`validation`、`sha256`、`depends_on`；按需要先加 `exclusion_reason`、`superseded_by`、`singleton_role`。`id`／`type`／role 用 kebab case，`sha256` 永遠係該 artifact 完整 bytes 嘅 64 位小寫 digest，唔使用 `include` boolean、`hashes` array 或 `file-sha256` 欄名。
 
@@ -194,6 +208,8 @@ Discovery 要作 canonical inventory，而唔係臨尾 recursive glob 猜依賴�
 ```bash
 python3 scripts/validate_release_evidence.py release-plan.json
 ```
+
+Dependency edge 要表達真實導出方向，唔用 combined annotated 加同名 catch-all relation 直連晒所有 artifacts。上游改動後可先跑 `plan_release_rebuild.py`；佢會將 direct stale 沿 reverse dependencies 傳播同列重建次序，但結果只可靠到 plan 已寫明嘅依賴。Release validator 亦唔理解 opaque sidecar 內部 status，專用 review／題注／notation／TOC semantic gate仍要獨立通過。
 
 只要 active included artifacts 出現以下五種專用 type 任一種，就必須有 `reconciliation_scope`；真正完全冇呢類 TOC evidence 嘅 plan 先可以省略。Scope 必須恰好有 `id`、`unit`、`source_count`、`included_count`、`evidence_ids`、`partitions`；`id`／`unit` 用 kebab case，source count 為正整數，included count 介乎 0 同 source count。`evidence_ids` 五個 key 同 target type 固定如下：
 
@@ -221,7 +237,7 @@ Schema migration 本身唔等於 OCR 內容失效。只要舊逐頁視覺 eviden
 
 ```bash
 python3 scripts/finalize_page_markers.py combined-annotated.md \
-  --expected-count 290 \
+  --expected-count "$EXPECTED_SCAN_COUNT" \
   --boundary-manifest boundaries.json \
   --output final.md \
   --receipt assembly-receipt.json \
@@ -249,6 +265,14 @@ python3 scripts/audit_ocr_markdown.py final.md --mode final \
 
 `assembly-receipt-release-plan-missing` 表示仍係 legacy v1；`assembly-receipt-release-plan-invalid` 表示目前 plan／classified evidence 已經過唔到 validator；`assembly-receipt-annotated-not-active`／`assembly-receipt-boundary-not-active` 表示專用 input 唔再恰好屬於 active set；`assembly-receipt-release-plan-closure-mismatch` 表示 receipt upstreams 唔再 exact 等於 plan closure；`assembly-receipt-generated-path-classified` 表示 final／receipt alias 咗任何 classified artifact。`assembly-input-changed` 表示 late patch 後未重新 finalize；`assembly-output-changed` 表示 final 喺 receipt 之後被改；`assembly-final-stale` 表示目前 annotated 加 boundary contract 重建唔出目前 final。Receipt 同重建可以證明目前 plan closure 同 annotated-to-final 關係，但唔會自行證明 combined annotated 當初語義上按正確 segment 次序拼接；所以 ordered manifest、assembled marker replay 同 assembly semantic review 仍然係必要 gate。
 
+## 定義 canonical output 同 current completion
+
+- Canonical delivered Markdown 由 schema v2 receipt `output.path` 指定，唔由慣例檔名決定。直接寫 public path係合法；唔要求每個 project都有 `release/final.md`。
+- 如果 internal同 public兩份都宣稱 final，兩者 live bytes／SHA必須一致。每份各有自己嘅 schema v2 receipt同 final audit，或者由 post-final bundle封 canonical target、secondary target、parity result同兩者tracking state；因 output path唔同，receipt hashes本身可以唔同。
+- Pre-final root summary `pass`只表示 candidate readiness，必須聲明 `scope: pre-final`；佢唔證明 final/public target已寫入或仍 current。可選 post-final completion summary要封 canonical target(s)、receipts、audits、parity同 tracked／untracked／ignored／repo外狀態，但 summary只係索引，authority仍係 receipt＋audit＋live hashes。
+- 回答既有 release「而家係咪完成」時做 read-only current-seal check：由 receipt解析 target，重算 target／receipt／plan／source hashes，重跑 plan validator，要求 rebuild planner direct／transitive stale為零，再以 check-only／stdout或 discovery scope外暫存重跑 final audit。Persisted pass報告唔可以代替呢次 live check；多冊完成係每冊 current closure嘅 conjunction。
+- OCR coverage、逐頁視覺校對、deterministic release同 repo／publish delivery係四條獨立軸。Untracked final可以係本機內容同 release complete，但未 repo-integrated；用 `git status`加 `git check-ignore -v`如實報告，唔自動 stage、commit或publish。
+
 ## 驗證來源 PDF 同 renders
 
 `source_pdf` 路徑可以因檔案搬位而失效，來源身份要靠 SHA-256。Page manifest 要保存 `source_sha256`、`expected_scan_pages`，以及每頁 `scan_page`、`render_file`、`render_sha256`。每頁預設 `marker_expected: true`；只有空白、重複等已逐頁確認而刻意唔設 Markdown marker 嘅 scan，先明寫 `"marker_expected": false`。封關時用目前實際 PDF 路徑重算來源 hash，再逐一重算所有 render；唔可以只 hash manifest 本身。
@@ -267,9 +291,10 @@ Audit 要求 scan sequence 恰好係 `1..expected_scan_pages`，每個 render �
 
 ## 封關清單
 
-只有以下項目全部成立，先可以交付：
+先按 applicability matrix 篩出目前 profile 真正啟用嘅項目；所有核心項目同所有已啟用 feature gate 成立，先可以交付。標明 `not-applicable` 嘅項目唔需要建立空 sidecar，但理由要同文件實際結構一致：
 
 - 每個非空白 scan page 已有 `worker-checked`，要求獨立覆核嘅範圍亦有 `independent-checked`；
+- 聲稱逐頁 review嘅每個 scan都以 individual original／full-resolution render作文字依據，render hash同 current page manifest一致；contact sheet／thumbnail只作導航，唔計直接 coverage；
 - independent reviewer 同 writer 身份分開，覆核 range、ledger／report hash 同逐頁 status 無降級；
 - 所有 agent final report 已收齊，無 active writer／auditor；
 - 高信心 visual sweep、correction propagation 同平行篇章候選已處理；
@@ -279,14 +304,21 @@ Audit 要求 scan sequence 恰好係 `1..expected_scan_pages`，每個 render �
 - 每個 TOC scan 嘅末端印刷參照已 inventory、復原漏抽並由獨立 reviewer 100% 覆核；item／group ledger 分開，所有非 TOC-eligible heading 有 exclusion reason；
 - 所有 semantic／high-risk variant、頁碼差額同 reorder 已通過獨立 challenge，頁碼 mapping 無改寫目錄原樣參照；
 - 獨立覆核後嘅 late patch 已重新覆核受影響頁，或者由欄位完整而已封存嘅 amendment ledger 覆蓋；
+- formal candidate已STOP-WRITE；bulk text／structure delta可逆重建pre-seals，機械changed scans／fields同聲明集合exact，無collateral，independent verifier open0；
+- canonical amendment ledger 已通過 `validate_review_evidence.py`，無自創 pass status、重複 current seal 或 stale content／render／evidence hash；
+- semantic changed inventory由 text同全部 normative facts／structure channels機械導出；final union、facts-only、structure-only、restored、delta rows同neighbor/context sets各自可驗，無用重疊counts冒充coverage；
+- 如有星號題名註，逐 item 核對 ownership，`audit_title_notes.py` 無 missing／orphan／未覆核 cross-page hazard；raw heuristic hazards同 fixed／accepted-source-faithful dispositions exact set-equal，release open0。任何 accepted transition 都由目前 target／boundary hash 綁定嘅 exact visual review 放行。若有來源 notation，inventory 同目前 annotated／authority／inventory-profile hash 相符；
 - ordered manifest 已由目前 segments deterministic replay，重建結果同 combined annotated byte-for-byte 相同；strict range／marker gate 通過，首尾句／metadata ownership 亦由另行 semantic review 核實；
 - release plan 已 inventory 每份 candidate artifact；active dependency closure 完整、hash typed 而相符、DAG 無循環，亦無 orphan active artifact；
 - 所有 active artifacts 都係 validation pass、非 provisional、非 failing；historical／superseded artifacts 有 exclusion reason，replacement 唯一而有效；
 - marker、boundary、註腳、tight list、table 欄數、heading、soft break、EOF whitespace 同 residual audit 通過；
 - 目前 source PDF、完整 scan sequence、annotated marker coverage 同每個 render hash 都同已封存 page manifest 相符；
 - receipt 係 schema v2，恰好一個 `release-plan` role；legacy v1 已用目前有效 plan 重新 finalize，唔係手改版本號；
+- receipt `output.path`已定義 canonical target；若同時宣稱 internal／public finals，target bytes／SHA parity同各自receipt／audit（或post-final bundle）已驗；
 - final audit 已重驗目前 plan／classified hashes；receipt ordered upstreams exact 等於 active closure，annotated／boundary／final hashes 同重建結果亦相符；
 - output／receipt 無 alias plan／任何 classified artifact，亦無新命中 pre-final discovery globs；
 - final audit JSON 已封 final／receipt／interpretation gates／audit tool hash；如有 post-final bundle plan，佢只作第二層 inventory，無回餵 finalizer；
 - 最後一次 patch 之後已重新跑所有相關 gate；
-- final 回覆清楚區分逐頁視覺核實、外部復原、source-as-printed exception 同仍未解決疑問。
+- content-changing sweep全部喺finalize前完成；post-final檢查只read-only，若發現問題已重開assembly／plan／receipt／audit cycle；
+- 若聲稱現有release仍current，live target／receipt／plan／source hashes、plan validator、stale planner 0同check-only final audit已重驗；
+- final 回覆清楚區分逐頁視覺核實、外部復原、source-as-printed exception、仍未解決疑問，同canonical target嘅tracked／untracked／ignored／repo外狀態。

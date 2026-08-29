@@ -1,5 +1,24 @@
 # 更新摘要
 
+## Unreleased — 2026-08-25
+
+- 將長書 LLM 並行整理成平台中立 role contract：主 agent 先封互斥 scan assignments，segment writer 只寫自己輸出並封 SHA 後 STOP-WRITE；另一個 read-only visual auditor 逐頁核原圖同 segment interfaces，任何 audit 後 patch 都要重新 seal 同重核受影響頁／相鄰頁。
+- 新增 Codex／Claude Code custom-agent adapters。Codex 刻意省略 `model`／`model_reasoning_effort`，由 explicit spawn override、`[agents]` default、parent value 依次解析；Claude 明寫 `model: inherit`，同時保留平台級／per-invocation override 嘅較高優先權。通用 skill 唔 hard-code 平台 model ID，LLM children 同時數量亦唔超過 runtime slots 同八個兩者中較小者。
+- 新增 `run_apple_vision_ocr.py` 同 `apple_vision_ocr.swift`：最多八個本機 Vision process、連續或選頁 selector、逐頁 staging／atomic promotion、hash-bound resume、partial-failure report 同顯式 overwrite；Apple Vision 只係 draft，亦無任何 Tesseract fallback。
+- 新增 recoverable local installer：Codex／Claude skill 同兩個 Claude agents 用 exact symlink；因目前 Codex custom-agent sensitive read 拒絕 leaf symlink，兩個 Codex TOML 用 SHA-256／mode 封存嘅 regular-file projection。所有被替換 object 先移入 timestamped backup，manifest 封 absolute paths、regular-file hashes／modes、directory modes、nested symlink link text 同 projection bytes，source／target／backup overlap、安裝失敗 rollback、restore drift 全部 fail closed。
+- 補 selector／worker cap／resume／partial failure／adapter model policy／link-copy drift、backup、rollback 同 restore regression；macOS 真 Vision performance 只作 opt-in smoke／benchmark，唔用易波動時間門檻代替正確性。Codex auditor 保留 forward-compatible `sandbox_mode = "read-only"` 宣告，但已記錄目前版本唔套用 role-level sandbox override，只有 effective read-only parent／child 先可當成硬只讀 audit。
+
+## 0.2.5 — 2026-08-06
+
+- 將星號題名／題注整理成 optional source-apparatus gate：`audit_title_notes.py` 按 configurable main heading level 比對 `*`／`**` marker arity，列 missing／orphan，同時封 target／boundary、generator toolchain hash 同 invocation profile；逐 heading ownership 仍由人核圖。
+- Cross-page note audit 將所有 note→running-body transition 預設列為 actionable，刪除任何特定語言或來源句式嘅自動 exception；只有 project-local transition review exact seal 目前 target、boundary、前後文字、獨立 reviewer 同 visual evidence 先接受。
+- 新增 `build_notation_inventory.py`，逐 scan 記錄通用 residual symbols，並封目前 target／authority、可選 literal-only inventory profile、generator toolchain hash 同 invocation profile；metadata、code、單行 HTML comments 同 Markdown links 唔當來源 notation，星號題名註只喺明確啟用時記錄。
+- 新增 canonical `ocr-review-amendment` v1 schema同 `validate_review_evidence.py`：唯一 pass status、safe relative paths、current content／render／evidence hashes、非空而相異嘅 before／after rows、writer／verifier independence、changed＋immediate-neighbor coverage同零 unresolved全部 fail closed；before／after 嘅 baseline/current 語義關係仍由 reviewer 證明。
+- 新增 `plan_release_rebuild.py`：重算 active included artifacts，找 direct hash mismatch／可由 discovery 重建嘅 missing，再沿 reverse dependency graph 傳播 transitive stale，輸出 dependency-first rebuild order；scope 外 missing path 直接 invalid，JSON output 亦拒絕 plan、declared artifacts 同工具嘅 hard-link／symlink／case alias；exit 0／1／2 分別代表 clean／stale／invalid。
+- 補充跨冊 byte-identical evidence import、projection→amendment→current chain、typed dependency方向，以及 annotated／final audit CLI profile；final mode唔再誤傳 annotated-only expected-count／boundary options。
+- 補 generator snapshot／typed dependency 規則，避免 planner 因工具未入 plan 而將舊 schema report 誤當 current；JSON report path 亦拒絕 target／authority／boundary 嘅 symlink、hard-link 同 case alias。
+- 新增 profile routing 同核心更新門檻：單一材料嘅書名、scan、專名、符號同來源句式留喺 project contracts；核心只吸收跨材料重現或格式無關嘅資料遺失／fail-open／provenance 問題。Regression tests 全用 synthetic fixtures，實書只作外部 forward test。
+
 ## 0.2.4 — 2026-08-05
 
 - 長目錄 reconciliation 新增明確 `reconciliation_scope` 同分冊／分卷 partitions；合訂本只交付其中一冊時，範圍外目錄項仍要逐項記錄 disposition。只要 active closure 出現 TOC reconciliation 專用 evidence type 就強制要 scope，唔可以靠省略欄位繞過。
@@ -17,7 +36,7 @@
 - 將目錄條目、目錄分組同正文結構分成獨立 ledger：只比較有明確納入／排除理由嘅 TOC-eligible headings，並以正文分隔頁、running header 同首項互證分組起點。
 - `source-verified-*` 新增獨立 challenge gate：除純註號等 routine apparatus 外，題名、日期、人名、官職、數字、機構等實質異文，以及所有頁碼差異／異序，都要由另一 reviewer 同時核對 TOC 同正文頁圖。
 - 頁碼差異用 `page-exact`、`fixed-ocr-reference`、`source-printed-ref-differs-from-body-start` 等細分類，保留原目錄頁碼、正文實際起頁同鄰頁證據；唔再壓成普通文字異文或靜靜改正來源。
-- Independent review 後嘅 late patch 要重新核對受影響頁，或者用包含 exact before/after、scan/render hash、獨立 verifier 同 evidence hash 嘅 amendment ledger 封存；所有 release decision sidecars 都要加入 assembly receipt upstream。
+- Independent review 後嘅 late patch 要重新核對受影響頁，或者用包含具體 before/after、scan/render hash、獨立 verifier 同 evidence hash嘅 amendment ledger封存；before/after內容關係由 reviewer同 evidence證明，所有 release decision sidecars都要加入 assembly receipt upstream。
 - `audit_ocr_markdown.py` 同 `finalize_page_markers.py` 新增 opt-in `--summary-only`，長書封關時可隱藏逐頁 context，同時保留 deterministic issue counts、exit code、write／receipt 摘要；預設 verbose 行為不變。
 - 測試由 33 個增至 35 個，新增兩個 summary-only regression。
 
@@ -32,7 +51,7 @@
 
 ## 0.2.1 — 2026-08-03
 
-- 將兩冊長書實作經驗整理成 release gate：先讀本書凡例、收齊所有 writer／auditor、凍結 segment hash，最後一個 patch 後重新 assemble、finalize 同完整 audit。
+- 將長書實作經驗整理成可選 release gate：先讀來源凡例、收齊所有 writer／auditor、凍結 segment hash，最後一個 patch 後重新 assemble、finalize 同完整 audit。
 - 新增 `notation-policy.json` 支援；凡例證明 ASCII `[ ]` 係來源編者訂正時，final audit 唔再將佢無條件當 OCR confidence residual。
 - 新增 stack-aware 全形 delimiter audit，同 duplicate-safe exact line／column／symbol `source-exceptions.json`；原書本身未閉或錯序標點要保存 scan page、整行文字同核圖說明，失效 exception 會報錯。
 - Finalizer 新增 SHA-256 assembly receipt，同 ordered `--upstream` dependencies；final audit 可以偵測 late segment／manifest／annotated patch同 receipt 後 final 修改，並由目前 annotated + boundary contract byte-for-byte 重建 final，唔靠 mtime。

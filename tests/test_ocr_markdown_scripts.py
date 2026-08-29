@@ -1066,6 +1066,7 @@ class FinalizePageMarkersTests(unittest.TestCase):
             manifest = Path(temporary_directory) / "boundaries.json"
             receipt = Path(temporary_directory) / "assembly-receipt.json"
             release_plan = Path(temporary_directory) / "release-plan.json"
+            structured_report = Path(temporary_directory) / "structured-audit.json"
             target.write_text(annotated, encoding="utf-8")
             manifest.write_text(
                 '{"boundaries":{"1":"start","2":"structural"}}',
@@ -1099,6 +1100,18 @@ class FinalizePageMarkersTests(unittest.TestCase):
                 manifest,
             )
             unproven_final_audit = run_script(AUDIT, output, "--mode", "final")
+            structured_final_audit = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--annotated-source",
+                target,
+                "--boundary-manifest",
+                manifest,
+                "--json-report",
+                structured_report,
+            )
             receipt_final_audit = run_script(
                 AUDIT,
                 output,
@@ -1123,6 +1136,22 @@ class FinalizePageMarkersTests(unittest.TestCase):
             )
             self.assertEqual(unproven_final_audit.returncode, 1)
             self.assertIn("[loose-list-blank]", unproven_final_audit.stdout)
+            self.assertEqual(
+                structured_final_audit.returncode,
+                0,
+                structured_final_audit.stdout + structured_final_audit.stderr,
+            )
+            structured_report_data = json.loads(
+                structured_report.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                structured_report_data["input_sha256"]["annotated_source"],
+                sha256_file(target),
+            )
+            self.assertEqual(
+                structured_report_data["input_sha256"]["boundary_manifest"],
+                sha256_file(manifest),
+            )
             self.assertEqual(
                 receipt_final_audit.returncode,
                 0,
@@ -1149,6 +1178,18 @@ class FinalizePageMarkersTests(unittest.TestCase):
             self.assertEqual(stale_receipt_audit.returncode, 1)
             self.assertIn("[loose-list-blank]", stale_receipt_audit.stdout)
             self.assertIn("[assembly-input-changed]", stale_receipt_audit.stdout)
+            stale_structured_audit = run_script(
+                AUDIT,
+                output,
+                "--mode",
+                "final",
+                "--annotated-source",
+                target,
+                "--boundary-manifest",
+                manifest,
+            )
+            self.assertEqual(stale_structured_audit.returncode, 1)
+            self.assertIn("[structured-final-stale]", stale_structured_audit.stdout)
 
     def test_dry_run_never_writes_source_or_output(self) -> None:
         annotated = "<!-- page_001 -->\n正文。\n"
@@ -1819,6 +1860,7 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                     "duplicate_min_chars": 120,
                     "expected_count": None,
                     "optional_gates": {
+                        "annotated_source": False,
                         "assembly_receipt": False,
                         "boundary_manifest": False,
                         "notation_policy": False,
@@ -1923,6 +1965,7 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                         "duplicate_min_chars": 77,
                         "expected_count": 3,
                         "optional_gates": {
+                            "annotated_source": False,
                             "assembly_receipt": False,
                             "boundary_manifest": True,
                             "notation_policy": False,

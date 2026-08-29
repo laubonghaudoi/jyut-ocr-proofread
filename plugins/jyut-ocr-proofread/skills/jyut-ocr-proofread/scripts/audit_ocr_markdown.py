@@ -35,6 +35,7 @@ from _ocr_markdown import (
     page_manifest_problems,
     parse_page_spec,
     paths_refer_to_same_file,
+    parse_boundary_manifest,
     split_lines,
 )
 
@@ -110,6 +111,7 @@ NOTATION_ALLOWED_MEANINGS = {
     ),
 }
 OPTIONAL_GATE_ROLES = (
+    "annotated_source",
     "assembly_receipt",
     "boundary_manifest",
     "notation_policy",
@@ -1258,13 +1260,17 @@ def _write_json_report(
     skip_pages: set[int],
     duplicate_min_characters: int,
     gate_paths: dict[str, Path],
+    gate_sha256_overrides: dict[str, str] | None = None,
 ) -> None:
     """Write a stable report without timestamps or report-path-dependent data."""
 
     target_bytes = target_text.encode("utf-8")
+    sealed_gate_hashes = gate_sha256_overrides or {}
     input_sha256 = {
         role: (
-            file_sha256(gate_paths[role])
+            sealed_gate_hashes[role]
+            if role in sealed_gate_hashes
+            else file_sha256(gate_paths[role])
             if gate_paths[role].is_file()
             else None
         )
@@ -1360,6 +1366,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit JSON boundary contract for an exact annotated-to-final audit",
     )
     parser.add_argument(
+        "--annotated-source",
+        type=Path,
+        help=(
+            "structured-profile annotated source used with --boundary-manifest "
+            "to reconstruct and verify a final target without a release receipt"
+        ),
+    )
+    parser.add_argument(
         "--duplicate-min-chars",
         type=int,
         default=120,
@@ -1433,9 +1447,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if (args.page_manifest is None) != (args.source_pdf is None):
         parser.error("--page-manifest and --source-pdf must be used together")
+    if args.annotated_source is not None and args.boundary_manifest is None:
+        parser.error("--annotated-source requires --boundary-manifest")
+    if args.annotated_source is not None and args.assembly_receipt is not None:
+        parser.error(
+            "--annotated-source and --assembly-receipt are alternative proof paths"
+        )
+    if args.annotated_source is not None and paths_refer_to_same_file(
+        args.annotated_source, args.target
+    ):
+        parser.error("--annotated-source must differ from the final target")
+    if (
+        args.annotated_source is not None
+        and args.boundary_manifest is not None
+        and paths_refer_to_same_file(
+            args.annotated_source, args.boundary_manifest
+        )
+    ):
+        parser.error("--annotated-source must differ from --boundary-manifest")
     gate_paths = {
         role: path
         for role, path in (
+            ("annotated_source", args.annotated_source),
             ("assembly_receipt", args.assembly_receipt),
             ("boundary_manifest", args.boundary_manifest),
             ("notation_policy", args.notation_policy),
@@ -1455,11 +1488,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
     try:
         skip_pages = parse_page_spec(args.skip_pages)
-        boundary_contract = (
-            load_boundary_manifest(args.boundary_manifest)
-            if args.boundary_manifest is not None
-            else None
-        )
+        structured_annotated_text: str | None = None
+        gate_sha256_overrides: dict[str, str] = {}
+        if args.annotated_source is not None:
+            annotated_bytes = args.annotated_source.read_bytes()
+            structured_annotated_text = annotated_bytes.decode("utf-8")
+            assert args.boundary_manifest is not None
+            boundary_bytes = args.boundary_manifest.read_bytes()
+            boundary_contract = parse_boundary_manifest(boundary_bytes)
+            gate_sha256_overrides = {
+                "annotated_source": hashlib.sha256(annotated_bytes).hexdigest(),
+                "boundary_manifest": hashlib.sha256(boundary_bytes).hexdigest(),
+            }
+        else:
+            boundary_contract = (
+                load_boundary_manifest(args.boundary_manifest)
+                if args.boundary_manifest is not None
+                else None
+            )
         notation_policy = (
             load_notation_policy(args.notation_policy)
             if args.notation_policy is not None
@@ -1475,23 +1521,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         receipt_target_is_final = args.mode == "final" or (
             args.mode == "auto" and not preview_markers and not preview_malformed
         )
-        verified_break_lines = (
+        verified_break_lines = set(
             assembly_receipt_verified_break_lines(args.assembly_receipt)
             if args.assembly_receipt is not None and receipt_target_is_final
             else frozenset()
         )
+        structured_proof_issues: list[Issue] = []
+        if structured_annotated_text is not None:
+            if not receipt_target_is_final:
+                structured_proof_issues.append(
+                    Issue(
+                        "error",
+                        "annotated-source-requires-final",
+                        None,
+                        "--annotated-source can only prove a final-mode target",
+                    )
+                )
+            else:
+                assert boundary_contract is not None
+                rebuilt, structured_break_lines = (
+                    apply_boundary_contract_with_break_lines(
+                        structured_annotated_text, boundary_contract
+                    )
+                )
+                if rebuilt != text:
+                    structured_proof_issues.append(
+                        Issue(
+                            "error",
+                            "structured-final-stale",
+                            None,
+                            "final target is not the exact result of applying the "
+                            "supplied boundary manifest to --annotated-source",
+                        )
+                    )
+                else:
+                    verified_break_lines.update(structured_break_lines)
         result = audit_text(
             text,
             mode=args.mode,
             expected_count=args.expected_count,
             skip_pages=skip_pages,
             duplicate_min_characters=args.duplicate_min_chars,
-            boundary_contract=boundary_contract,
+            boundary_contract=(
+                None if structured_annotated_text is not None else boundary_contract
+            ),
             notation_policy=notation_policy,
             source_exceptions=source_exceptions,
-            allowed_loose_list_break_lines=verified_break_lines,
+            allowed_loose_list_break_lines=frozenset(verified_break_lines),
         )
-        release_issues: list[Issue] = []
+        release_issues: list[Issue] = list(structured_proof_issues)
         if args.page_manifest is not None:
             assert args.source_pdf is not None
             release_issues.extend(
@@ -1507,6 +1585,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     for code, message in page_manifest_marker_coverage_problems(
                         args.page_manifest,
                         annotated_path=args.target,
+                    )
+                )
+            elif structured_annotated_text is not None:
+                assert args.annotated_source is not None
+                release_issues.extend(
+                    Issue("error", code, None, message)
+                    for code, message in page_manifest_marker_coverage_problems(
+                        args.page_manifest,
+                        annotated_path=args.annotated_source,
                     )
                 )
         if args.assembly_receipt is not None:
@@ -1560,6 +1647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 skip_pages=skip_pages,
                 duplicate_min_characters=args.duplicate_min_chars,
                 gate_paths=gate_paths,
+                gate_sha256_overrides=gate_sha256_overrides,
             )
         except (OSError, UnicodeError, ValueError) as error:
             parser.error(str(error))

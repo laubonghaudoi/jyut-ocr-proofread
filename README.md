@@ -1,23 +1,51 @@
 # 粵文 OCR 校對
 
-呢個係 Codex plugin，用嚟按同名 PDF 校對歷史中文 OCR Markdown，流程基於 `jyut-ocr` repo 嘅校對守則。
+呢個係一份跨 Codex／Claude Code 嘅 Agent Skill，亦包裝成 Codex plugin，用嚟按同名 PDF 校對歷史中文 OCR Markdown；流程基於 `jyut-ocr` repo 嘅校對守則。
 
-plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR rules 都用粵文寫，令 agent 處理 OCR 校對時直接讀到同 repo 指示一致嘅工作語言。
+plugin 會安裝一個 skill：`jyut-ocr-proofread`。同一個 canonical skill directory 可以由 Codex 同 Claude Code 共用；skill body 同 bundled OCR rules 都用粵文寫，令 agent 處理 OCR 校對時直接讀到同 repo 指示一致嘅工作語言。
 
 ## 佢會做咩
 
 - 以 PDF 圖像作最終依據；
+- 先揀 `basic`、`structured` 或 `release` profile，再按文件實際特徵啟用 notation、題名註、長目錄、表格等專項 gate；
 - 保留 PDF 原有字形、異體字、舊字形同舊式標點；
 - 查 PDF 後先刪頁眉、頁腳、書脊、承印資訊、OCR notice 等頁面家具；
 - 優先處理低信心括號同語境唔通嘅高信心 OCR 錯字；
 - 先讀本書凡例，分清 OCR confidence bracket 同原書訂正／增補／缺損符號；
 - 按 PDF 版面重整 heading、段落、bullet list、table；
 - 新 OCR 或補漏時先用視覺識別，GJ.cool 只作背景並行或極短時間輔助；
+- Apple Vision 底稿可以用最多八個本機 process 並行，安全續跑並保存逐頁 hash／run report；
 - 單一長書可以按頁段寫入獨立 segment，再由主 agent 驗證交界同統一合併；
+- Codex／Claude Code 可以用同一份角色 contract 分派 segment writer 同 read-only visual auditor；LLM worker 依平台有效 model-resolution chain 揀模型，Apple Vision process 本身無 LLM model；
 - 分辨 PDF scan page 同書內 printed page，記錄旋轉、spread、重複掃描同真正缺頁；
 - 分開對賬長目錄條目、分組、TOC-eligible 正文題名、原書頁碼差異同高風險異文；合訂本可明定分冊 scope，而範圍外項目仍有 disposition；
-- 用 bundled scripts 重播 ordered segments、驗證 release evidence closure，並檢查 page marker、跨頁黐行、tight list、table 欄數、成對標點、Markdown 結構、final residue 同 stale assembly；
+- 人工核對題名尾端星號同來源題注 ownership，另用 deterministic auditor 檢查 item-level arity 同跨頁 hazard；
+- `structured` 工作用 project-local review 記錄同 annotated＋boundary exact reconstruction 封關；只有要求可重播交付時，先用 canonical late-amendment ledger 同 dependency graph 重建 stale evidence；
+- 用 bundled scripts 重播 ordered segments，並檢查 page marker、跨頁黐行、tight list、table 欄數、成對標點、Markdown 結構、final residue；`release` profile 再驗完整 evidence closure 同 stale assembly；
 - 長文或 final pass 時載入更完整嘅粵文 `jyut-ocr` 校對 reference。
+
+## 泛化原則
+
+- 書名、頁碼、人名、地名、頁面家具、單一來源句式同版次符號全部留喺 project-local policy／ledger／profile，唔 hard-code 入 plugin。
+- 一本書出現一次嘅問題先記做 candidate lesson；只有跨互不相關材料重現，或者揭示格式無關嘅資料遺失、fail-open、hash／provenance／安全問題，先更新核心。
+- 核心 regression tests 只用最小 synthetic fixtures；實書可以做外部 forward test，但唔將書名、實頁碼或大段原文寫入技能規則。
+
+## Unreleased 本機更新
+
+- 新增平台中立 `subagent-orchestration.md`，將 writer assignment、互斥寫入、candidate seal、read-only independent audit、late-patch 重核同最多八個 LLM child 嘅規則集中成一份 contract。
+- 新增 Codex TOML 同 Claude Code Markdown adapters。Codex 省略 model fields；Claude 明寫 `model: inherit`，兩邊都唔鎖死會過時嘅 model ID。
+- 新增 bounded Apple Vision runner；`--workers auto` 最多用八個本機 process，逐頁 staging／atomic commit，並只續用 render、tool、profile 同 output hashes 全部吻合嘅 draft。
+- 新增 recoverable local adapter installer：兩邊 skill 同兩個 Claude agents 用 exact symlink；目前 Codex 會拒絕 leaf-symlink custom-agent TOML，所以兩個 Codex agents 改用可驗 hash 嘅 sealed regular-file projection。替換現有 object 前先保存包含 regular-file hashes、directory modes 同 nested symlink link text 嘅完整 tree inventory，亦可以 fail-closed restore。
+
+## 0.2.5 更新重點
+
+- 新增 `audit_title_notes.py`，逐 main item 核對題名 `*`／`**` 同題注 marker arity，列 missing／orphan 同跨頁 note hazard。任何語言嘅 note→running-body transition 都預設 fail closed；只可由 project-local、綁定目前 target／boundary hash 同逐項視覺證據嘅 transition review 放行，逐 heading ownership 仍由人核圖。
+- 新增 `build_notation_inventory.py`，封存目前 annotated target、凡例 authority、可選 project literal profile、generator toolchain／invocation profile，同通用 residual symbols 嘅 scan provenance；metadata、code、單行 HTML comments 同 Markdown links 唔當來源 notation，星號題名註亦只喺明確啟用時 inventory。
+- 新增 strict `validate_review_evidence.py`，統一 late-amendment status、current hashes、非空而相異嘅 before／after rows、render／evidence、writer／independent verifier 同 changed＋neighbor scan coverage；before／after 嘅內容關係仍由 reviewer 證明。
+- 新增 `plan_release_rebuild.py`，找 direct hash drift／可由 discovery 重建嘅 missing artifacts，再沿 reverse dependencies 傳播 transitive staleness，輸出 dependency-first rebuild order；scope 外 missing path 直接 invalid，JSON output 亦唔可 alias plan、declared artifacts 或工具，clean／stale／invalid 有獨立 exit status。
+- 補跨冊 evidence import 規則：byte-identical renders 仍要封 upstream receipt、scan mapping、review coverage 同 projection→amendment→current hash chain；亦明確分開 annotated-only 同 final audit CLI options。
+- 衍生報告封 generator toolchain hash 同 invocation profile；要令 planner 偵測工具/schema 升級，release plan 亦要封 project-local tool snapshot 同 typed dependency。
+- 技能新增明確泛化門檻：單一材料嘅書名、頁碼、專名、符號同來源句式留喺 project contracts；核心只吸收跨無關材料重現嘅失效類型，或者格式無關嘅資料遺失、fail-open、hash／provenance／安全問題。Regression tests 只用 synthetic fixtures；實書只作外部 forward test。
 
 ## 0.2.4 更新重點
 
@@ -66,16 +94,21 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。skill body 同 bundled OCR
 
 ## Bundled audit scripts
 
-喺 skill 目錄執行。長書先用 strict manifest assemble／replay combined annotated，再 audit、驗 release plan、finalize 同跑 final audit：
+喺 skill 目錄執行。`basic` profile 唔需要完整 evidence chain；以下係 `release` profile 範例，只加入文件實際啟用嘅 feature gate。`--transition-reviews` 只喺逐項視覺核對後加入；`--authority`、`--inventory-profile` 同 `--include-starred-title-notes` 亦各自按來源結構選用。
 
 ```bash
 python3 scripts/assemble_ocr_segments.py ordered-segments.json
 python3 scripts/assemble_ocr_segments.py ordered-segments.json --output TARGET-annotated.md --write --receipt segment-assembly-receipt.json
 python3 scripts/assemble_ocr_segments.py ordered-segments.json --output TARGET-annotated.md
-python3 scripts/audit_ocr_markdown.py TARGET-annotated.md --mode annotated --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf
-python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json
+python3 scripts/audit_ocr_markdown.py TARGET-annotated.md --mode annotated --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf
+python3 scripts/audit_title_notes.py TARGET-annotated.md --boundary-manifest boundaries.json --json-report title-note-audit.json
+python3 scripts/audit_title_notes.py TARGET-annotated.md --boundary-manifest boundaries.json --transition-reviews transition-reviews.json --json-report title-note-audit.json
+python3 scripts/build_notation_inventory.py TARGET-annotated.md --authority notation-authority.json --inventory-profile inventory-profile.json --include-starred-title-notes --require-markers --json-report notation-inventory.json
+python3 scripts/validate_review_evidence.py --root /path/to/book-evidence /path/to/book-evidence/segments/*.amendment.json
+python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json
 python3 scripts/validate_release_evidence.py release-plan.json
-python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count 240 --skip-pages 17 --boundary-manifest boundaries.json --output TARGET.md --receipt assembly-receipt.json --release-plan release-plan.json --write
+python3 scripts/plan_release_rebuild.py release-plan.json --json-report release-rebuild.json
+python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json --output TARGET.md --receipt assembly-receipt.json --release-plan release-plan.json --write
 python3 scripts/audit_ocr_markdown.py TARGET.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json --json-report final-audit.json
 ```
 
@@ -111,6 +144,40 @@ codex plugin marketplace add /path/to/jyut-ocr-proofread
 codex plugin add jyut-ocr-proofread@jyut-ocr-proofread
 ```
 
+### Codex 同 Claude Code 共用 canonical skill
+
+本機開發可以唔經 plugin cache，直接由目前 clone 安裝兩邊嘅 personal skill 同 custom agents。兩個 skill directory 同兩個 Claude agent adapter 係 exact symlink；實測 Codex `0.149.0-alpha.4.1` 會 discover leaf-symlink agent 名，但套用 TOML 時用 [no-follow sensitive read](https://github.com/openai/codex/blob/97e7c55e2b64738ec6fe2311ad77a60b106fefae/codex-rs/exec-server/src/regular_file.rs#L20-L43) 而報 `ELOOP`，而目前 upstream 亦有明確拒絕測試，所以兩個 Codex agent adapter 係 byte-for-byte sealed regular-file projection。Repo 仍然係唯一 canonical source；adapter 改動後 `--check` 會報 hash drift，再跑 `--install` 先刷新 projection。
+
+先 dry-run，再安裝；installer 會先備份任何現有 directory／file／foreign symlink，並封存完整 tree inventory。Source／target／backup path 有重疊，或者 nested backup／sealed projection 喺 restore 前漂移，都會 fail closed：
+
+```bash
+python3 scripts/install_local_adapters.py --dry-run
+python3 scripts/install_local_adapters.py --install
+python3 scripts/install_local_adapters.py --check
+```
+
+備份 manifest 會印喺 install output；要還原時用：
+
+```bash
+python3 scripts/install_local_adapters.py --restore /absolute/path/to/manifest.json
+```
+
+安裝後要開新 Codex task／Claude Code session，先保證兩邊重新 discover custom agents。Codex adapters 刻意唔設 `model`／`model_reasoning_effort`：按 [Codex custom-agent model resolution](https://learn.chatgpt.com/docs/agent-configuration/subagents)，逐項依次採用 explicit spawn override、`[agents]` default、再到 parent value。Claude adapters 用 `model: inherit`；按 [Claude Code subagent resolution](https://code.claude.com/docs/en/sub-agents)，平台級 `CLAUDE_CODE_SUBAGENT_MODEL` 或 per-invocation override 仍然有較高優先權。技能本身唔鎖死任何 model ID。
+
+Auditor adapter 會宣告 Codex `sandbox_mode = "read-only"`，或用 Claude `permissionMode: plan` 並移除直接 write tools。不過實測上述 Codex 版本唔會將 role-level sandbox override 套入 child；Claude 嘅 live parent bypass 類 mode 亦可優先過 adapter default。主 agent 只可以喺 parent／child effective mode 確實係 read-only／plan 時，先將結果當成合約所講嘅獨立 read-only audit；單靠 prompt 禁止寫入唔係權限隔離。
+
+### Apple Vision 並行底稿
+
+macOS 有 Apple Vision 同 Swift toolchain 時，可直接由 skill 目錄跑：
+
+```bash
+python3 scripts/run_apple_vision_ocr.py RENDER_DIR OUTPUT_DIR \
+  --first-page 1 --last-page 800 --workers auto \
+  --report /path/to/reports/apple-vision-run.json
+```
+
+亦可以用 `--pages 1-40,45,50-80`。`auto` 取待處理頁數、physical cores 同八者中最小值；一頁失敗會保留其他已原子提交嘅頁並 exit nonzero，之後用同一 selector 續跑。舊 schema 或 hash／profile 漂移預設拒絕，只有確認要重做時先加 `--overwrite`。Apple Vision JSON／TXT 永遠只係 draft，逐頁校對仍以原 PDF／full-resolution render 為準，而且 runner 絕不調用 Tesseract／Tessdata。
+
 ## GJ.cool token
 
 GJ.cool 唔係必需。若你有 token，可以喺自己本機 shell 或本地環境設定其中一個變數：
@@ -124,6 +191,11 @@ GJ.cool 唔係必需。若你有 token，可以喺自己本機 shell 或本地�
 
 ```text
 .agents/plugins/marketplace.json
+adapters/
+  codex/agents/jyut-ocr-segment-writer.toml
+  codex/agents/jyut-ocr-visual-auditor.toml
+  claude/agents/jyut-ocr-segment-writer.md
+  claude/agents/jyut-ocr-visual-auditor.md
 plugins/jyut-ocr-proofread/
   .codex-plugin/plugin.json
   skills/jyut-ocr-proofread/
@@ -133,14 +205,30 @@ plugins/jyut-ocr-proofread/
     references/jyut-ocr-detailed-rules.md
     references/long-book-workflow.md
     references/release-gate.md
+    references/review-evidence.md
+    references/subagent-orchestration.md
     scripts/_ocr_markdown.py
+    scripts/apple_vision_ocr.swift
     scripts/assemble_ocr_segments.py
     scripts/audit_ocr_markdown.py
+    scripts/audit_title_notes.py
+    scripts/build_notation_inventory.py
     scripts/finalize_page_markers.py
+    scripts/plan_release_rebuild.py
+    scripts/run_apple_vision_ocr.py
     scripts/validate_release_evidence.py
+    scripts/validate_review_evidence.py
+scripts/install_local_adapters.py
 tests/
+  test_agent_adapters.py
+  test_apple_vision_pool.py
+  test_local_adapters.py
+  test_notation_inventory.py
   test_ocr_markdown_scripts.py
   test_release_evidence_tools.py
+  test_release_rebuild.py
+  test_review_evidence.py
+  test_title_note_tools.py
 ```
 
 ## License

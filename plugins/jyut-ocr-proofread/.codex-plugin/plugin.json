@@ -1,7 +1,7 @@
 {
   "name": "jyut-ocr-proofread",
-  "version": "0.2.4",
-  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions, scoped TOC reconciliation, typed release evidence, replayable long-book assembly, source/render provenance, and deterministic release audits.",
+  "version": "0.2.5+codex.20260806182006",
+  "description": "Transcribe and proofread historical Chinese PDFs and OCR Markdown with Cantonese jyut-ocr conventions and risk-based structural or release audits.",
   "author": {
     "name": "laubonghaudoi",
     "url": "https://github.com/laubonghaudoi"
@@ -9,20 +9,29 @@
   "homepage": "https://github.com/laubonghaudoi/jyut-ocr-proofread",
   "repository": "https://github.com/laubonghaudoi/jyut-ocr-proofread",
   "license": "MIT",
-  "keywords": ["ocr", "proofreading", "chinese", "markdown", "pdf", "jyut-ocr"],
+  "keywords": [
+    "ocr",
+    "proofreading",
+    "chinese",
+    "markdown",
+    "pdf",
+    "jyut-ocr"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Jyut OCR Proofread",
     "shortDescription": "Transcribe and audit historical Chinese PDF OCR.",
-    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs: preserve printed glyph variants, editorial notation and old punctuation; isolate long-book page ranges safely; reconcile full or volume-scoped TOCs with explicit partitions; detect duplicate or missing scans; reconstruct cross-page text, footnotes, headings, lists and tables; and replay assembly while validating typed evidence, source exceptions and release dependency closure before delivery.",
+    "longDescription": "Use a Cantonese jyut-ocr workflow to transcribe and proofread historical Chinese PDFs while preserving printed glyph variants and old punctuation. Start with page-by-page visual review, then enable only the structural, source-apparatus, long-document or replayable release gates that the material actually needs.",
     "developerName": "laubonghaudoi",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
     "defaultPrompt": [
-      "校對一份 jyut-ocr Markdown，逐頁對同名 PDF。",
-      "識別一份長篇歷史中文 PDF，分段校對後安全合併。",
-      "對賬長目錄、分組同正文題名，獨立覆核實質異文。",
-      "重播長書 assembly，驗證 release plan 同 evidence closure。"
+      "\u6821\u5c0d\u4e00\u4efd jyut-ocr Markdown\uff0c\u9010\u9801\u5c0d\u540c\u540d PDF\u3002",
+      "\u8b58\u5225\u4e00\u4efd\u9577\u7bc7\u6b77\u53f2\u4e2d\u6587 PDF\uff0c\u5206\u6bb5\u6821\u5c0d\u5f8c\u5b89\u5168\u5408\u4f75\u3002",
+      "識別文件特徵，再核對適用嘅長目錄、題名註、表格或跨頁結構。"
     ]
   }
 }
