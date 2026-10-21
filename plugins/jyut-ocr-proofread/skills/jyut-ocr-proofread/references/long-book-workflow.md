@@ -153,6 +153,7 @@ boundary contract 以「marker 所屬 scan page 同佢之前內容嘅關係」�
 - `paragraph`：上一段已完，下一頁另起正文段；移除後保留一個空白行。
 - `list-cont`：下一頁係同一 item 續文；移除後按 item 語法黐合或保留兩空格縮入，唔開新 item。
 - `list-new`：下一頁開始新 item；移除後保留 list 所需單換行，連續 items 中間唔加空白行。
+- `table-cont`：同一表格續行；兩邊須係有外側 `|` 嘅表格行，移除後只留單換行，唔插入空段或重複欄頭。
 - `structural`：下一頁開始 heading、table、引文或其他區塊；按 Markdown 結構保留所需空白行。
 
 Annotated segment 可以保持普通 marker：

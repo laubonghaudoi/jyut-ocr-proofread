@@ -116,7 +116,7 @@ python3 scripts/audit_ocr_markdown.py TARGET.md --mode final --notation-policy n
 
 `ordered-segments.json` 要用 strict v1 root：`schema_version`、`separator_utf8`、`scan_start`／`scan_end`、`page_manifest: {path, sha256}` 同 ordered `segments`；每段提供 path／sha256／scan range。Separator 只可係空字串或全由 LF newline characters 組成，唔准夾文字或其他 whitespace。Assembler 會將每段同組裝後嘅實際 markers 同 sealed page manifest 嘅 `marker_expected`／ordered segment inventory exact 比較，唔只係 concatenate 檔案。
 
-`boundaries.json` 用 marker page 作 key，label 係 `start`、`join`、`paragraph`、`structural`、`list-cont` 或 `list-new`。每個實際 marker 必須恰好有一條記錄；無 manifest 時 dry-run 只會列 context，任何 `--write` 都會拒絕。寫入亦必須指定另一個 `--output`，腳本永不覆寫 annotated 底稿。完整 schema 同跨頁例子見 `references/long-book-workflow.md`。
+`boundaries.json` 用 marker page 作 key，label 係 `start`、`join`、`paragraph`、`structural`、`list-cont`、`list-new` 或 `table-cont`。`table-cont` 保留跨頁表格行之間嘅單換行。每個實際 marker 必須恰好有一條記錄；無 manifest 時 dry-run 只會列 context，任何 `--write` 都會拒絕。寫入亦必須指定另一個 `--output`，腳本永不覆寫 annotated 底稿。完整 schema 同跨頁例子見 `references/long-book-workflow.md`。
 
 Annotated mode 故意唔用 `--notation-policy` 放行來源符號；已核圖符號可以列為 known annotated-stage issue，但唔可以將該 audit 稱為 clean。Final mode 先按 exact notation policy 接受；本書冇相應來源符號／異常時，省略 notation／exception 選項。
 

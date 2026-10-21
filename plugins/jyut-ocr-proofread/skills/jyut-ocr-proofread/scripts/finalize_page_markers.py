@@ -309,6 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "structural",
                 "list-cont",
                 "list-new",
+                "table-cont",
             )
         )
         print(
@@ -330,6 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "structural",
             "list-cont",
             "list-new",
+            "table-cont",
         )
     )
     assert args.output is not None

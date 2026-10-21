@@ -35,7 +35,7 @@ LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+\S")
 TABLE_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 BOUNDARY_LABELS = frozenset(
-    {"start", "join", "paragraph", "structural", "list-cont", "list-new"}
+    {"start", "join", "paragraph", "structural", "list-cont", "list-new", "table-cont"}
 )
 
 
@@ -588,6 +588,13 @@ def boundary_contract_problems(
             problems.append(
                 f"boundary {page} uses list-new but following line is not a list item"
             )
+        if label == "table-cont" and not all(
+            TABLE_RE.fullmatch(line_body(lines[index]))
+            for index in (previous, following)
+        ):
+            problems.append(
+                f"boundary {page} uses table-cont but both sides are not table rows"
+            )
         following_body = line_body(lines[following])
         previous_in_list = _previous_line_is_in_list_item(lines, previous)
         following_is_list_item = LIST_ITEM_RE.match(following_body) is not None
@@ -657,7 +664,7 @@ def apply_boundary_contract_with_break_lines(
                 raise ValueError("annotated input contains reserved boundary sentinel")
             break_sentinels.add(sentinel)
             lines[previous + 1 : following] = [sentinel + newline]
-        else:  # list-cont and list-new retain exactly one physical newline.
+        else:  # List and table continuations retain one physical newline.
             lines[previous + 1 : following] = []
 
     final_lines = split_lines("".join(lines))

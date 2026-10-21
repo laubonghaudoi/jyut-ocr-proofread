@@ -953,6 +953,45 @@ class FinalizePageMarkersTests(unittest.TestCase):
             self.assertIn("page=3 contract=paragraph", result.stdout)
             self.assertIn("page=4 contract=list-cont", result.stdout)
 
+    def test_table_continuation_preserves_one_table_and_rejects_prose(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            target, output, manifest = (
+                root / "annotated.md", root / "final.md", root / "boundaries.json"
+            )
+            manifest.write_text(
+                '{"boundaries":{"1":"start","2":"table-cont"}}',
+                encoding="utf-8",
+            )
+            target.write_text(
+                "<!-- page_001 -->\n| 名 | 數 |\n| --- | --- |\n| 甲 | 1 |\n"
+                "\n<!-- page_002 -->\n\n| 乙 | 2 |\n",
+                encoding="utf-8",
+            )
+            result = run_script(
+                FINALIZE, target, "--boundary-manifest", manifest,
+                "--output", output, "--write",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                "| 名 | 數 |\n| --- | --- |\n| 甲 | 1 |\n| 乙 | 2 |\n",
+            )
+            audited = run_script(
+                AUDIT, output, "--mode", "final", "--annotated-source", target,
+                "--boundary-manifest", manifest,
+            )
+            self.assertEqual(audited.returncode, 0, audited.stdout)
+            for previous, following in (("正文", "| 乙 | 2 |"), ("| 甲 | 1 |", "正文")):
+                with self.subTest(previous=previous, following=following):
+                    target.write_text(
+                        f"<!-- page_001 -->\n{previous}\n<!-- page_002 -->\n{following}\n",
+                        encoding="utf-8",
+                    )
+                    rejected = run_script(FINALIZE, target, "--boundary-manifest", manifest)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("both sides are not table rows", rejected.stderr)
+
     def test_join_rejected_for_indented_list_continuation(self) -> None:
         annotated = """<!-- page_001 -->
 - 一、頁尾未完
