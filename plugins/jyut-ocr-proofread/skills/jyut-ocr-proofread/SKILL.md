@@ -5,6 +5,8 @@ description: 逐頁識別、校對同清理歷史中文 PDF／OCR Markdown；支
 
 # Jyut OCR 校對
 
+需要人工標註、對圖裁定或覆核 golden 時，讀 `references/manual-review-tool.md`，經 `scripts/review.py` 啟動 `jyut-ocr-bench` 共用工具；題目、圖片同答案歷史留喺各 project，唔另建標註 server。保存裁定唔會自動改正文或 golden。
+
 用呢個 skill 將歷史中文 PDF 忠實轉錄成 Markdown，或者按同名 PDF 校對既有 OCR。目標係保存原文，而唔係現代化、改寫或潤飾。
 
 ## 先讀邊份規則

@@ -231,6 +231,18 @@ tests/
   test_title_note_tools.py
 ```
 
+## 共用人工標註工具
+
+人工對圖、疑字裁定同 golden 覆核統一用 `jyut-ocr-bench` 嘅共用介面；本 skill 只提供薄啟動器。程式集中維護，圖片、題目同 append-only 裁定歷史留喺各 project。
+
+```bash
+export JYUT_OCR_BENCH_ROOT=/path/to/jyut-ocr-bench
+python3 plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts/review.py \
+  --project-root /path/to/book-project --port 8765
+```
+
+需要 Python 3.10+ 及 review API 1。由已安裝 skill 目錄啟動時用 `python3 scripts/review.py`；設定、舊 audit／goldgate 匯入同 benchmark 覆核見 [共用人工標註工具](plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/references/manual-review-tool.md)。保存答案唔會自動改正文或 golden，既有 release evidence 驗證仍按原流程執行。
+
 ## License
 
 MIT
