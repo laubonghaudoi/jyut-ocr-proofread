@@ -1,5 +1,29 @@
 # 更新摘要
 
+## Unreleased — 2026-11-11
+
+- 新增 checkpoint-replay 批次問答傳輸層（`_packet_client.py` 同 `apply_packet_answers.py`）：`book_profile.py` 同 `proofread_pages.py` 預設採用 `--backend packet`（`EXIT_PACKETS_PENDING = 10`），將雙底稿異字裁決、融合式 `census+punctuate` 標點切片、表格重建同整頁結構排版自動去重打包成 `wave-NN/bundle-01..KK.json`，交由 Antigravity／Codex／Claude Code 嘅並行 subagent 批次作答；重跑時 `0ms` 重播並通過所有確定性校驗（`verify_characters`、標點計數、表格字元校驗），同時保留 `--backend http` 兼容本機 OpenAI 介面端點。
+- 補齊雙底稿確定性管線工具鏈：`survey_pdf.py`（新增 `--images-dir` 純圖片目錄模式同 `source_kind: "images-dir"` provenance 驗證）、`run_hunyuanocr_second_look.py`（接上 `SharedHunyuanClient` 同 `GPUQueue`，寫入 `schemaVersion: 2` 封條並為 `< 3` 頁短樣本過濾外邊界頁碼）、`book_profile.py`（新增 `<= 4` 頁短篇零校準快速路徑、單一區塊 `survey_notation` 去重與雙頁書眉偵測）、`proofread_pages.py`（新增 `--table-orientation {auto,as-printed}` 與 `U+16FE6 -> 。。` 規範化）、`stitch_tables.py`（新增無損 `--output-dir` 同尾頁留空邊界支援）、`repair_book.py`（確定性跨頁修復，包含 `U+16FE6 -> 。。` 同散文／管道表內原印 `* -> \*` 轉義，保護 HTML `<table>` 同多項 `* ` 清單）以及 `finish_book.py`／`clean_book.py`。
+- 收緊腳註與圖版忠實保留預設：`_footnotes.py` 預設保留原印數值編號（如 `[^240]`，`--renumber-footnotes` 為 opt-in），支援單頁部分配對同跨 1 頁孤立註號回溯；`finalize_page_markers.py` 預設將腳註留喺頁底原位（`--relocate-footnotes` 為 opt-in）；`audit_ocr_markdown.py` 識別已有定義嘅行內 `[^label]` 腳註引用，唔再誤報 `low-confidence-bracket`；`finish_book.py` 預設關閉 `_figures.py` 裁圖刪字（`--extract-figures` 為 opt-in）。
+- `install_local_adapters.py` 升級至 schema v3，新增 `gemini-skill`（`~/.gemini/config/skills/jyut-ocr-proofread`），連同 Codex／Claude 共 7 個本機目標支援安裝、備份、回滾同 `--check` 驗收；單元測試擴充至 214 個，並加 `test_generic_text.py` 防止特定語料或評測書名滲入通用技能。
+
+## Unreleased — 2026-10-25
+
+- 補底稿→校對稿差異覆核同人工回饋指引：分開可見讀法退步與可證實因果、字位疑點與整句／同名提示、actionable closure 與未定字形。疑點交接綁定版本及精確出現位置，錯框後重核；保留無需修改嘅對照，唔新增實書字詞替換或聲稱跨材料準確率提升。
+- Hunyuan／Paddle owned runners 預設使用同一個每用戶 FIFO GPU queue，以穩定 guard 同有 kernel lock 嘅順序 tickets 協調跨 session 載入。Lease 只覆蓋 OCR 批次，子程序退出先交棒；繼承 descriptor 防止 parent 突然消失時提早釋放，Linux parent-death 設定亦補檢查同競爭窗口。
+- 加 queue directory／resource／wait-timeout 設定、等待狀態同 report；排隊超時／載入前 deadline 到期記 deferred，冇其他錯誤時 exit 75，cache-only resume 同外部 endpoint 唔入 owned queue。排隊唔接管 NInfer 或其他未參與程式。
+- Hunyuan 新增預設共用 broker：私有 Unix socket、自動啟動／同設定發現、session 輪流分派、全局 slot 上限、單 client 取消隔離、最後 client 離開後卸載。其他 backend 等候時停止新 membership，現有批次完成先 FIFO 交棒；可退回 dedicated 模式。
+- 新增 `--server-slots`／`--workers`，每 slot 保留相同 context，並封入底稿設定身份；request 固定 seed／關閉 prompt cache，並行輸出仍須核圖。Hunyuan backend 改由 fresh interpreter 安裝 parent-death signal，避免多線程 broker 使用 fork preexec callback。
+- 加獨立多程序共用、首 client 被殺、失敗／截斷、deadline／啟動競爭、Paddle 交棒、16 client 上限與 parent-death 測試；本機 GPU 實測另保存，唔將單次吞吐或正常完成當成全書準確率。
+- 借鑑 OCR pipeline 嘅通用失效機制，收窄文類詞表、語法黐段、套語拆 heading、金額單位同家具刪除嘅固定假設；引擎一致／通順只作線索，容許兩候選皆非，裁圖缺字同重複字串要返完整頁圖判斷。
+- 補逐書標點／版式觀察、標點漏／增及數字／外文／註號核對；普通網格與 HTML 合併格分流，保留複合 list item，明確既有 deterministic auditor 嘅格式覆蓋限制。
+- 將完整 release sequence 搬到專用 reference，釐清 basic 逐頁記錄同多 agent／封存要求；測試規則須有正反例，冇跨材料驗證唔宣稱準確率普遍提升。
+
+- 明確智能校對／最終內容審核層跟隨調用技能嘅當前 agent session；OCR backend 只提供底稿，唔綁定本機 Qwen、NInfer、GPU 型號或個人路徑，方便跨 Codex／Claude Code 同不同電腦重用。
+- Ubuntu／Linux 預設以 HunyuanOCR 產生逐頁底稿，PaddleOCR-VL 按疑點／版面需要選頁補讀；保留 macOS Apple Vision、agent 逐頁視覺校對、分段寫稿同獨立覆核。
+- 從本機 OCR pipeline 移植獨立 runners，保存原始模型結果、render／tool／profile 身份同 JSON／TXT 完成記錄；加強 Hunyuan 路徑設定、截斷回覆拒收同續跑設定核對。
+- 補本機模型路徑、單 GPU 順序執行、共享服務 ownership、各引擎座標／confidence 語義同部分頁第二底稿嘅 coverage 指引；runner 唔會自動接管 NInfer。
+
 ## Unreleased — 2026-08-25
 
 - 將長書 LLM 並行整理成平台中立 role contract：主 agent 先封互斥 scan assignments，segment writer 只寫自己輸出並封 SHA 後 STOP-WRITE；另一個 read-only visual auditor 逐頁核原圖同 segment interfaces，任何 audit 後 patch 都要重新 seal 同重核受影響頁／相鄰頁。

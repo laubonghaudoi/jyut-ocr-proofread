@@ -180,6 +180,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--relocate-footnotes",
+        action="store_true",
+        help=(
+            "opt-in: relocate unambiguous [^label]: definitions right after "
+            "their calling blocks instead of keeping them at page/section foot"
+        ),
+    )
+    parser.add_argument(
         "--summary-only",
         action="store_true",
         help="suppress per-marker context while retaining errors and summaries",
@@ -299,7 +307,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        result = apply_boundary_contract(source, boundary_contract)
+        result = apply_boundary_contract(
+            source, boundary_contract, relocate_footnotes=args.relocate_footnotes
+        )
         counts = " ".join(
             f"{label}={labels.get(label, 0)}"
             for label in (
@@ -321,7 +331,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     assert boundary_contract is not None
-    result = apply_boundary_contract(source, boundary_contract)
+    result = apply_boundary_contract(
+        source, boundary_contract, relocate_footnotes=args.relocate_footnotes
+    )
     counts = " ".join(
         f"{label}={labels.get(label, 0)}"
         for label in (

@@ -39,6 +39,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.repo = self.root / "repo"
         self.codex = self.root / "config/codex"
         self.claude = self.root / "config/claude"
+        self.gemini = self.root / "config/gemini"
         self.backups = self.root / "backups"
         self._create_repository_sources()
 
@@ -73,6 +74,8 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             str(self.codex),
             "--claude-root",
             str(self.claude),
+            "--gemini-root",
+            str(self.gemini),
             "--backup-root",
             str(self.backups),
         ]
@@ -90,7 +93,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
 
     def target_map(self) -> dict[str, Path]:
         specs = INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         )
         return {spec["id"]: spec["target"] for spec in specs}
 
@@ -111,19 +114,20 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             self.args("--dry-run")
         )
         self.assertEqual(dry_result, 0, dry_stderr)
-        self.assertEqual(dry_stdout.count("DRY-RUN LINK"), 4)
+        self.assertEqual(dry_stdout.count("DRY-RUN LINK"), 5)
         self.assertEqual(dry_stdout.count("DRY-RUN COPY"), 2)
         self.assertFalse(self.codex.exists())
         self.assertFalse(self.claude.exists())
+        self.assertFalse(self.gemini.exists())
         self.assertFalse(self.backups.exists())
 
         result, stdout, stderr = self.run_main(self.args("--install"))
         self.assertEqual(result, 0, stderr)
-        self.assertEqual(stdout.count("LINKED"), 4)
+        self.assertEqual(stdout.count("LINKED"), 5)
         self.assertEqual(stdout.count("COPIED"), 2)
         self.assertEqual(len(self.manifests()), 1)
         for spec in INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         ):
             self.assert_spec_current(spec)
 
@@ -131,7 +135,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             self.args("--check")
         )
         self.assertEqual(check_result, 0, check_stderr)
-        self.assertEqual(check_stdout.count("CHECK OK"), 6)
+        self.assertEqual(check_stdout.count("CHECK OK"), 7)
 
         again_result, again_stdout, again_stderr = self.run_main(
             self.args("--install")
@@ -144,7 +148,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         result, _, stderr = self.run_main(self.args("--install"))
         self.assertEqual(result, 0, stderr)
         specs = INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         )
         skill_source = specs[0]["source"]
         moved_source = skill_source.with_name("jyut-ocr-proofread-moved")
@@ -152,7 +156,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
 
         check_result, check_stdout, _ = self.run_main(self.args("--check"))
         self.assertEqual(check_result, 1)
-        for spec in specs[:2]:
+        for spec in specs[:3]:
             expected = f"CHECK ERROR {spec['target']}"
             self.assertIn(expected, check_stdout)
         self.assertIn("canonical source is absent", check_stdout)
@@ -161,7 +165,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         result, _, stderr = self.run_main(self.args("--install"))
         self.assertEqual(result, 0, stderr)
         specs = INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         )
         writer = next(spec for spec in specs if spec["id"] == "codex-segment-writer")
         old_bytes = writer["target"].read_bytes()
@@ -186,7 +190,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         writer = next(
             spec
             for spec in INSTALLER.build_specs(
-                self.codex, self.claude, repo_root=self.repo
+                self.codex, self.claude, self.gemini, repo_root=self.repo
             )
             if spec["id"] == "codex-segment-writer"
         )
@@ -207,7 +211,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         def disappear_during_setup(spec, *, backup_directory):
             nonlocal calls
             calls += 1
-            if calls == 3:
+            if calls == 4:
                 spec["source"].unlink()
             return real_manifest_entry(spec, backup_directory=backup_directory)
 
@@ -327,6 +331,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.assertEqual(os.readlink(broken_link), broken_text)
         self.assertFalse(targets["codex-visual-auditor"].exists())
         self.assertFalse(targets["claude-segment-writer"].exists())
+        self.assertFalse(targets["gemini-skill"].exists())
 
     def test_restore_refuses_tampered_target_before_mutating_any_link(self) -> None:
         result, _, stderr = self.run_main(self.args("--install"))
@@ -371,7 +376,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.assertEqual(restore_result, 1)
         self.assertIn("backup is missing or changed", restore_stderr)
         for spec in INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         ):
             self.assert_spec_current(spec)
 
@@ -388,6 +393,8 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             str(overlapping_codex),
             "--claude-root",
             str(self.claude),
+            "--gemini-root",
+            str(self.gemini),
             "--backup-root",
             str(self.backups),
         ]
@@ -408,6 +415,8 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             str(self.codex),
             "--claude-root",
             str(self.claude),
+            "--gemini-root",
+            str(self.gemini),
             "--backup-root",
             str(nested_backup),
         ]
@@ -494,7 +503,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.assertEqual(restore_result, 1)
         self.assertIn("injected restore move failure", stderr.getvalue())
         for spec in INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         ):
             self.assert_spec_current(spec)
 
@@ -512,7 +521,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
 
     def test_restore_leaves_preexisting_exact_link_untouched(self) -> None:
         specs = INSTALLER.build_specs(
-            self.codex, self.claude, repo_root=self.repo
+            self.codex, self.claude, self.gemini, repo_root=self.repo
         )
         preexisting = specs[0]
         preexisting["target"].parent.mkdir(parents=True)
@@ -529,6 +538,36 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.assertEqual(
             os.readlink(preexisting["target"]), str(preexisting["source"])
         )
+
+    def test_legacy_v2_manifest_can_still_be_restored(self) -> None:
+        result, _, stderr = self.run_main(self.args("--install"))
+        self.assertEqual(result, 0, stderr)
+        manifest_path = self.manifests()[0]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        gemini_entry = next(
+            item for item in manifest["entries"] if item["id"] == "gemini-skill"
+        )
+        Path(gemini_entry["target"]).unlink()
+        manifest["schema_version"] = 2
+        manifest["entries"] = [
+            item for item in manifest["entries"] if item["id"] != "gemini-skill"
+        ]
+        manifest["created_parent_directories"] = [
+            item
+            for item in manifest["created_parent_directories"]
+            if not item.startswith(str(self.gemini))
+        ]
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+
+        restore_result, restore_stdout, restore_stderr = self.run_main(
+            self.args("--restore", manifest_path)
+        )
+        self.assertEqual(restore_result, 0, restore_stderr)
+        self.assertIn("RESTORED", restore_stdout)
+        for entry_id in INSTALLER.LEGACY_SPEC_IDS_V2:
+            self.assertFalse(os.path.lexists(self.target_map()[entry_id]))
 
 
 if __name__ == "__main__":

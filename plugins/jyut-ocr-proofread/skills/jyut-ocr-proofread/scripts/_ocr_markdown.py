@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from collections import Counter
 from dataclasses import dataclass
 import fnmatch
 import hashlib
@@ -12,6 +14,7 @@ import unicodedata
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import _tables
 from validate_release_evidence import (
     _artifact_path as release_artifact_path,
     _load_json as load_release_plan_json,
@@ -33,10 +36,19 @@ TITLE_NOTE_TERMINAL_STARS_RE = re.compile(
 TITLE_NOTE_DEFINITION_RE = re.compile(r"^(?P<stars>\*{1,2})[ \t]+(?P<text>\S.*)$")
 LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+\S")
 TABLE_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
-FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+FENCE_RE = _tables.FENCE_RE
 BOUNDARY_LABELS = frozenset(
     {"start", "join", "paragraph", "structural", "list-cont", "list-new", "table-cont"}
 )
+NOTE_CIRCLED = "①-⑳㉑-㉟㊱-㊿⓪-⓿❶-➓"
+NOTE_FIGURE = (
+    rf"(?:\[\^[0-9]{{1,4}}\]|[{NOTE_CIRCLED}]|[⁰¹²³⁴-⁹]|<sup>\s*[0-9]{{1,3}}\s*</sup>"
+    rf"|\$\s*\^\{{+\s*(?:[0-9]{{1,3}}|[{NOTE_CIRCLED}]+)\s*\}}+\s*\$)"
+)
+NOTE_LINE_RE = re.compile(rf"^(?P<number>{NOTE_FIGURE}+)")
+THEMATIC_BREAK_RE = re.compile(r" {0,3}(?:[-*_][ \t]*){3,}")
+FOOTNOTE_HEAD_RE = re.compile(r" {0,3}\[\^(?P<label>[^\]\s]+)\]:")
+FOOTNOTE_CALL_RE = re.compile(r"\[\^(?P<label>[^\]\s]+)\]")
 
 
 class _JsonObject(list[tuple[str, object]]):
@@ -354,6 +366,26 @@ def find_page_markers(
     return markers, malformed
 
 
+table_cells = _tables.table_cells
+
+
+def is_table_row(line: str) -> bool:
+    """Whether a line is a Markdown table row under the skill's unified definition."""
+    return table_cells(line) is not None
+
+
+def html_table_lines(lines: Sequence[str]) -> frozenset[int]:
+    """Indices of the lines that lie inside an HTML <table>...</table>."""
+    starts, offset = [], 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+    inside: set[int] = set()
+    for start, end in _tables.html_table_spans("".join(lines)):
+        inside.update(range(bisect_right(starts, start) - 1, bisect_left(starts, end)))
+    return frozenset(inside)
+
+
 def is_structural_line(line: str) -> bool:
     """Return whether a line must retain a Markdown line boundary."""
 
@@ -363,15 +395,152 @@ def is_structural_line(line: str) -> bool:
         return True
     if body.startswith(("  ", "\t")):
         return True
-    if HEADING_RE.match(body) or LIST_ITEM_RE.match(body) or TABLE_RE.match(body):
+    if HEADING_RE.match(body) or LIST_ITEM_RE.match(body) or is_table_row(body):
+        return True
+    if _tables.HTML_TABLE_LINE_RE.match(body):
         return True
     if FENCE_RE.match(body):
         return True
     if stripped.startswith((">", "<!--", "```", "~~~")):
         return True
-    if re.fullmatch(r" {0,3}(?:[-*_][ \t]*){3,}", body):
+    if THEMATIC_BREAK_RE.fullmatch(body):
         return True
     return False
+
+
+def foot_notes(lines: Sequence[str], end: int) -> int:
+    """Where the foot notes that end LINES[:END] start, or END when none.
+
+    Includes lines before END opening with a note number (NOTE_LINE_RE), blank
+    lines between them, and an optional printed rule (THEMATIC_BREAK_RE) right
+    above them so a `join` boundary can carry foot-of-page notes past the end
+    of the split paragraph.
+    """
+    start, index = end, end - 1
+    while index >= 0:
+        body = line_body(lines[index])
+        if not body.strip():
+            index -= 1
+        elif NOTE_LINE_RE.match(body):
+            start, index = index, index - 1
+        else:
+            if start < end and THEMATIC_BREAK_RE.fullmatch(body):
+                start = index
+            break
+    return start
+
+
+def _takes_no_run_on(body: str) -> bool:
+    """Whether a line is structure that no join may run on to."""
+    return bool(
+        HEADING_RE.match(body)
+        or FENCE_RE.match(body)
+        or THEMATIC_BREAK_RE.fullmatch(body)
+        or body.lstrip().startswith("<")
+    )
+
+
+def _join_previous(lines: Sequence[str], index: int) -> tuple[int | None, int]:
+    """Return (previous prose line before foot notes, foot-notes start index)."""
+    notes = foot_notes(lines, index)
+    previous, _ = _nearest_nonblank(lines, notes - 1, -1)
+    if (
+        previous is not None
+        and notes < index
+        and PAGE_MARKER_RE.fullmatch(line_body(lines[previous]))
+    ):
+        previous = None
+    return previous, notes
+
+
+def place_footnotes(
+    lines: Sequence[str], breaks: frozenset[str] | set[str] = frozenset()
+) -> list[str]:
+    """Relocate unambiguous `[^label]:` definitions right after their calling blocks.
+
+    Only labels with exactly one definition and one call (outside definitions)
+    move; other definitions stay in place. Disabled by default so printed
+    page-foot or section-foot order is preserved unless opt-in `--relocate-footnotes`
+    is requested.
+    """
+
+    def gap(line: str) -> bool:
+        return is_blank(line) or line_body(line) in breaks
+
+    heads: dict[int, str] = {}
+    calls: dict[str, list[int]] = {}
+    for index, line in enumerate(lines):
+        body = line_body(line)
+        head = FOOTNOTE_HEAD_RE.match(body)
+        if head:
+            heads[index] = head.group("label")
+        for call in FOOTNOTE_CALL_RE.finditer(body, head.end() if head else 0):
+            calls.setdefault(call.group("label"), []).append(index)
+    defined = Counter(heads.values())
+    moving = {
+        index: label
+        for index, label in heads.items()
+        if defined[label] == 1
+        and len(calls.get(label, ())) == 1
+        and calls[label][0] not in heads
+    }
+    if not moving:
+        return list(lines)
+    rest: list[str] = []
+    at: dict[int, int] = {}
+    closing = False
+    for index, line in enumerate(lines):
+        if index in moving:
+            closing = True
+            continue
+        if closing and gap(line) and (not rest or gap(rest[-1])):
+            if rest and line_body(line) in breaks:
+                rest[-1] = line
+            continue
+        closing = closing and gap(line)
+        at[index] = len(rest)
+        rest.append(line)
+    if closing:
+        while rest and is_blank(rest[-1]):
+            rest.pop()
+    after: dict[int, list[str]] = {}
+    for index, label in moving.items():
+        end = at[calls[label][0]]
+        if not HEADING_RE.match(line_body(rest[end])):
+            while end + 1 < len(rest) and not gap(rest[end + 1]):
+                end += 1
+        while (
+            end + 2 < len(rest)
+            and gap(rest[end + 1])
+            and FOOTNOTE_HEAD_RE.match(line_body(rest[end + 2]))
+        ):
+            end += 2
+        after.setdefault(end, []).append(label)
+    order = {label: index for index, label in moving.items()}
+    out: list[str] = []
+    for index, line in enumerate(rest):
+        out.append(line)
+        if index not in after:
+            continue
+        newline = preferred_newline(rest, index)
+        if not line_ending(line):
+            out[-1] += newline
+        for label in sorted(after[index], key=lambda item: (len(item), item)):
+            definition = lines[order[label]]
+            out += [
+                newline,
+                definition if line_ending(definition) else definition + newline,
+            ]
+        if index + 1 < len(rest) and not gap(rest[index + 1]):
+            out.append(newline)
+    if lines and not line_ending(lines[-1]) and out:
+        out[-1] = _remove_line_ending(out[-1])
+
+    def kept(text: Sequence[str]) -> list[str]:
+        return sorted(line_body(line) for line in text if not gap(line))
+
+    assert kept(out) == kept(lines), "placing the footnotes lost or doubled a line"
+    return out
 
 
 def _nearest_nonblank(
@@ -414,7 +583,9 @@ def _previous_line_is_in_list_item(lines: Sequence[str], index: int) -> bool:
 
 
 def classify_marker_boundary(
-    lines: Sequence[str], marker: PageMarker
+    lines: Sequence[str],
+    marker: PageMarker,
+    table_lines: frozenset[int] | None = None,
 ) -> MarkerBoundary:
     """Classify a marker as join, break, line, or edge.
 
@@ -424,14 +595,20 @@ def classify_marker_boundary(
     ``edge`` is a marker without content on one side.
     """
 
+    if table_lines is None:
+        table_lines = html_table_lines(lines)
     previous, blank_before = _nearest_nonblank(lines, marker.line_index - 1, -1)
     following, blank_after = _nearest_nonblank(lines, marker.line_index + 1, 1)
     if previous is None or following is None:
         kind = "edge"
     elif blank_before or blank_after:
         kind = "break"
-    elif marker.indent or is_structural_line(lines[previous]) or is_structural_line(
-        lines[following]
+    elif (
+        marker.indent
+        or is_structural_line(lines[previous])
+        or is_structural_line(lines[following])
+        or previous in table_lines
+        or following in table_lines
     ):
         kind = "line"
     else:
@@ -447,7 +624,8 @@ def classify_marker_boundary(
 def classify_all_boundaries(
     lines: Sequence[str], markers: Iterable[PageMarker]
 ) -> list[MarkerBoundary]:
-    return [classify_marker_boundary(lines, marker) for marker in markers]
+    table_lines = html_table_lines(lines)
+    return [classify_marker_boundary(lines, marker, table_lines) for marker in markers]
 
 
 def _remove_line_ending(line: str) -> str:
@@ -553,6 +731,7 @@ def boundary_contract_problems(
         problems.append("extra boundary records: " + ", ".join(map(str, extra)))
 
     marker_by_page = {marker.page: marker for marker in markers}
+    table_lines = html_table_lines(lines)
     start_pages = [page for page, label in boundaries.items() if label == "start"]
     if len(start_pages) > 1:
         problems.append("only one boundary may use the 'start' label")
@@ -571,12 +750,27 @@ def boundary_contract_problems(
         marker = marker_by_page.get(page)
         if marker is None or label == "start":
             continue
-        previous, _ = _nearest_nonblank(lines, marker.line_index - 1, -1)
+        notes = marker.line_index
+        if label == "join":
+            previous, notes = _join_previous(lines, marker.line_index)
+        else:
+            previous, _ = _nearest_nonblank(lines, marker.line_index - 1, -1)
         following, _ = _nearest_nonblank(lines, marker.line_index + 1, 1)
-        if previous is None or following is None:
+        if previous is None or (following is None and label != "paragraph"):
             problems.append(
                 f"boundary {page} ({label}) needs nonblank content on both sides"
             )
+            continue
+        if label != "paragraph" and any(
+            PAGE_MARKER_RE.fullmatch(line_body(lines[idx]))
+            for idx in (previous, following)
+            if idx is not None
+        ):
+            problems.append(
+                f"boundary {page} ({label}) needs nonblank content on both sides"
+            )
+            continue
+        if following is None:
             continue
         if label == "list-cont" and not line_body(lines[following]).startswith(
             ("  ", "\t")
@@ -589,11 +783,32 @@ def boundary_contract_problems(
                 f"boundary {page} uses list-new but following line is not a list item"
             )
         if label == "table-cont" and not all(
-            TABLE_RE.fullmatch(line_body(lines[index]))
+            is_table_row(line_body(lines[index]))
+            or index in table_lines
+            or _tables.HTML_TABLE_LINE_RE.match(line_body(lines[index]))
             for index in (previous, following)
         ):
             problems.append(
                 f"boundary {page} uses table-cont but both sides are not table rows"
+            )
+        if label == "join" and any(
+            is_table_row(line_body(lines[index]))
+            or index in table_lines
+            or _tables.HTML_TABLE_LINE_RE.match(line_body(lines[index]))
+            for index in (previous, following)
+        ):
+            problems.append(
+                f"boundary {page} cannot join a table row: joining splices two rows, "
+                "or a row and a paragraph, into one line"
+            )
+        elif (
+            label == "join"
+            and notes < marker.line_index
+            and _takes_no_run_on(line_body(lines[previous]))
+        ):
+            problems.append(
+                f"boundary {page} cannot join past the page's foot notes onto a heading "
+                "or another structural line"
             )
         following_body = line_body(lines[following])
         previous_in_list = _previous_line_is_in_list_item(lines, previous)
@@ -622,7 +837,10 @@ def boundary_contract_problems(
 
 
 def apply_boundary_contract_with_break_lines(
-    text: str, boundaries: dict[int, str]
+    text: str,
+    boundaries: dict[int, str],
+    *,
+    relocate_footnotes: bool = False,
 ) -> tuple[str, frozenset[int]]:
     """Apply a contract and retain final line numbers of verified hard breaks.
 
@@ -652,12 +870,38 @@ def apply_boundary_contract_with_break_lines(
                 del lines[:following]
             continue
 
-        # Validation guarantees content exists on both sides.
-        assert previous is not None and following is not None
+        assert previous is not None
         newline = preferred_newline(lines, index)
+        if label == "paragraph" and following is None:
+            if not line_ending(lines[previous]):
+                lines[previous] += newline
+            del lines[previous + 1 :]
+            continue
+        assert following is not None
+        if label == "paragraph" and PAGE_MARKER_RE.fullmatch(
+            line_body(lines[previous])
+        ):
+            lines[previous + 1 : following] = []
+            continue
         if label == "join":
+            previous, notes = _join_previous(lines, index)
+            assert previous is not None
+            carried = lines[notes:index]
+            while carried and is_blank(carried[-1]):
+                carried.pop()
             lines[previous] = _remove_line_ending(lines[previous])
             lines[previous + 1 : following] = []
+            if carried:
+                end = previous + 1
+                while (
+                    end + 1 < len(lines)
+                    and not is_blank(lines[end + 1])
+                    and line_body(lines[end + 1]) not in break_sentinels
+                ):
+                    end += 1
+                if not line_ending(lines[end]):
+                    lines[end] += newline
+                lines[end + 1 : end + 1] = [newline, *carried]
         elif label in {"paragraph", "structural"}:
             sentinel = f"\0JYUT_OCR_VERIFIED_BREAK_{marker.page}\0"
             if sentinel in text:
@@ -668,6 +912,8 @@ def apply_boundary_contract_with_break_lines(
             lines[previous + 1 : following] = []
 
     final_lines = split_lines("".join(lines))
+    if relocate_footnotes:
+        final_lines = place_footnotes(final_lines, break_sentinels)
     verified_break_lines: set[int] = set()
     for index, line in enumerate(final_lines):
         if line_body(line) not in break_sentinels:
@@ -677,10 +923,17 @@ def apply_boundary_contract_with_break_lines(
     return "".join(final_lines), frozenset(verified_break_lines)
 
 
-def apply_boundary_contract(text: str, boundaries: dict[int, str]) -> str:
+def apply_boundary_contract(
+    text: str,
+    boundaries: dict[int, str],
+    *,
+    relocate_footnotes: bool = False,
+) -> str:
     """Remove page markers using only explicit manifest labels."""
 
-    result, _ = apply_boundary_contract_with_break_lines(text, boundaries)
+    result, _ = apply_boundary_contract_with_break_lines(
+        text, boundaries, relocate_footnotes=relocate_footnotes
+    )
     return result
 
 
@@ -783,6 +1036,16 @@ class PageManifestData:
     source_sha256: str
     expected_scan_pages: int
     pages: tuple[PageManifestRecord, ...]
+    source_kind: str = "pdf"
+
+
+def images_inventory_sha256(pages: Sequence[PageManifestRecord]) -> str:
+    """Canonical SHA-256 over (scan_page, render_sha256) for PDF-less image folders."""
+
+    payload = "\n".join(
+        f"{page.scan_page}:{page.render_sha256}" for page in pages
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def load_page_manifest(manifest_path: Path) -> PageManifestData:
@@ -804,6 +1067,10 @@ def load_page_manifest(manifest_path: Path) -> PageManifestData:
         raise ValueError(
             "page manifest is missing required key(s): " + ", ".join(missing_root)
         )
+
+    source_kind = root.get("source_kind", "pdf")
+    if source_kind not in {"pdf", "images-dir"}:
+        raise ValueError("page manifest source_kind must be 'pdf' or 'images-dir'")
 
     source_digest = root["source_sha256"]
     if not isinstance(source_digest, str) or not re.fullmatch(
@@ -879,28 +1146,43 @@ def load_page_manifest(manifest_path: Path) -> PageManifestData:
             )
         )
 
-    return PageManifestData(source_digest, expected_pages, tuple(pages))
+    return PageManifestData(
+        source_digest, expected_pages, tuple(pages), str(source_kind)
+    )
 
 
 def page_manifest_problems(
-    manifest_path: Path, *, source_pdf_path: Path
+    manifest_path: Path, *, source_pdf_path: Path | None = None
 ) -> list[tuple[str, str]]:
     """Verify source identity, scan inventory, and every declared render hash."""
 
     manifest = load_page_manifest(manifest_path)
     problems: list[tuple[str, str]] = []
-    if not source_pdf_path.is_file():
-        problems.append(
-            ("source-pdf-missing", f"selected source PDF is missing: {source_pdf_path}")
-        )
-    elif file_sha256(source_pdf_path) != manifest.source_sha256:
-        problems.append(
-            (
-                "source-pdf-hash-mismatch",
-                f"selected source PDF does not match page manifest SHA-256: "
-                f"{source_pdf_path}",
+    if manifest.source_kind == "images-dir":
+        if images_inventory_sha256(manifest.pages) != manifest.source_sha256:
+            problems.append(
+                (
+                    "source-images-hash-mismatch",
+                    "page manifest source_sha256 does not match its declared "
+                    f"render inventory: {manifest_path}",
+                )
             )
-        )
+    else:
+        if source_pdf_path is None or not source_pdf_path.is_file():
+            problems.append(
+                (
+                    "source-pdf-missing",
+                    f"selected source PDF is missing: {source_pdf_path}",
+                )
+            )
+        elif file_sha256(source_pdf_path) != manifest.source_sha256:
+            problems.append(
+                (
+                    "source-pdf-hash-mismatch",
+                    f"selected source PDF does not match page manifest SHA-256: "
+                    f"{source_pdf_path}",
+                )
+            )
 
     scan_pages = [page.scan_page for page in manifest.pages]
     seen_render_paths: list[Path] = []

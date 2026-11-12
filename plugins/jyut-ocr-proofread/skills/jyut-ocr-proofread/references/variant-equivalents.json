@@ -1,0 +1,356 @@
+{
+ "about": "用戶逐對裁定嘅異體字清單。acceptable=true：同一個字嘅唔同寫法，輸出寫邊個都唔算錯字（但仍然要跟頁面印嘅字形寫）；acceptable=false：唔可以互換（唔同字、或者簡繁），一定要跟頁面。淨係收用戶裁過嘅對；唔好由 Unihan、字典或模型自動加——實測字典會將 刺/剌、着/著 當異體，模型分類亦會錯。呢度係通用字形知識，唔寫書名、頁碼。",
+ "classes": [
+  {
+   "forms": [
+    "覧",
+    "覽"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  },
+  {
+   "forms": [
+    "并",
+    "幷"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "頁面印幷就寫幷；寫并係合理轉寫，唔算錯字"
+  },
+  {
+   "forms": [
+    "內",
+    "内"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "决",
+    "決"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "则",
+    "則"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "即",
+    "卽"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "尙",
+    "尚"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "属",
+    "屬"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "巡",
+    "廵"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "愼",
+    "慎"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "挿",
+    "插"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "数",
+    "數"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "旂",
+    "旗"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "既",
+    "旣"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "楡",
+    "榆"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "淸",
+    "清"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "為",
+    "爲"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "粤",
+    "粵"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "顚",
+    "顛"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "碍",
+    "礙"
+   ],
+   "acceptable": false,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "唔可以互換：一定要跟頁面"
+  },
+  {
+   "forms": [
+    "赶",
+    "趕"
+   ],
+   "acceptable": false,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "唔可以互換：一定要跟頁面"
+  },
+  {
+   "forms": [
+    "算",
+    "𫂁"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "用戶裁定互換唔算錯字（當初以為頁面印嘅係𫂁，後來對清楚係𮅕，見下一對）"
+  },
+  {
+   "forms": [
+    "算",
+    "𮅕"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "頁面印生僻嘅𮅕（⺮下面係具）就寫𮅕；轉寫做常用嘅算可以接受"
+  },
+  {
+   "forms": [
+    "隸",
+    "隷",
+    "𨽻"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "𨽻 太生僻，寫隸或隷都可以接受；頁面印隸或隷就跟頁面"
+  },
+  {
+   "forms": [
+    "回",
+    "囘"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "弑",
+    "弒"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "互換唔算錯字；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "市",
+    "巿"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-24",
+   "note": "用戶裁：兩個都可以接受（嚴格講係兩個字：市、巿）；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "告",
+    "吿"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-25",
+   "note": "用戶裁：可接受異體（OpenCC Allographs 亦收）；頁面印邊個就寫邊個"
+  },
+  {
+   "forms": [
+    "擧",
+    "舉"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "擧係舉嘅罕見異體；頁面印擧就寫擧，寫舉都可以接受"
+  },
+  {
+   "forms": [
+    "刊",
+    "刋"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  },
+  {
+   "forms": [
+    "況",
+    "况"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  },
+  {
+   "forms": [
+    "别",
+    "別"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  },
+  {
+   "forms": [
+    "衛",
+    "衞"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-26",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  },
+  {
+   "forms": [
+    "概",
+    "槪"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-27",
+   "note": "頁面印槪就寫槪；寫概係可接受嘅正規化寫法"
+  },
+  {
+   "forms": [
+    "勗",
+    "朂"
+   ],
+   "acceptable": true,
+   "ruledBy": "user",
+   "date": "2026-09-28",
+   "note": "兩個都啱；頁面印邊個就寫邊個，寫咗另一個都可以接受"
+  }
+ ]
+}

@@ -1,22 +1,23 @@
 # 粵文 OCR 校對
 
-呢個係一份跨 Codex／Claude Code 嘅 Agent Skill，亦包裝成 Codex plugin，用嚟按同名 PDF 校對歷史中文 OCR Markdown；流程基於 `jyut-ocr` repo 嘅校對守則。
+呢個係一份跨 Antigravity（Gemini）／Codex／Claude Code 嘅 Agent Skill，亦包裝成 Codex plugin，用嚟按同名 PDF 或掃描頁圖忠實轉寫及校對歷史中文 OCR Markdown；流程基於 `jyut-ocr` repo 嘅校對守則。
 
-plugin 會安裝一個 skill：`jyut-ocr-proofread`。同一個 canonical skill directory 可以由 Codex 同 Claude Code 共用；skill body 同 bundled OCR rules 都用粵文寫，令 agent 處理 OCR 校對時直接讀到同 repo 指示一致嘅工作語言。
+plugin 會安裝一個 skill：`jyut-ocr-proofread`。同一個 canonical skill directory 可以由 Antigravity、Codex 同 Claude Code 共用；skill body 同 bundled OCR rules 都用粵文寫，令 agent 處理 OCR 校對時直接讀到同 repo 指示一致嘅工作語言。
+
+**智能校對層使用調用技能嘅當前 agent 模型**：Antigravity／Gemini CLI session 由當前 Gemini 模型核圖同審核，Codex session 由當前 Codex 模型做，Claude Code session 由當前 Claude 模型做；subagent 預設沿用 session 嘅有效模型設定。HunyuanOCR、PaddleOCR-VL 同 Apple Vision 只提供底稿。本技能可裝喺其他電腦，唔依賴固定 Qwen 校對模型、NInfer、RTX 5090 或 `jyut-ocr-qwen` checkout；OCR 執行環境同路徑由各機自行配置。
 
 ## 佢會做咩
 
-- 以 PDF 圖像作最終依據；
+- 以 PDF／原掃描圖像作最終依據；支援 PDF（`survey_pdf.py`）同固定掃描頁資料夾（`survey_pdf.py --images-dir`，`source_kind: "images-dir"`）；
 - 先揀 `basic`、`structured` 或 `release` profile，再按文件實際特徵啟用 notation、題名註、長目錄、表格等專項 gate；
-- 保留 PDF 原有字形、異體字、舊字形同舊式標點；
-- 查 PDF 後先刪頁眉、頁腳、書脊、承印資訊、OCR notice 等頁面家具；
-- 優先處理低信心括號同語境唔通嘅高信心 OCR 錯字；
+- 保留原書字形、異體字、舊字形同舊式標點；雙圈句號統一寫 `。。`，正文與 Markdown 表格內字面星號寫 `\*`；
+- 按原圖同交付範圍移除重複導航家具、OCR notice，保留範圍內一次性出版／承印／來源資料；預設唔裁走圖版內文字（`--extract-figures` 為顯式 opt-in）；
+- 支援雙引擎底稿對齊（`run_paddleocr_vl.py`＋`run_hunyuanocr.py`＋`run_hunyuanocr_second_look.py`）、`book_profile.py` 同 `proofread_pages.py` 三階段 `PacketClient` checkpoint-replay（預設 `--backend packet` 由當前 session 嘅 Agent／平行 Subagents 批次睇裁圖回答並經 `apply_packet_answers.py` 寫入，每步受 `verify_characters` 字元集鎖定與標點計數守門保護）；
+- 支援跨頁表格非破壞性縫合（`stitch_tables.py --output-dir`）、原印表格方向鎖定（`--table-orientation as-printed`）、全書決定論修書（`repair_book.py`）同定稿（`finish_book.py`：預設保留原印註號如 `[^240]` 及頁底原位定義，支援同頁局部配對與跨頁孤立註號回溯）；
 - 先讀本書凡例，分清 OCR confidence bracket 同原書訂正／增補／缺損符號；
-- 按 PDF 版面重整 heading、段落、bullet list、table；
-- 新 OCR 或補漏時先用視覺識別，GJ.cool 只作背景並行或極短時間輔助；
 - Apple Vision 底稿可以用最多八個本機 process 並行，安全續跑並保存逐頁 hash／run report；
-- 單一長書可以按頁段寫入獨立 segment，再由主 agent 驗證交界同統一合併；
-- Codex／Claude Code 可以用同一份角色 contract 分派 segment writer 同 read-only visual auditor；LLM worker 依平台有效 model-resolution chain 揀模型，Apple Vision process 本身無 LLM model；
+- 單一長書可以按頁段寫入獨立 segment 或並行處理 packet 批次，再由主 agent 驗證交界同統一合併；
+- Antigravity／Codex／Claude Code 可以用同一份角色 contract 分派 segment writer／packet worker 同 read-only visual auditor；LLM worker 依平台有效 model-resolution chain 揀模型，Apple Vision process 本身無 LLM model；
 - 分辨 PDF scan page 同書內 printed page，記錄旋轉、spread、重複掃描同真正缺頁；
 - 分開對賬長目錄條目、分組、TOC-eligible 正文題名、原書頁碼差異同高風險異文；合訂本可明定分冊 scope，而範圍外項目仍有 disposition；
 - 人工核對題名尾端星號同來源題注 ownership，另用 deterministic auditor 檢查 item-level arity 同跨頁 hazard；
@@ -28,14 +29,17 @@ plugin 會安裝一個 skill：`jyut-ocr-proofread`。同一個 canonical skill 
 
 - 書名、頁碼、人名、地名、頁面家具、單一來源句式同版次符號全部留喺 project-local policy／ledger／profile，唔 hard-code 入 plugin。
 - 一本書出現一次嘅問題先記做 candidate lesson；只有跨互不相關材料重現，或者揭示格式無關嘅資料遺失、fail-open、hash／provenance／安全問題，先更新核心。
-- 核心 regression tests 只用最小 synthetic fixtures；實書可以做外部 forward test，但唔將書名、實頁碼或大段原文寫入技能規則。
+- 每本書重新核實字形、標點、版面同引擎漏讀；語法、套語、引擎一致或字串重複只產生核圖線索，唔直接決定改字、黐段、拆 heading 或刪重。
+- 核心 regression tests 用最小 synthetic 正反例；實書作外部 forward test，記錄覆蓋範圍，但唔將書名、實頁碼或大段原文寫入技能規則。未做跨材料驗證，唔以規則更新或 audit clean 聲稱準確率已提升。
 
 ## Unreleased 本機更新
 
-- 新增平台中立 `subagent-orchestration.md`，將 writer assignment、互斥寫入、candidate seal、read-only independent audit、late-patch 重核同最多八個 LLM child 嘅規則集中成一份 contract。
-- 新增 Codex TOML 同 Claude Code Markdown adapters。Codex 省略 model fields；Claude 明寫 `model: inherit`，兩邊都唔鎖死會過時嘅 model ID。
-- 新增 bounded Apple Vision runner；`--workers auto` 最多用八個本機 process，逐頁 staging／atomic commit，並只續用 render、tool、profile 同 output hashes 全部吻合嘅 draft。
-- 新增 recoverable local adapter installer：兩邊 skill 同兩個 Claude agents 用 exact symlink；目前 Codex 會拒絕 leaf-symlink custom-agent TOML，所以兩個 Codex agents 改用可驗 hash 嘅 sealed regular-file projection。替換現有 object 前先保存包含 regular-file hashes、directory modes 同 nested symlink link text 嘅完整 tree inventory，亦可以 fail-closed restore。
+- 新增雙引擎決定論對齊、三階段 `PacketClient` 批次裁圖協定（`--backend packet`＋`apply_packet_answers.py`）、跨頁表格縫合（`stitch_tables.py`）、全書決定論修書（`repair_book.py`）同定稿流水線（`finish_book.py`）：唔需要本機 Qwen 或外部付費 API key，直接由 Antigravity／Codex／Claude Code 當前 session 嘅 Agent 與平行 Subagents 批次處理裁圖任務，並由 `verify_characters` 嚴格鎖定字元集。
+- 新增 `survey_pdf.py`（支援 PDF 及 `--images-dir` 無 PDF 圖片目錄）、`run_hunyuanocr_second_look.py`（共用 `SharedHunyuanClient` 同 `GPUQueue`，短檔 `<3` 頁自動保護邊欄文字）、`--table-orientation {auto,as-printed}`、預設保留原印腳註編號（如 `[^240]`）與頁底位置（`--renumber-footnotes`、`--relocate-footnotes`、`--extract-figures` 均改為顯式 opt-in），以及字面 `\*` 跳脫同 `U+16FE6 -> 。。` 正規化。
+- 本機 Hunyuan 預設自動加入跨 session 共用服務：一份模型、有限並行頁面、按 session 輪流分派；單個 session 中斷唔影響其他書，最後 client 離開後卸載並釋放 GPU。Paddle／不同模型設定仍按 FIFO 接棒，唔等 agent 校對。可設 server slots／每書 workers，保留 dedicated 模式；部署配置見 [本機 OCR 指引](plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/references/local-ocr.md)。
+- 收窄舊文類例詞、句法黐段、套語拆 heading 同家具刪除規則；加入兩引擎皆錯、錯位裁圖、真重複文字、標點漏／增等核圖原則。規則網格用 Markdown，合併格可用 HTML 並另驗格位／渲染；完整 release 步驟移到專用 reference，保留既有證據契約。
+- 新增平台中立 `subagent-orchestration.md`，將 writer／packet worker assignment、互斥寫入、candidate seal、read-only independent audit、late-patch 重核同最多八個 LLM child 嘅規則集中成一份 contract。
+- 新增 Codex TOML 同 Claude Code Markdown adapters，並擴充 `scripts/install_local_adapters.py` 同時支援 Antigravity／Gemini（`~/.gemini/config/skills/jyut-ocr-proofread`）、Codex 同 Claude Code 共 7 個本機安裝目標，支援完整備份與 fail-closed `--restore`。
 
 ## 0.2.5 更新重點
 

@@ -20,6 +20,8 @@ from _ocr_markdown import (
     boundary_contract_problems,
     classify_all_boundaries,
     FENCE_RE,
+    FOOTNOTE_CALL_RE,
+    FOOTNOTE_HEAD_RE,
     HEADING_RE,
     LIST_ITEM_RE,
     MarkerBoundary,
@@ -30,6 +32,7 @@ from _ocr_markdown import (
     is_structural_line,
     line_body,
     load_boundary_manifest,
+    load_page_manifest,
     marker_sequence_problems,
     page_manifest_marker_coverage_problems,
     page_manifest_problems,
@@ -773,12 +776,38 @@ def _duplicate_paragraph_issues(
     return issues
 
 
+def _defined_footnote_labels(
+    lines: Sequence[str], protected: Sequence[bool]
+) -> frozenset[str]:
+    labels: set[str] = set()
+    for index, line in enumerate(lines):
+        if protected[index]:
+            continue
+        match = FOOTNOTE_HEAD_RE.match(line_body(line))
+        if match is not None:
+            labels.add(match.group("label"))
+    return frozenset(labels)
+
+
+def _strip_links_and_defined_footnotes(
+    body: str, defined_footnotes: frozenset[str]
+) -> str:
+    without_links = re.sub(r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", body)
+    if not defined_footnotes:
+        return without_links
+    return FOOTNOTE_CALL_RE.sub(
+        lambda m: "" if m.group("label") in defined_footnotes else m.group(0),
+        without_links,
+    )
+
+
 def _notation_occurrence_count(
     lines: Sequence[str], notation: str
 ) -> tuple[int, str]:
     """Count declared notation outside metadata and fenced code."""
 
     protected = _protected_lines(lines)
+    defined_footnotes = _defined_footnote_labels(lines, protected)
     bodies = [
         line_body(line)
         for index, line in enumerate(lines)
@@ -787,7 +816,9 @@ def _notation_occurrence_count(
     if notation == "ascii_square_brackets":
         count = 0
         for body in bodies:
-            without_links = re.sub(r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", body)
+            without_links = _strip_links_and_defined_footnotes(
+                body, defined_footnotes
+            )
             if not re.match(r"^\[[^\]]+\]:", without_links) and any(
                 character in without_links for character in "[]"
             ):
@@ -836,6 +867,7 @@ def _residue_issues(
 ) -> list[Issue]:
     issues: list[Issue] = []
     protected = _protected_lines(lines)
+    defined_footnotes = _defined_footnote_labels(lines, protected)
     for index, line in enumerate(lines):
         body = line_body(line)
         line_number = index + 1
@@ -881,7 +913,9 @@ def _residue_issues(
                     "OCR empty-page notice remains",
                 )
             )
-        without_links = re.sub(r"!?\[[^\]\n]*\]\([^\)\n]*\)", "", body)
+        without_links = _strip_links_and_defined_footnotes(
+            body, defined_footnotes
+        )
         if "ascii_square_brackets" not in authorized_notations and not re.match(
             r"^\[[^\]]+\]:", without_links
         ) and (
@@ -1027,6 +1061,7 @@ def audit_text(
     notation_policy: SourceNotationPolicy | None = None,
     source_exceptions: Sequence[SourceException] = (),
     allowed_loose_list_break_lines: frozenset[int] = frozenset(),
+    relocate_footnotes: bool = False,
 ) -> AuditResult:
     """Audit Markdown text without relying on Git tracking state."""
 
@@ -1137,7 +1172,11 @@ def audit_text(
             else:
                 structural_scope = "virtual final from explicit boundary manifest"
                 structural_text, virtual_break_lines = (
-                    apply_boundary_contract_with_break_lines(text, boundary_contract)
+                    apply_boundary_contract_with_break_lines(
+                        text,
+                        boundary_contract,
+                        relocate_footnotes=relocate_footnotes,
+                    )
                 )
                 verified_break_lines.update(virtual_break_lines)
     else:
@@ -1423,6 +1462,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--relocate-footnotes",
+        action="store_true",
+        help=(
+            "match finalize_page_markers.py --relocate-footnotes when replaying "
+            "a boundary manifest against --annotated-source or virtual-final mode"
+        ),
+    )
+    parser.add_argument(
         "--summary-only",
         action="store_true",
         help=(
@@ -1445,8 +1492,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if (args.page_manifest is None) != (args.source_pdf is None):
+    if args.source_pdf is not None and args.page_manifest is None:
         parser.error("--page-manifest and --source-pdf must be used together")
+    if args.page_manifest is not None and args.source_pdf is None:
+        manifest_is_images_dir = False
+        try:
+            manifest_is_images_dir = (
+                load_page_manifest(args.page_manifest).source_kind == "images-dir"
+            )
+        except (OSError, UnicodeDecodeError, ValueError):
+            manifest_is_images_dir = False
+        if not manifest_is_images_dir:
+            parser.error("--page-manifest and --source-pdf must be used together")
     if args.annotated_source is not None and args.boundary_manifest is None:
         parser.error("--annotated-source requires --boundary-manifest")
     if args.annotated_source is not None and args.assembly_receipt is not None:
@@ -1541,7 +1598,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 assert boundary_contract is not None
                 rebuilt, structured_break_lines = (
                     apply_boundary_contract_with_break_lines(
-                        structured_annotated_text, boundary_contract
+                        structured_annotated_text,
+                        boundary_contract,
+                        relocate_footnotes=args.relocate_footnotes,
                     )
                 )
                 if rebuilt != text:
@@ -1568,10 +1627,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             notation_policy=notation_policy,
             source_exceptions=source_exceptions,
             allowed_loose_list_break_lines=frozenset(verified_break_lines),
+            relocate_footnotes=args.relocate_footnotes,
         )
         release_issues: list[Issue] = list(structured_proof_issues)
         if args.page_manifest is not None:
-            assert args.source_pdf is not None
             release_issues.extend(
                 Issue("error", code, None, message)
                 for code, message in page_manifest_problems(

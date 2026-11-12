@@ -21,12 +21,13 @@
 
 深入轉寫之前，先分開「PDF 掃描頁序」同「書內印刷頁碼」。唔好假設兩者只相差固定數字，亦唔好用印刷頁碼命名 render 圖。
 
-建立一份 machine-readable page manifest。Root 至少要有：
+建立一份 machine-readable page manifest（可用 `scripts/survey_pdf.py` 由 PDF 或 `--images-dir` 建立）。Root 至少要有：
 
 | 欄位 | 要記錄嘅內容 |
 |---|---|
-| `source_sha256` | 來源 PDF 完整 bytes 嘅 lowercase SHA-256 |
-| `expected_scan_pages` | PDF 實際 scan 總數，正整數 |
+| `source_kind` | 選填，預設 `"pdf"`；無來源 PDF、直接由固定掃描圖資料夾建立時設為 `"images-dir"` |
+| `source_sha256` | `source_kind == "pdf"` 時為來源 PDF 完整 bytes 嘅 lowercase SHA-256；`"images-dir"` 時為所有按序頁面 `(scan_page, render_sha256)` 嘅 canonical 聚合 SHA-256 |
+| `expected_scan_pages` | 實際 scan 總數，正整數 |
 | `pages` | 逐 scan records，恰好覆蓋預期 sequence |
 
 每個 `pages` record 至少要有 `scan_page`、`render_file` 同 `render_sha256`；`marker_expected` 省略時預設係 `true`。其他版面 facts 可以按 project 需要加入：
@@ -34,7 +35,7 @@
 | 欄位 | 要記錄嘅內容 |
 |---|---|
 | `scan_page` | PDF 內由 1 起計嘅實際頁序，唯一且連續 |
-| `render_file` | 對應 render 圖檔，例如 `p-001.png` |
+| `render_file` | 對應 render 圖檔，例如 `p-001.png` 或 `page-0001.png` |
 | `render_sha256` | render 圖完整 bytes 嘅 lowercase SHA-256 |
 | `printed_page` | 書內頁碼；封面或無頁碼頁留空，唔好估 |
 | `rotation` | `0`、`90`、`180`、`270` |
@@ -59,7 +60,7 @@ Page manifest 封存 source/render 身份、scan facts 同 marker policy；`boun
 
 長單檔可以按 scan page 分段並行，但只容許每個 worker 寫自己嘅獨立暫存檔。唔好畀多個 agent 同時改最終 Markdown，亦唔好畀佢哋共同 append 同一個 segment。
 
-用 Codex／Claude Code subagent 時，assignment contract、writer seal、read-only independent audit、模型繼承、併發上限同 late-patch 重核要求見 `subagent-orchestration.md`。LLM child 最多用平台可用 slots 同八個兩者之中較小者；Apple Vision raw OCR 係另一個本機 process pool，唔計做 LLM reviewer，亦唔由每個 subagent 重複啟動。
+用 Codex／Claude Code subagent 時，assignment contract、writer seal、read-only independent audit、模型繼承、併發上限同 late-patch 重核要求見 `subagent-orchestration.md`。LLM child 最多用平台可用 slots 同八個兩者之中較小者；raw OCR 由主 agent 統一啟動，唔計做 LLM reviewer，亦唔由每個 subagent 重複啟動。Apple Vision 可以用 bounded process pool；單 GPU 嘅 Hunyuan／Paddle 則順序跑，詳見 `local-ocr.md`。
 
 開始前先由主 agent：
 
@@ -79,7 +80,7 @@ Page manifest 封存 source/render 身份、scan facts 同 marker policy；`boun
 
 ## 保存 OCR 來源
 
-Apple Vision、macOS Live Text 或其他本地 OCR 只可以產生有頁面 provenance 嘅底稿。每批輸出至少連同以下資料保存：
+HunyuanOCR、PaddleOCR-VL、Apple Vision、macOS Live Text 或其他本地 OCR 只可以產生有頁面 provenance 嘅底稿。每批輸出至少連同以下資料保存：
 
 - 原 PDF 路徑或穩定識別碼；
 - `scan_page` 同 `render_file`；
@@ -87,11 +88,13 @@ Apple Vision、macOS Live Text 或其他本地 OCR 只可以產生有頁面 prov
 - OCR 引擎同執行日期；
 - 未經視覺核對嘅狀態標記。
 
-將 OCR 結果按 scan page 分隔，或者直接用 `<!-- page_001 -->` 呢類 marker 包住。唔好將無頁碼嘅大段 Apple Vision 輸出貼入正文，否則之後無法證明漏頁、重複或錯序。
+將 OCR 結果按 scan page 分隔，或者直接用 `<!-- page_001 -->` 呢類 marker 包住。唔好將無頁碼嘅大段 OCR 輸出貼入正文，否則之後無法證明漏頁、重複或錯序。
 
-將 Apple Vision 當提示：用佢加快建立底稿同尋找可疑字，但逐頁睇 PDF 圖核對直排次序、淡字、跨欄、註腳、表格同 spread。即使用戶明確要求使用 macOS OCR，都唔好將「OCR 已跑完」當成「已視覺校對」。
+將 OCR 當提示：用佢加快建立底稿同尋找可疑字，但逐頁睇 PDF 圖核對直排次序、淡字、跨欄、註腳、表格同 spread。即使用戶明確指定 OCR 引擎，都唔好將「OCR 已跑完」當成「已視覺校對」。
 
 同頁有 corrected／nocorrected、不同 DPI 或不同 crop OCR 時，比較字數、低信心數、差異率同長 unmatched run，建立 risk queue 並優先核對漏句候選。分歧只係風險訊號，多個 pass 高度一致亦唔證明正確；唔用投票取代 PDF 視覺判斷。
+
+Ubuntu／Linux 預設用 HunyuanOCR 底稿，需要第二讀法或 layout 區塊時先用 PaddleOCR-VL 補讀；命令、選頁、GPU 共用同座標語義見 `local-ocr.md`。Hunyuan／Paddle 各用獨立輸出目錄，唔覆蓋彼此或 annotated segment；第二引擎只讀部分頁時，未讀頁唔當成空白或「兩引擎一致」。
 
 macOS 有 Apple Vision 同 Swift toolchain 時，可以喺 skill 目錄用 bundled pool runner。`--first-page`／`--last-page` 同 `--pages` 互斥；`--workers auto` 會取待跑頁數、physical core 數同八者中最小值。Report 必須放喺 OCR output 目錄之外，避免污染只容許逐頁 JSON／TXT pair 嘅 project-local provenance gate：
 

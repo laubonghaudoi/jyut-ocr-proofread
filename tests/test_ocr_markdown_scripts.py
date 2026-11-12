@@ -2107,11 +2107,18 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             self.assertIn("--json-report must differ", result.stderr)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
+            local_scripts = Path(temporary_directory) / "scripts"
+            local_scripts.mkdir()
+            local_audit = local_scripts / AUDIT.name
+            local_audit.write_bytes(AUDIT.read_bytes())
+            for sibling in AUDIT.parent.glob("*.py"):
+                if sibling.name != AUDIT.name:
+                    os.symlink(sibling, local_scripts / sibling.name)
             tool_alias = Path(temporary_directory) / "audit-tool-alias.py"
-            tool_before = hashlib.sha256(AUDIT.read_bytes()).hexdigest()
-            os.link(AUDIT, tool_alias)
+            tool_before = hashlib.sha256(local_audit.read_bytes()).hexdigest()
+            os.link(local_audit, tool_alias)
             tool_result = run_script(
-                AUDIT,
+                local_audit,
                 target,
                 "--mode",
                 "final",
@@ -2121,7 +2128,7 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             self.assertEqual(tool_result.returncode, 2)
             self.assertIn("--json-report must differ", tool_result.stderr)
             self.assertEqual(
-                hashlib.sha256(AUDIT.read_bytes()).hexdigest(), tool_before
+                hashlib.sha256(local_audit.read_bytes()).hexdigest(), tool_before
             )
 
     def test_page_zero_marker_is_malformed(self) -> None:

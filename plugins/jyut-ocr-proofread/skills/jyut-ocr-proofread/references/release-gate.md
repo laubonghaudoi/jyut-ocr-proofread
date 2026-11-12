@@ -6,6 +6,7 @@
 
 ## 目錄
 
+- [release profile 完整流程](#release-profile-完整流程)
 - [先讀本書凡例](#先讀本書凡例)
 - [保存來源異常](#保存來源異常)
 - [以兩段 audit 建立來源例外](#以兩段-audit-建立來源例外)
@@ -19,6 +20,22 @@
 - [定義 canonical output 同 current completion](#定義-canonical-output-同-current-completion)
 - [驗證來源 PDF 同 renders](#驗證來源-pdf-同-renders)
 - [封關清單](#封關清單)
+
+## `release` profile 完整流程
+
+以下 11 步只喺 `release` profile 使用；`basic`／`structured` 只跑 `SKILL.md` 核心流程同適用 feature gates。
+
+1. 找出 PDF/Markdown pair，確認 PDF scan page count，同時辨認書內 printed page number；先讀凡例、編輯說明同交付範圍。
+2. 建立或核對 page manifest：記錄 source/render、scan facts、重複／缺頁同 `marker_expected`。若來源有特殊 notation，另建 project-local notation／inventory profile；boundary、writer 同 independent review evidence 亦各存 sealed sidecar，唔好靠 page manifest 一個 status 欄代替。內容位置凍結後先產生適用 inventory；之後再移字／題注就重建。衍生 audit／inventory 要封 generator toolchain hash 同 invocation profile；要偵測 skill/tool 升級，release plan 亦要收錄 project-local tool snapshot，並由報告 typed-depend on 該 snapshot。
+3. 保留檔首 `---` metadata；只有 PDF、既有 OCR 或可靠同版書目清楚提供時先補 metadata。
+4. render 足夠解像度嘅頁圖或 crop；確認現有 render 數量同 PDF 頁數一致。
+5. 改文前掃 `[]`、page marker、OCR notice、頁面家具、可疑拉丁／符號及已知高信心錯字；將命中分類成 OCR、來源內容或合法格式。
+6. 按頁推進：先修低信心字，再修語境唔通嘅高信心字，之後重建段落、heading、list、table、表單同圖說。
+7. 每次視覺確認一個無括號錯字後，搜尋全書同形／一字之差嘅人名、官名同固定語；逐處核圖，唔做全域替換。
+8. 校對期間保留 `<!-- page_... -->` 定位。逐個 marker 判斷刪除後應係正文 join、真正 paragraph break、新 list item，定同一 list item 續文。產生 boundary manifest 時保留下一個非空行嘅原始 leading whitespace；唔可以先 `.strip()` 再判斷 `list-cont`／nested `list-new`，亦要保留經 PDF 確認嘅兩個獨立 lists 之間嘅真正 break。
+9. 若頁底註腳插斷跨頁正文，先接完整正文，再將註腳放到所屬完整段落後；核對註號順序。若來源有星號題名註，題注要跟返所屬 heading，唔套用普通頁底註腳位置；用 `audit_title_notes.py` 核對 marker balance 同跨頁 hazard，再由人逐 heading 判 ownership；移動題注後重判相關 boundary。
+10. 收齊所有 review；canonical amendment ledgers 要先通過 `validate_review_evidence.py`。由目前 segment bytes、boundary／page facts、heading／list／table 結構同 note ownership 等全部 normative channels 機械導出 final changed-scan union，分開記 text、facts-only、structure-only、restored-to-baseline、delta-review 同 neighbor/context sets，唔用手填總數或相加 counts 代替 set arithmetic。任何 late patch 先用舊 release plan 跑 `plan_release_rebuild.py` 找 direct／transitive stale descendants，再依 dependency-first order 重建。凍結 segments 後用 `assemble_ocr_segments.py` 按 sealed ordered manifest 重播；separator 只可係空字串或全由 LF newline characters 組成，segment ranges、每段同組裝後嘅實際 markers、sealed page manifest 嘅 `marker_expected` 必須 exact，combined annotated 要 byte-for-byte 相同。
+11. 建立並用 `validate_release_evidence.py` 驗證 pre-final `release-plan.json` 嘅 discovery inventory、classification、full/subset dependency hash、active closure、DAG 同必要 reconciliation evidence binding；任何 active TOC evidence type 都強制要 `reconciliation_scope`，plan 唔包含待生成 final／receipt／audit。Finalizer 必須帶 `--release-plan` 寫 schema v2 receipt；output／receipt 唔可 alias plan／classified artifact 或新命中 pre-final discovery globs。再跑 final audit，重驗 plan 同 receipt exact active closure；legacy v1 receipt 必須重新 finalize。Post-final auditor 只可 read-only，發現任何內容或結構問題就返回第 10 步；要完整成品 inventory 就另建 post-final bundle plan，唔回餵 finalizer。
 
 ## 先讀本書凡例
 

@@ -26,20 +26,24 @@ from typing import Any, Iterable, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 INSTALLER_NAME = "jyut-ocr-proofread-local-adapters"
 
 AGENT_NAMES = (
     "jyut-ocr-segment-writer",
     "jyut-ocr-visual-auditor",
 )
-SPEC_IDS = (
+LEGACY_SPEC_IDS_V2 = (
     "codex-skill",
     "claude-skill",
     "codex-segment-writer",
     "codex-visual-auditor",
     "claude-segment-writer",
     "claude-visual-auditor",
+)
+SPEC_IDS = (
+    *LEGACY_SPEC_IDS_V2,
+    "gemini-skill",
 )
 
 
@@ -60,12 +64,14 @@ def absolute_root(path: Path) -> Path:
 def build_specs(
     codex_root: Path,
     claude_root: Path,
+    gemini_root: Path | None = None,
     *,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     root = absolute_root(repo_root or REPO_ROOT)
     codex = absolute_root(codex_root)
     claude = absolute_root(claude_root)
+    gemini = absolute_root(gemini_root or (Path.home() / ".gemini/config"))
     skill = root / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread"
     codex_adapters = root / "adapters/codex/agents"
     claude_adapters = root / "adapters/claude/agents"
@@ -82,6 +88,13 @@ def build_specs(
             "id": "claude-skill",
             "source": skill,
             "target": claude / "skills/jyut-ocr-proofread",
+            "source_type": "directory",
+            "install_mode": "symlink",
+        },
+        {
+            "id": "gemini-skill",
+            "source": skill,
+            "target": gemini / "skills/jyut-ocr-proofread",
             "source_type": "directory",
             "install_mode": "symlink",
         },
@@ -760,17 +773,26 @@ def load_manifest(
         raise InstallError(f"cannot read restore manifest {manifest_path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise InstallError("restore manifest root must be an object")
-    if payload.get("schema_version") != SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version == 2:
+        required_ids = LEGACY_SPEC_IDS_V2
+    elif schema_version == SCHEMA_VERSION:
+        required_ids = SPEC_IDS
+    else:
         raise InstallError("unsupported restore manifest schema")
     if payload.get("installer") != INSTALLER_NAME:
         raise InstallError("manifest was not created by this installer")
     if payload.get("state") != "installed":
         raise InstallError("manifest does not describe a completed installation")
     entries = payload.get("entries")
-    if not isinstance(entries, list) or len(entries) != len(SPEC_IDS):
-        raise InstallError("restore manifest must contain exactly six entries")
+    if not isinstance(entries, list) or len(entries) != len(required_ids):
+        raise InstallError(
+            f"restore manifest must contain exactly {len(required_ids)} entries"
+        )
 
-    expected = {spec["id"]: spec for spec in expected_specs}
+    expected = {
+        spec["id"]: spec for spec in expected_specs if spec["id"] in required_ids
+    }
     seen_targets: set[str] = set()
     seen_ids: set[str] = set()
     backup_directory = manifest_path.resolve(strict=False).parent
@@ -839,7 +861,7 @@ def load_manifest(
         elif projection_text is not None:
             raise InstallError(f"{entry_id}: unexpected sealed-copy projection path")
 
-    if seen_ids != set(SPEC_IDS):
+    if seen_ids != set(required_ids):
         raise InstallError("restore manifest entry set is incomplete")
     created = payload.get("created_parent_directories")
     if not isinstance(created, list) or not all(
@@ -1015,7 +1037,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument(
-        "--check", action="store_true", help="verify all six installed targets"
+        "--check", action="store_true", help="verify all seven installed targets"
     )
     actions.add_argument(
         "--dry-run", action="store_true", help="show the install transaction"
@@ -1039,6 +1061,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Claude configuration root (default: ~/.claude)",
     )
     parser.add_argument(
+        "--gemini-root",
+        type=Path,
+        default=Path.home() / ".gemini/config",
+        help="Gemini / Antigravity configuration root (default: ~/.gemini/config)",
+    )
+    parser.add_argument(
         "--backup-root",
         type=Path,
         default=Path.home() / ".jyut-ocr-proofread-backups",
@@ -1049,7 +1077,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = parse_args(argv)
-    specs = build_specs(arguments.codex_root, arguments.claude_root)
+    specs = build_specs(
+        arguments.codex_root, arguments.claude_root, arguments.gemini_root
+    )
     try:
         if arguments.check:
             return 0 if perform_check(specs) else 1
