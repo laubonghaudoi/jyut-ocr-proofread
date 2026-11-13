@@ -13,7 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / 'plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts'
+SCRIPTS = ROOT / 'scripts'
 
 CLIENT = r'''
 import os, signal, subprocess, sys, time

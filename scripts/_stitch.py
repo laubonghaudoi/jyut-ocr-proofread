@@ -9,18 +9,13 @@ asked: what position says is checked against what structure says, and where
 they do not agree the tables stay as they are and the pages carry a doubt.
 
 Pure functions over page texts, seals and engine A's layout blocks; the
-files are read and written by stitch_tables.py.  Measured on engine A's
-drafts of the seven calibration books (796 pages), each page's tables turned
-the way a vertical book's are: 20 page breaks have a table ending one page and
-a table starting the next.  4 of them join distinct tables - position alone
-would merge them - and none is merged here: one table has its own title, three
-another number of fields (one of those a series of numbered timetables with
-one header; one a form whose printed title, which engine A labels header, is
-now read as the title it is, so position no longer holds there).  Of the 16 real continuations 11 are merged, 2 of them after the
-ruled grid put their fields back in the head's rows, and 5 are left undecided
-(no ruled grid found on a grey scan, or a grid the engine garbled); every
-merge was checked on the renders.  A six-page year table built from engine
-A's drafts alone comes out in the golden's shape, 290 of its 323 cells exact.
+files are read and written by stitch_tables.py.  Candidate discovery includes
+tables behind notes or captions, and reports intervening text as a blocker.
+Only proven furniture, explicit continuation captions and uniquely owned
+note apparatus can be traversed.  An exact repeated label row, a matching
+named continuation or independently supported cut-cell / geometry evidence
+must identify the continuation; equal field counts alone do not.  Seals keep
+the input and all movements, and source captions and note text are preserved.
 """
 
 from __future__ import annotations
@@ -32,6 +27,7 @@ import re
 from typing import Any, Callable, Mapping, Sequence
 
 import _tables
+from _ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, THEMATIC_BREAK_RE
 import proofread_pages as pp
 
 # Every doubt the stitch writes starts with this, so a re-run can take the
@@ -69,8 +65,9 @@ class PageInput:
     blocks: Sequence[Mapping[str, Any]] = ()   # engine A's layout blocks (load_blocks)
     witness: str | None = None         # engine B's text of the page
     render: Any = None                 # Path of the render, for geometry and crops
-    # furniture_test with no blocks: a line with nothing printed but marks.
-    is_furniture: Callable[..., bool] = lambda text, edge=None: not printed(text)
+    # Without layout evidence, only blank lines and explicit rules qualify.
+    is_furniture: Callable[..., bool] = lambda text, edge=None: (
+        not text.strip() or THEMATIC_BREAK_RE.fullmatch(text) is not None)
 
 
 def furniture_test(blocks: Sequence[Mapping[str, Any]], heads: Sequence[str] = (),
@@ -82,7 +79,8 @@ def furniture_test(blocks: Sequence[Mapping[str, Any]], heads: Sequence[str] = (
     running heads and recurring n-grams (is_furniture_text), engine A's folio
     and the short blocks that share its margin band (margin_furniture), a
     stamp.  A line made only of those texts, or a misread copy of one, is
-    furniture; so is a line with nothing printed but marks (a rule).  Not a
+    furniture; so is an explicit separator rule. Other marks may be source
+    punctuation and do not qualify by having no letters. Not a
     block engine A merely labelled header or footer: it puts those labels on
     body content, and a table's own title is what keeps it from continuing
     the table before - a form's printed title, labelled header, was taken for
@@ -109,7 +107,7 @@ def furniture_test(blocks: Sequence[Mapping[str, Any]], heads: Sequence[str] = (
     def test(line: str, edge: str | None = None) -> bool:
         characters, shown = pp.CJK(line), printed(line)
         if not shown:
-            return True
+            return not line.strip() or THEMATIC_BREAK_RE.fullmatch(line) is not None
         if edge in edges and shown not in own and all(ch in pp.NUMERAL_CHARS or ch.isdigit() for ch in shown):
             return True
         if not characters:
@@ -180,6 +178,83 @@ def content(items: Sequence[Item]) -> list[Item]:
     return [item for item in items if not item.furniture]
 
 
+def external_title(items: Sequence[Item], table: Item) -> str | None:
+    """Only an explicit heading immediately before a table can name it."""
+    prior = [item for item in content(items) if item.end <= table.start]
+    if prior and prior[-1].kind == "line":
+        match = re.fullmatch(r" {0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*", prior[-1].text)
+        if match:
+            return match.group(1).strip()
+    return own_title(table.table)
+
+
+def continuation_caption(text: str, title: str | None) -> bool:
+    """Recognize an explicit continuation marker, never an arbitrary caption.
+
+    A named caption must exactly name the head.  A bare continuation marker
+    only admits the boundary; the table must still supply identity evidence.
+    The caption stays verbatim on its source page, and is recorded in the seal.
+    """
+    shown = re.sub(r"^ {0,3}#{1,6}\s+", "", text).strip()
+    shown = re.sub(r"\s+#+$", "", shown).strip()
+    marker = r"(?:（\s*續\s*）|\(\s*續\s*\)|續)"
+    if re.fullmatch(marker, shown):
+        return True
+    match = re.fullmatch(r"(.+?)\s*" + marker, shown)
+    return bool(match and title and match.group(1).strip() == title)
+
+
+def note_marker(text: str) -> str | None:
+    markdown = FOOTNOTE_HEAD_RE.match(text)
+    if markdown:
+        return f"[^{markdown.group('label')}]"
+    printed_note = NOTE_LINE_RE.match(text)
+    return printed_note.group("number") if printed_note else None
+
+
+def table_notes(page: PageInput, table: Item, items: Sequence[Item]) -> tuple[list[Item], list[Item]]:
+    """Separate positively table-owned notes from other following content.
+
+    Exact printed/Markdown call identity and unique ownership are required;
+    an unindented note continuation, prose, or unmatched note is a blocker.
+    No wording or engine footer label can turn body text into an apparatus.
+    """
+    notes: list[Item] = []
+    blockers: list[Item] = []
+    following = [item for item in items if item.start >= table.end]
+    all_markers = [note_marker(item.text) for item in following if item.kind == "line"]
+    active = False
+    for item in following:
+        if active and item.kind == "line" and item.text.startswith(("    ", "\t")):
+            notes.append(item)
+            continue
+        if item.furniture:
+            continue
+        marker = note_marker(item.text) if item.kind == "line" else None
+        if marker:
+            outside = page.text[:table.start] + page.text[table.end:item.start] + page.text[item.end:]
+            if table.text.count(marker) == 1 and marker not in outside and all_markers.count(marker) == 1:
+                notes.append(item)
+                active = True
+                continue
+        active = False
+        blockers.append(item)
+    return notes, blockers
+
+
+def orientation_policy(record: Mapping[str, Any]) -> str:
+    """Read the actual phase-3 provenance policy; old seals default to auto."""
+    return str((record.get("provenance") or {}).get("tableOrientation") or "auto")
+
+
+def same_header(first: _tables.Table, second: _tables.Table) -> bool:
+    """Exact cell text AND position/span alignment; sorted letters lose data."""
+    def row(table: _tables.Table) -> list[tuple[int, int, int, str]]:
+        return [(c.col, c.rowspan, c.colspan, c.text) for c in table.cells if c.row == 0]
+    return first.cols == second.cols and row(first) == row(second) and all(
+        c.rowspan == 1 for t in (first, second) for c in t.cells if c.row == 0)
+
+
 # --- the seal's record of a table --------------------------------------------
 
 def seal_entry(record: Mapping[str, Any], table_text: str) -> dict[str, Any] | None:
@@ -190,6 +265,8 @@ def seal_entry(record: Mapping[str, Any], table_text: str) -> dict[str, Any] | N
     table the formatter built from the image has no entry, no block and no
     orientation.
     """
+    if record.get("tableMappingCurrent") is False:
+        return None
     wanted = _cells(table_text)
     for entry in record.get("tables") or []:
         if _cells(entry.get("text") or "") == wanted:
@@ -204,20 +281,16 @@ def _cells(text: str) -> list[list[str]] | None:
 
 
 def orientation_of(record: Mapping[str, Any], block: Any) -> str | None:
-    """"rotated" when the page turned the engine's grid (records were printed
-    columns), "kept" when it kept it, "line" for a single line of cells kept
-    undecided; None when the formatter or the rebuild wrote the layout, which
-    says nothing about the engine's grid."""
+    """"rotated" / "kept" only for a resolved orientation; None for an
+    undecided grid (including one-dimensional grids) or a rebuilt layout."""
     for note in record.get("tableOrientation") or []:
         head, _, how = str(note).partition(": ")
         if head != f"block {block}":
             continue
-        if how.startswith("rebuilt"):
+        if how.startswith("rebuilt") or pp.orientation_undecided(how):
             return None
         if how.startswith("rotated"):
             return "rotated"
-        if how.startswith(pp.SINGLE_LINE_KEPT):
-            return "line"
         if how.startswith("kept"):
             return "kept"
     return None
@@ -241,7 +314,8 @@ def cell_class(text: str) -> str:
         return "blank"
     if not pp.CJK(squashed) and not any(ch.isalnum() for ch in squashed):
         return "mark"
-    if pp.chinese_figure(squashed) is not None or re.fullmatch(r"[0-9][0-9,.，、]*", squashed):
+    if (pp.chinese_figure(squashed) is not None or re.fullmatch(r"[0-9][0-9,.，、]*", squashed)
+            or (len(squashed) > 1 and all(ch in pp.NUMERAL_CHARS for ch in squashed))):
         return "figure"
     if len(squashed) == 1 and squashed in pp.CHINESE_DIGITS:
         return "numeral"
@@ -333,6 +407,10 @@ class Chain:
     parts: list[dict[str, Any]] = field(default_factory=list)
     turned_from_continuation: str | None = None
     last_block: int | None = None       # engine A block of the table ending the chain's last page
+    last_item: Item | None = None
+    title: str | None = None
+    policy: str = "auto"
+    moved_notes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -347,13 +425,14 @@ class Decision:
     joined_head: _tables.Table | None = None  # the head with the tail of its cut cell joined
 
 
-def start_chain(page: PageInput, item: Item) -> Chain:
+def start_chain(page: PageInput, item: Item, items: Sequence[Item] = ()) -> Chain:
     entry = seal_entry(page.record, item.text)
     table = item.table
     grid = table.grid()
     labels = 1 if table.rows > 1 and is_label_row(grid[0], grid[1:]) else 0
     return Chain(page.page, item, entry, table, (entry or {}).get("orientation"), labels, page.page,
-                 last_block=(entry or {}).get("block"))
+                 last_block=(entry or {}).get("block"), last_item=item,
+                 title=external_title(items, item), policy=orientation_policy(page.record))
 
 
 def head_series(items: Sequence[Item], head: Item) -> int:
@@ -373,20 +452,18 @@ def head_series(items: Sequence[Item], head: Item) -> int:
 
 
 def decide(chain: Chain, head_items: Sequence[Item], page: PageInput, first: Item,
-           realign: "Realigner | None" = None, witness: str | None = None) -> Decision:
-    """Whether `first`, the first content of the page after the chain's last,
-    continues the chain's table.
+           realign: "Realigner | None" = None, witness: str | None = None,
+           named_continuation: bool = False) -> Decision:
+    """Whether the first table candidate continues the chain's table.
 
-    Position is already given: the chain's table ends its page and `first`
-    starts this one.  Against a merge, any one of: the part carries a title of
+    The caller has checked the intervening apparatus and captions. Against a
+    merge, any one of: the part carries a title of
     its own; its first row is a label row that differs from the head's; the
     head's page prints a series of titled tables with the head's header and
     the part repeats that header.  For a merge, one structural fact: the part
-    repeats the head's label row (dropped), or holds the head's number of
-    fields (orientation taken from the head where the page's own verdict went
-    the other way), or a realignment the geometry vouches for.  Position with
-    no structural fact is left undecided: two tables with a different number
-    of fields cannot be written as one without knowing which field is which.
+    exactly repeats the head's proven label row (dropped), has a matching
+    named continuation caption and aligned fields, or a realignment the
+    geometry vouches for. Equal field counts alone are left undecided.
     A first record that is the tail of the head's last cell is joined to that
     cell (tail_record, join_cells); `witness` is engine B's reading of the
     page before.
@@ -401,37 +478,31 @@ def decide(chain: Chain, head_items: Sequence[Item], page: PageInput, first: Ite
     head = chain.table
     record: dict[str, Any] = {"page": page.page, "table": first.index, "kind": "records"}
     own_orientation = (entry or {}).get("orientation")
+    policy = orientation_policy(page.record)
+    if policy != chain.policy:
+        return Decision("undecided", pages, evidence + [
+            f"orientation policies differ ({chain.policy} / {policy}); review the printed axes"])
 
-    # Orientation.  A continuation prints no totals label, so the page's own
-    # verdict could go the other way from the head's; the head's stands when
-    # the part's other axis holds the head's field count.
+    # Page seals already describe the selected representation. A different
+    # axis length cannot overturn either page's visual orientation decision.
     head_table = None
     if (chain.orientation in ("rotated", "kept") and own_orientation in ("rotated", "kept")
-            and own_orientation != chain.orientation and table.cols != head.cols
-            and table.rows == head.cols):
-        table = turned(table, 1 if chain.orientation == "rotated" else 3)
-        record["orientation"] = f"turned to the head's ({chain.orientation}; the page's own verdict was {own_orientation})"
-        evidence.append(f"orientation taken from the head: its other axis holds the head's {head.cols} fields")
-    elif (chain.orientation == "line" and head.rows > 1 and head.cols == 1 and table.cols == head.rows
-          and table.rows > 1):
-        # The head is a lone column of labels its page could not orient; the
-        # part's fields match it one for one, so it is the part's label row.
-        head_table = turned(head, 1)
-        head = head_table
-        record["orientation"] = "the head's line of labels turned to the continuation's fields"
-        evidence.append(f"the head is a single line of {table.cols} labels, the continuation's field count")
+            and own_orientation != chain.orientation and table.cols != head.cols):
+        return Decision("undecided", pages, evidence + [
+            "the recorded visual orientations differ and their selected grids have different field counts; "
+            "neither grid may be turned merely to fit the other; review the source images"])
 
     grid = table.grid()
     head_grid = head.grid()
     label_rows = chain.label_rows if head_table is None else 1
     skip = 0
-    if (table.cols == head.cols and table.rows >= 1 and keys(grid[0]) == keys(head_grid[0])
-            and sum(1 for cell in grid[0] if pp.CJK(cell)) >= 2
-            and all(cell.rowspan == 1 for cell in table.cells if cell.row == 0)):
+    repeated_header = (same_header(head, table) and label_rows == 1
+                       and sum(1 for cell in grid[0] if pp.CJK(cell)) >= 2)
+    if repeated_header:
         skip = 1
         record["header"] = "repeated, dropped"
         record["droppedHeader"] = grid[0]
-        evidence.append("its first row repeats the head's first row (cells compared as sorted characters)")
+        evidence.append("its first row repeats the head's proven label row, with exact cell text and alignment")
         if head_series(head_items, chain.item) >= 2:
             return Decision("separate", pages, evidence + [
                 f"p.{chain.page} prints a series of titled tables with this header: the next one is a table of its own"])
@@ -481,11 +552,15 @@ def decide(chain: Chain, head_items: Sequence[Item], page: PageInput, first: Ite
 
     fields = {"own": table.cols, "head": head.cols}
     if table.cols == head.cols:
+        if not (repeated_header or named_continuation or joined_head is not None):
+            return Decision("undecided", pages, evidence + [
+                "equal field counts alone do not identify the same table; need an exact repeated label "
+                "row, a matching named continuation caption, or verified cut-cell evidence"])
         fields["by"] = "same count"
         evidence.append(f"{table.cols} fields, the head's count")
         record.update(fields=fields, records=record_labels(table, skip))
         return Decision("merge", pages, evidence, table, skip, record, head_table, joined_head)
-    if realign is not None and head_table is None and skip == 0:
+    if realign is not None and head_table is None and skip == 0 and policy == "auto":
         aligned = realign(chain, page, entry, table)
         if aligned is not None:
             verdict, part, how, more = aligned
@@ -1088,14 +1163,19 @@ class Planner:
         previous: PageInput | None = None
         for page in self.pages:
             own = content(self.items[page.page])
-            first = own[0] if own else None
-            last = own[-1] if own else None
+            tables = [item for item in own if item.kind == "table"]
+            first = tables[0] if tables else (own[0] if own else None)
+            last = tables[-1] if tables else (own[-1] if own else None)
             consumed = False
             if chain is not None and chain.last == page.page - 1 and first is not None:
                 consumed, stays = self.continue_chain(chain, page, first, last)
                 if stays:
                     previous = page
                     continue
+            elif chain is not None and chain.last < page.page - 1 and tables:
+                self.blocked(chain, page, first, [
+                    f"missing or unsealed scan pages {chain.last + 1}-{page.page - 1}; "
+                    "a continuation cannot cross a scan gap"])
             elif (previous is not None and previous.page == page.page - 1
                   and first is not None and first.kind == "table"):
                 self.check_lost_head(previous, page, first)
@@ -1103,16 +1183,36 @@ class Planner:
                 self.finished.append(chain)
             chain = None
             if last is not None and last.kind == "table" and not (consumed and last is first):
-                chain = start_chain(page, last)
+                chain = start_chain(page, last, self.items[page.page])
             previous = page
         if chain is not None and chain.parts:
             self.finished.append(chain)
         return self.result()
 
+    def blocked(self, chain: Chain, page: PageInput, first: Item, why: list[str]) -> None:
+        entry = seal_entry(page.record, first.text) if first.kind == "table" else None
+        decision = Decision("blocked", (chain.last, page.page), why)
+        self.record(decision, [chain.last_block, (entry or {}).get("block")], BLOCKED,
+                    f"TABLE CONTINUATION BLOCKED: pp.{chain.last}-{page.page}: "
+                    + "; ".join(why) + "; source text retained; inspect the page boundary")
+
     def continue_chain(self, chain: Chain, page: PageInput, first: Item, last: Item) -> tuple[bool, bool]:
         """The page after the chain's last: (its first content consumed, the chain
         stays open because nothing else is on the page)."""
         witness = self.by_page[chain.last].witness
+        prior = self.by_page[chain.last]
+        stale = [p.page for p in (prior, page) if p.record.get("tableMappingCurrent") is False]
+        if stale:
+            self.blocked(chain, page, first, [
+                f"p.{number}: final table content or layout changed after its block/orientation mapping; "
+                "re-establish the mapping against the source image" for number in stale])
+            return False, False
+        _, trailing_blockers = table_notes(prior, chain.last_item or chain.item, self.items[chain.last])
+        if trailing_blockers:
+            self.blocked(chain, page, first, [
+                f"unclassified content after table on p.{chain.last}: {item.text[:80]}"
+                for item in trailing_blockers])
+            return False, False
         if first.kind != "table":
             block = lost_table_block(page, "first")
             if block is not None:
@@ -1146,7 +1246,38 @@ class Planner:
                 "head": {"page": chain.page, "table": chain.item.index},
                 "moved": first.text, "evidence": evidence, "crop": pair["crop"]}
             return True, False
-        decision = decide(chain, self.items[chain.page], page, first, self.realign, witness)
+        prefix = [item for item in self.items[page.page] if item.end <= first.start and not item.furniture]
+        captions = [item for item in prefix if item.kind == "line"
+                    and continuation_caption(item.text, chain.title)]
+        blockers = [item for item in prefix if item not in captions]
+        if blockers:
+            self.blocked(chain, page, first, [
+                f"unclassified content before table on p.{page.page}: {item.text[:80]}" for item in blockers])
+            return False, False
+        notes, following = table_notes(page, first, self.items[page.page])
+        if notes and following:
+            # An unmarked line may continue the note. Moving only its
+            # numbered first line would sever it from both call and body.
+            self.blocked(chain, page, first, [
+                f"unclassified content beside note apparatus on p.{page.page}: {item.text[:80]}"
+                for item in following])
+            return False, False
+        bad_notes = [item for item in following if note_marker(item.text)
+                     and note_marker(item.text) in first.text]
+        collisions = [item for item in notes if note_marker(item.text) and
+                      (note_marker(item.text) in self.by_page[chain.page].text or any(
+                          note_marker(item.text) in moved["text"] for moved in chain.moved_notes))]
+        if bad_notes or collisions:
+            self.blocked(chain, page, first, [
+                "note ownership is ambiguous or the note label already occurs at the destination: "
+                + item.text[:80] for item in bad_notes + collisions])
+            return False, False
+        named = bool(chain.title and any(
+            continuation_caption(item.text, chain.title) and chain.title in item.text for item in captions))
+        decision = decide(chain, self.items[chain.page], page, first, self.realign, witness, named)
+        if captions:
+            decision.evidence.append("explicit continuation caption(s) retained on the source page: "
+                                     + "; ".join(item.text for item in captions))
         entry = seal_entry(page.record, first.text)
         blocks = [chain.last_block, (entry or {}).get("block")]
         if decision.verdict == "separate":
@@ -1177,9 +1308,32 @@ class Planner:
         self.notes.setdefault(page.page, {})["continuation"] = {
             "head": {"page": chain.page, "table": chain.item.index},
             "moved": first.text, "evidence": decision.evidence, "crop": pair["crop"]}
+        if captions:
+            self.notes[page.page]["continuation"]["retainedCaptions"] = [item.text for item in captions]
+        if notes:
+            # Move only exact, uniquely table-owned apparatus.  All source
+            # bytes and offsets remain in tableStitch.before / movedNotes.
+            moved = [{"page": page.page, "start": item.start, "end": item.end, "text": item.text}
+                     for item in notes]
+            chain.moved_notes.extend(moved)
+            self.notes[page.page]["continuation"]["movedNotes"] = moved
+            self.edits.setdefault(page.page, []).extend((item.start, item.end, "") for item in notes)
+            # A separator belongs to the apparatus only when it is directly
+            # between the moved table and its notes, with nothing else there.
+            between = [item for item in self.items[page.page]
+                       if first.end <= item.start < notes[0].start]
+            if all(item.furniture for item in between):
+                for item in between:
+                    if THEMATIC_BREAK_RE.fullmatch(item.text):
+                        separator = {"page": page.page, "start": item.start,
+                                     "end": item.end, "text": item.text}
+                        chain.moved_notes.append(separator)
+                        moved.append(separator)
+                        self.edits[page.page].append((item.start, item.end, ""))
         if first is last:
             chain.last = page.page
             chain.last_block = blocks[1]
+            chain.last_item = first
             return True, True
         return True, False
 
@@ -1210,9 +1364,16 @@ class Planner:
             markup = (_tables.render_html(chain.table) if chain.table.caption.strip()
                       else _tables.render(chain.table))
             self.edits.setdefault(chain.page, []).append((chain.item.start, chain.item.end, markup))
+            if chain.moved_notes:
+                source = self.by_page[chain.page].text
+                notes = sorted(chain.moved_notes, key=lambda n: (n["page"], n["start"]))
+                carried = "\n\n" + "\n".join(note["text"] for note in notes) + "\n"
+                self.edits[chain.page].append((len(source), len(source), carried))
             spanned = [chain.page] + [part["page"] for part in chain.parts]
             parts = chain.parts
             head = {"table": chain.item.index, "pages": spanned, "parts": parts}
+            if chain.moved_notes:
+                head["movedNotes"] = sorted(chain.moved_notes, key=lambda n: (n["page"], n["start"]))
             if chain.turned_from_continuation:
                 head["orientation"] = chain.turned_from_continuation
             self.notes.setdefault(chain.page, {})["head"] = head
@@ -1266,10 +1427,11 @@ def plan(pages: Sequence[PageInput], geometry: bool = True) -> dict[str, Any]:
 
     Returns, per page, the text to write and what its seal records
     (`pages`: text, stitch notes, stitch doubts), the merged tables (`chains`)
-    and every decision taken at a page break where position holds
-    (`decisions`).  Only the next scan page can continue a table, and a
-    missing page stops the chain.  A page can hold a continuation and the head
-    of the next table: only its first content is consumed.  `geometry` lets
+    and every candidate boundary decision (`decisions`), including blocked
+    candidates behind body text or across missing pages. Only the next scan
+    page can continue a table. A page can hold a continuation and the head
+    of the next table: only the first table and its uniquely owned notes move.
+    `geometry` lets
     the ruled grid realign a continuation with another field count (off: such
     a pair is left undecided).
     """

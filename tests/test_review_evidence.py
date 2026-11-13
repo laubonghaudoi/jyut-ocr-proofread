@@ -13,10 +13,6 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "scripts"
     / "validate_review_evidence.py"
 )

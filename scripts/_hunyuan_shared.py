@@ -89,7 +89,7 @@ def _seconds(value: Any, name: str, *, optional: bool = False) -> float | None:
 def _config(value: dict) -> dict:
     if not isinstance(value, dict):
         raise GPUQueueError("shared OCR configuration must be an object")
-    allowed = {"binary", "model", "mmproj", "model_id", "ctx", "slots", "identity", "max_tokens"}
+    allowed = {"binary", "model", "mmproj", "model_id", "ctx", "slots", "identity", "max_tokens", "device"}
     unknown = set(value) - allowed
     if unknown:
         raise GPUQueueError(f"unknown shared OCR settings: {sorted(unknown)}")
@@ -106,6 +106,10 @@ def _config(value: dict) -> dict:
         out[key] = _positive(value.get(key), key, maximum)
     if "max_tokens" in value:
         out["max_tokens"] = _positive(value["max_tokens"], "max_tokens", 1048576)
+    device = value.get("device", "auto")
+    if device not in ("auto", "cpu", "cuda", "metal"):
+        raise GPUQueueError("shared OCR device must be auto, cpu, cuda or metal")
+    out["device"] = device
     model_id = value.get("model_id", "hunyuanocr")
     identity = value.get("identity")
     if (not isinstance(model_id, str) or not model_id or len(model_id) > 256
@@ -121,7 +125,8 @@ def _identity(config: dict, root: Path, resource: str) -> dict:
     # These runtime selectors can change the effective GPU without changing the
     # executable. Do not serialize arbitrary environment variables or secrets.
     runtime = {key: os.environ.get(key) for key in
-               ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY")}
+               ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+                "GGML_METAL_DEVICES", "LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE")}
     code = hashlib.sha256()
     for filename in ("_hunyuan_shared.py", "_gpu_queue.py", "_phase_budget.py", "run_hunyuanocr.py"):
         code.update(Path(__file__).with_name(filename).read_bytes())
@@ -203,6 +208,7 @@ class SharedHunyuanClient:
         self.session: str | None = None
         self._report = {"mode": "shared-local-fifo", "resource": resource,
                         "configurationSha256": self.body["digest"],
+                        "device": self.config["device"],
                         "slots": self.config["slots"], "status": "waiting"}
         started = time.monotonic()
         deadlines = []
@@ -248,6 +254,11 @@ class SharedHunyuanClient:
             raise
 
     def _launch_if_needed(self, deadline: float | None) -> None:
+        # A failing broker can release its owner fd before the interpreter
+        # exits. Keep the first child so _join can report that failure instead
+        # of replacing it with another process during that shutdown window.
+        if self._launched is not None:
+            return
         prefix = self.body["digest"][:32]
         guard = _private_file(self.directory / (prefix + ".launch"), os.O_RDWR | os.O_CREAT)
         owner = None
@@ -672,6 +683,7 @@ class _Broker:
                 None, Path(config["binary"]), Path(config["model"]), Path(config["mmproj"]),
                 port, config["ctx"] * config["slots"], config["model_id"],
                 lease_fds=self.queue.pass_fds, parallel=config["slots"],
+                device=config["device"],
                 log_path=self.directory / (self.body["digest"][:32] + ".llama.log"),
                 cancel_event=self.cancel)
             with self.condition:

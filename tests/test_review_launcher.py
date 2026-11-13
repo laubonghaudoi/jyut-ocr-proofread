@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 
-LAUNCHER = Path(__file__).resolve().parents[1] / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts/review.py"
+LAUNCHER = Path(__file__).resolve().parents[1] / "scripts/review.py"
 
 
 class ReviewLauncherTests(unittest.TestCase):

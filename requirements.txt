@@ -1,0 +1,2 @@
+# Core PDF/raster helpers; OCR weights and runtime are pinned in runtime/ocr-lock.json.
+Pillow>=10.4,<13

@@ -345,7 +345,8 @@ def code_identity() -> dict[str, Any]:
     only the repair tool's own files were hashed."""
     here = Path(__file__).resolve().parent
     paths = sorted(p for p in here.glob("*.py")
-                   if p.name.startswith(("_repair", "repair_book", "_book_lint", "proofread_pages")))
+                   if p.name.startswith(("_repair", "repair_book", "_book_lint", "proofread_pages"))
+                   or p.name in {"_content_fidelity.py", "_note_markers.py"})
     paths += [pp.VARIANT_LIST, pp.ALLOGRAPHS, pp.TS_CHARACTERS]
     names = [f"{path.parent.name}/{path.name}" for path in paths]
     digest = hashlib.sha256()

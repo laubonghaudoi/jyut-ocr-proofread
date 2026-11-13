@@ -4,17 +4,20 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = (
-    REPO_ROOT / "plugins" / "jyut-ocr-proofread" / "skills" / "jyut-ocr-proofread" / "scripts"
+    REPO_ROOT / "scripts"
 )
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _footnotes  # noqa: E402
+import _note_markers as nm  # noqa: E402
+import _repair_runs as runs  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import finalize_page_markers  # noqa: E402
 
@@ -108,6 +111,133 @@ class FootnotesFidelityTests(unittest.TestCase):
         self.assertIn("甲頁正文[^1]。", out_renum)
         self.assertIn("乙頁正文[^2]。", out_renum)
         self.assertIn("[^2]: 乙頁注文。", out_renum)
+
+    def test_numeric_wrappers_preserve_printed_identity(self) -> None:
+        cases = [
+            (r"$^{\textcircled{１２}}$", "12"),
+            (r"${}^{\textcircled{１２}}$", "12"),
+            (r"${{}^{\textcircled{１２}}}$", "12"),
+            (r"$^{{{１２}}}$", "12"),
+            (r"$^{\textcircled{2}\textcircled{4}\textcircled{0}}$", "240"),
+            (r"$^{2}$$^{4}$⓪", "240"),
+            ("<SUP>０１２</SUP>", "012"),
+            ("[^１２]", "12"),
+            ("❶⓪", "10"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(nm.marker_key(raw), expected)
+                source = f"<!-- page_001 -->\n\n正文{raw}。\n\n{raw} 原註。\n"
+                out, report = _footnotes.convert(source)
+                self.assertEqual(report["footnotes"], 1)
+                self.assertEqual(report["left"], [])
+                self.assertIn(f"正文[^{expected}]。", out)
+                self.assertIn(f"[^{expected}]: 原註。", out)
+
+    def test_math_and_ordinary_enumeration_are_not_promoted_to_notes(self) -> None:
+        for raw in [r"$x^{2}$", r"$x^{①}$", r"$12$", "12", "１２", "(12)", "x²", "x^{2}", "x<sup>2</sup>"]:
+            with self.subTest(raw=raw):
+                source = f"<!-- page_001 -->\n\n算式{raw}。\n\n② 第二項說明。\n"
+                out, report = _footnotes.convert(source)
+                self.assertEqual(out, source)
+                self.assertEqual(report["footnotes"], 0)
+        source = "<!-- page_001 -->\n\n１. 第一項\n２. 第二項\n\n12. 第十二項\n"
+        self.assertEqual(_footnotes.convert(source)[0], source)
+
+    def test_unicode_math_bases_and_signed_exponents_stay_unconverted(self) -> None:
+        for raw in [
+            "π²", "α^{2}", "β<sup>2</sup>", "я²", "א²", "é²", "𝑥²", "Ⅲ²", "٣²",
+            "x\u0304²", "α\u0301^{2}", "x⁻²", "x⁺²", "x−²", "x-²", "x²+1",
+            "①+②", "① − ②", "①×②", "①÷②",
+        ]:
+            with self.subTest(raw=raw):
+                source = f"<!-- page_001 -->\n\n算式{raw}。\n\n② 第二項說明。\n"
+                out, report = _footnotes.convert(source)
+                self.assertEqual(out, source)
+                self.assertEqual(report["footnotes"], 0)
+                self.assertTrue(report["left"])
+        # The same syntax after Han prose, including extended Han characters,
+        # remains eligible for contextual pairing with a printed note.
+        for body in ["正文²", "𠀀²", "正文^{2}", "正文<sup>2</sup>"]:
+            with self.subTest(body=body):
+                source = f"<!-- page_001 -->\n\n{body}。\n\n② 原註。\n"
+                out, report = _footnotes.convert(source)
+                self.assertEqual(report["footnotes"], 1)
+                self.assertIn("[^2]。", out)
+
+    def test_malformed_and_nonnumeric_wrappers_do_not_expose_inner_markers(self) -> None:
+        for raw in [
+            r"$^{\alpha2}$", r"$^{\textcircled{a②}}$", r"$^{\textcircled{2}}",
+            r"^{\textcircled{2}", r"\textcircled{a②}", r"<sup>a②</sup>",
+            r"$^{2+3}$", r"$^{\frac{1}{2}}$", r"$^{2}}$", r"$^{{2}$",
+        ]:
+            with self.subTest(raw=raw):
+                self.assertEqual(nm.marker_key(raw), "")
+                self.assertEqual(list(nm.iter_note_markers(raw)), [])
+                source = f"<!-- page_001 -->\n\n正文{raw}。\n\n② 原註。\n"
+                self.assertEqual(_footnotes.convert(source)[0], source)
+
+    def test_unpaired_numeric_wrapper_stays_printed_and_is_reported(self) -> None:
+        raw = r"${}^{\textcircled{２４０}}$"
+        source = f"<!-- page_001 -->\n\n正文{raw}。\n"
+        out, report = _footnotes.convert(source)
+        self.assertEqual(out, source)
+        self.assertEqual(report["footnotes"], 0)
+        self.assertEqual(report["left"][0]["why"][0]["kind"], "call")
+        self.assertEqual(report["left"][0]["why"][0]["number"], raw)
+
+    def test_html_table_markers_remain_rendering_safe_and_unresolved(self) -> None:
+        raw = r"$^{\textcircled{１２}}$"
+        source = f"<!-- page_001 -->\n\n<table><tr><td>正文{raw}</td></tr></table>\n\n{raw} 原註。\n"
+        out, report = _footnotes.convert(source)
+        self.assertEqual(out, source)
+        self.assertNotIn("[^", out)
+        self.assertEqual(report["footnotes"], 0)
+        self.assertEqual({x["kind"] for x in report["left"][0]["why"]}, {"html", "note"})
+
+    def test_cross_page_wrapped_label_and_duplicates_keep_existing_policy(self) -> None:
+        source = (
+            "<!-- page_001 -->\n\n正文" + r"$^{\textcircled{１２}}$" + "。\n\n"
+            "<!-- page_002 -->\n\n" + "<sup>１２</sup> 次頁原註。\n\n"
+            "<!-- page_003 -->\n\n第二文" + r"$^{\textcircled{１２}}$" + "。\n\n"
+            "<sup>１２</sup> 第三頁原註。\n"
+        )
+        out, report = _footnotes.convert(source)
+        self.assertEqual(report["footnotes"], 1)
+        self.assertIn("[^12]: 次頁原註。", out)
+        self.assertIn("<sup>１２</sup> 第三頁原註。", out)
+        self.assertTrue(any(x["kind"] == "duplicate_label" for page in report["left"] for x in page["why"]))
+        out, report = _footnotes.convert(source, renumber=True)
+        self.assertEqual(report["footnotes"], 2)
+        self.assertEqual(report["left"], [])
+        self.assertIn("[^2]: 第三頁原註。", out)
+
+    def test_duplicate_wrapped_labels_on_same_page_do_not_merge(self) -> None:
+        source = "<!-- page_001 -->\n\n甲<sup>１２</sup>，乙<sup>１２</sup>。\n\n<sup>１２</sup> 甲註。\n<sup>１２</sup> 乙註。\n"
+        out, report = _footnotes.convert(source)
+        self.assertEqual(out, source)
+        self.assertEqual(report["footnotes"], 0)
+        self.assertTrue(report["left"])
+
+    def test_run_tokenizer_accepts_only_complete_numeric_wrappers(self) -> None:
+        valid = r"$^{\textcircled{２４０}}$"
+        token = runs.tokens(valid, "a")[0]
+        self.assertEqual((token.kind, token.cls), (runs.MARKER, "240"))
+        self.assertIsNone(runs._call(token), "parsing a multi-digit wrapper must not broaden automatic restoration")
+        for raw in [r"$x^{①}$", r"$12$", r"$^{\alpha2}$", "<sup>a2</sup>", r"x^{2}", "π²", "α^{2}", "x⁻²"]:
+            with self.subTest(raw=raw):
+                self.assertNotIn(runs.MARKER, [token.kind for token in runs.tokens(raw, "a")])
+
+    def test_oversized_malformed_wrappers_are_bounded_and_fail_closed(self) -> None:
+        # A timeout isolates a potential parser hang instead of blocking the
+        # whole test process.  This is a generous safety bound, not a benchmark.
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import _note_markers as nm; "
+            "bad = ['${' + '{' * 20000 + '②' + '}' * 20000 + '$', '^{' + '1' * 20000 + '②']; "
+            "assert all(nm.marker_key(x) == '' and list(nm.iter_note_markers(x)) == [] for x in bad)"
+        )
+        result = subprocess.run([sys.executable, "-c", code, str(SCRIPTS_DIR)], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_finalize_keeps_footnotes_at_page_foot_by_default_and_relocates_when_opted_in(self) -> None:
         annotated = (

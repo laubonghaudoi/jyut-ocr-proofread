@@ -401,6 +401,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import proofread_pages as pp
 import _ocr_markdown as om
 import _tables
+from _note_markers import NUMBER_RE as NUMERIC_NOTE_RE, marker_key, math_context
 import _repair_align as ra
 import _repair_edits as re_
 import _repair_joins as rj
@@ -544,6 +545,9 @@ def _marker_value(text: str) -> str:
     """A note marker's figures: circled or superscript digits folded to
     ASCII (NFKC), other marks left out."""
     import unicodedata
+    value = marker_key(text)
+    if value:
+        return value
     folded = unicodedata.normalize("NFKC", text)
     return "".join(c for c in folded if c.isdigit()) or folded.strip()
 
@@ -609,19 +613,26 @@ def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
         if side != "page" or c == "$":
             m = LATEX_RE.match(text, at)
             if m:
-                inner = COMMAND_RE.sub("", m.group()[1:-1]).replace("^", "").strip()
-                if not inner:
-                    out.append(Token(MARKUP, m.group(), at, m.end()))
-                elif MARKER_RE.search(inner) or re.fullmatch(r"[(\uff08]?[0-9]{1,3}[)\uff09]?", inner) \
-                        or re.fullmatch(r"[*\u2217]", inner):
-                    out.append(Token(MARKER, m.group(), at, m.end(), _marker_value(inner)))
+                value = marker_key(m.group())
+                if value and not math_context(text, at, m.end()):
+                    out.append(Token(MARKER, m.group(), at, m.end(), value))
                 else:
                     out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
                 at = m.end()
                 continue
+        m = NUMERIC_NOTE_RE.match(text, at)
+        if m and marker_key(m.group()):
+            value = marker_key(m.group())
+            if math_context(text, at, m.end()):
+                out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
+            else:
+                out.append(Token(MARKER, m.group(), at, m.end(), value))
+            at = m.end()
+            continue
         m = SUPERSCRIPT_RE.match(text, at)
         if m:
-            out.append(Token(MARKER, m.group(), at, m.end(), _marker_value(m.group())))
+            # Unbalanced or nonnumeric wrappers are not numeric note evidence.
+            out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
             at = m.end()
             continue
         if c == "\\" or c in "{}":
@@ -634,7 +645,8 @@ def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
         if c == "<":
             m = SUP_RE.match(text, at)
             if m:
-                out.append(Token(MARKER, m.group(), at, m.end(), _marker_value(m.group(2))))
+                # Unsupported HTML superscripts/subscripts remain unresolved.
+                out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
                 at = m.end()
                 continue
             m = HTML_ROW_RE.match(text, at)

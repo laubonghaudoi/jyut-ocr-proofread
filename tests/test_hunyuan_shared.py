@@ -13,11 +13,12 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts"
+SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout
 
@@ -41,7 +42,7 @@ def stop(*args):
     log('stop')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
-log('start', slots=a.parallel, ctx=a.ctx_size)
+log('start', slots=a.parallel, ctx=a.ctx_size, args=__import__('sys').argv[1:])
 (root / 'server.pid').write_text(str(os.getpid()))
 if (root / 'fail-start').exists():
     raise SystemExit(17)
@@ -101,6 +102,7 @@ class SharedBrokerTest(unittest.TestCase):
         self.config = {"binary": str(self.binary), "model": str(self.root / "model"),
                        "mmproj": str(self.root / "mmproj"), "model_id": "hunyuanocr",
                        "ctx": 16384, "slots": 2, "identity": "unit-test-source", "max_tokens": 100}
+        self.config = self.module._config(self.config)
         self.queue_dir = self.root / "queue"
         self.resource = "isolated-fake-gpu"
         self.clients = []
@@ -241,10 +243,31 @@ class SharedBrokerTest(unittest.TestCase):
             pass
 
     def test_reject_invalid_configuration_before_spawning(self):
-        for change in ({"slots": 0}, {"slots": 65}, {"identity": ""}, {"unrecognized": True}):
+        for change in ({"slots": 0}, {"slots": 65}, {"identity": ""}, {"unrecognized": True}, {"device": "bogus"}):
             with self.assertRaises(GPUQueueError):
                 self.module.SharedHunyuanClient(dict(self.config, **change), self.queue_dir, self.resource)
         self.assertEqual(self.events(), [])
+
+    def test_device_profile_changes_broker_identity_and_cpu_flags_reach_child(self):
+        cpu = self.module._config(dict(self.config, device='cpu'))
+        cuda = self.module._config(dict(self.config, device='cuda'))
+        cpu_id = self.module._identity(cpu, self.queue_dir.resolve(), self.resource)
+        cuda_id = self.module._identity(cuda, self.queue_dir.resolve(), self.resource)
+        self.assertNotEqual(cpu_id['digest'], cuda_id['digest'])
+        with patch.dict(os.environ, {'MTMD_BACKEND_DEVICE': 'none'}):
+            alternate = self.module._identity(cuda, self.queue_dir.resolve(), self.resource)
+        with patch.dict(os.environ, {'MTMD_BACKEND_DEVICE': 'CUDA0'}):
+            current = self.module._identity(cuda, self.queue_dir.resolve(), self.resource)
+        self.assertNotEqual(alternate['digest'], current['digest'])
+        client = self.client(cpu, queue_timeout=5)
+        self.assertEqual(client.report['device'], 'cpu')
+        start = next(row for row in self.events() if row['event'] == 'start')
+        args = start['args']
+        self.assertEqual(args[args.index('--n-gpu-layers') + 1], '0')
+        self.assertEqual(args[args.index('--device') + 1], 'none')
+        self.assertEqual(args[args.index('--mmproj-device') + 1], 'none')
+        self.assertIn('--no-mmproj-offload', args)
+        self.assertIn('--no-kv-offload', args)
 
     def test_broker_import_failure_is_reported_without_unlimited_respawn(self):
         # An installed runtime can be broken before it even binds IPC. The
@@ -254,6 +277,31 @@ class SharedBrokerTest(unittest.TestCase):
         with self.assertRaisesRegex(GPUQueueError, "exited before admission.*log"):
             self.client()
         self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(self.events(), [])
+
+    def test_owner_release_before_exit_does_not_replace_failing_child(self):
+        # Model the interpreter shutdown window: IPC ownership is released,
+        # but the first child still has no exit status for the join loop.
+        real_popen = subprocess.Popen
+        children = []
+
+        def launch_releasing_child(command, **kwargs):
+            owner = command[command.index("--owner-fd") + 1]
+            child = real_popen(
+                [sys.executable, "-c",
+                 "import os,sys,time; os.close(int(sys.argv[1])); time.sleep(0.3); sys.exit(7)",
+                 owner], **kwargs)
+            children.append(child)
+            return child
+
+        try:
+            with patch.object(self.module.subprocess, "Popen", side_effect=launch_releasing_child) as launch:
+                with self.assertRaisesRegex(GPUQueueError, "exited before admission.*code 7.*log"):
+                    self.client(queue_timeout=2)
+                self.assertEqual(launch.call_count, 1)
+        finally:
+            for child in children:
+                child.wait(timeout=3)
         self.assertEqual(self.events(), [])
 
     def test_unresponsive_discovery_owner_has_bounded_watchdog(self):

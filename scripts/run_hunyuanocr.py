@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce HunyuanOCR drafts for agent-led visual proofreading on Linux/NVIDIA.
+"""Produce HunyuanOCR drafts for agent-led visual proofreading on CPU/CUDA/Metal.
 
 Local runners share one bounded llama.cpp server across sessions by default.
 Dedicated FIFO batches and explicit externally managed endpoints are optional.
@@ -62,6 +62,11 @@ SENTENCE_MARKS = frozenset("。，、；：？！")
 
 PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 READY_TIMEOUT = 600.0
+DEVICE_CHOICES = ("auto", "cpu", "cuda", "metal")
+DEVICE_ENVIRONMENT = (
+    "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+    "GGML_METAL_DEVICES", "LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE",
+)
 
 
 class ConfigurationError(ValueError):
@@ -118,6 +123,40 @@ def canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
 
 def profile_sha256(profile: Mapping[str, Any]) -> str:
     return sha256_bytes(canonical_json_bytes(profile))
+
+
+def device_profile(device: str, *, endpoint: bool = False) -> dict[str, Any]:
+    """Describe the enforced launch policy, without claiming GPU utilization.
+
+    ``auto`` retains llama.cpp's existing device selection. Explicit CUDA uses
+    its first visible device (CUDA_VISIBLE_DEVICES can select the physical GPU).
+    Hardware/build suitability is checked by the installer's actual OCR probe;
+    a runner with an unsupported explicit backend fails at server startup.
+    """
+    if device not in DEVICE_CHOICES:
+        raise ConfigurationError("device must be auto, cpu, cuda or metal")
+    if endpoint and device != "auto":
+        raise ConfigurationError("--device controls an owned local server; use auto with --endpoint")
+    return {
+        "requestedDevice": device,
+        "effectiveDevice": "external-uncontrolled" if endpoint else "runtime-auto" if device == "auto" else device,
+        "decoderGpuLayers": None if endpoint else 0 if device == "cpu" else 99,
+        "projectorOffload": None if endpoint else device != "cpu",
+        "kvOffload": None if endpoint else device != "cpu",
+        "llamaDevices": None if endpoint or device == "auto" else {"cpu": "none", "cuda": "CUDA0", "metal": "MTL0"}[device],
+        "runtimeSelectors": {} if endpoint else {key: os.environ.get(key) for key in DEVICE_ENVIRONMENT},
+    }
+
+
+def device_arguments(device: str) -> list[str]:
+    profile = device_profile(device)
+    arguments = ["--n-gpu-layers", str(profile["decoderGpuLayers"]),
+                 "--mmproj-offload" if profile["projectorOffload"] else "--no-mmproj-offload",
+                 "--kv-offload" if profile["kvOffload"] else "--no-kv-offload"]
+    if profile["llamaDevices"] is not None:
+        arguments += ["--device", profile["llamaDevices"],
+                      "--mmproj-device", profile["llamaDevices"]]
+    return arguments
 
 
 def render_path(directory: Path, scan_page: int) -> Path:
@@ -217,8 +256,9 @@ class HunyuanServer:
                  model: Path | None, mmproj: Path | None, port: int, ctx: int,
                  model_id: str = "hunyuanocr", lease_fds: tuple[int, ...] = (),
                  parallel: int = 1, log_path: Path | None = None,
-                 cancel_event=None):
+                 cancel_event=None, device: str = "auto"):
         self.process: subprocess.Popen[bytes] | None = None
+        self.execution_profile = device_profile(device, endpoint=bool(endpoint))
         self.model_id = model_id
         self.base = endpoint.rstrip("/") if endpoint else f"http://127.0.0.1:{port}"
         if endpoint:
@@ -243,7 +283,7 @@ class HunyuanServer:
                  "--host", "127.0.0.1", "--port", str(port), "--alias", model_id,
                  "--ctx-size", str(ctx), "--parallel", str(parallel),
                  "--no-kv-unified", "--cont-batching", "--no-cache-prompt",
-                 "--n-gpu-layers", "99"]
+                 *device_arguments(device)]
             log_handle = log_path.open("ab") if log_path else None
             try:
                 self.process = subprocess.Popen(
@@ -442,11 +482,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--endpoint-revision", help="caller-declared deployment revision; change it after endpoint updates")
     p.add_argument("--port", type=int, default=8095)
     p.add_argument("--ctx-size", type=int, default=16384)
+    p.add_argument("--device", choices=DEVICE_CHOICES,
+                   default=os.environ.get("OCR_HUNYUAN_DEVICE", "auto"),
+                   help="local backend: auto keeps runtime selection; cpu disables all GPU offload")
     p.add_argument("--server-mode", choices=("shared", "dedicated"),
                    default=os.environ.get("OCR_HUNYUAN_MODE", "shared"),
                    help="shared cross-session backend (default), or one dedicated FIFO batch")
-    p.add_argument("--server-slots", type=int, default=os.environ.get("OCR_HUNYUAN_SLOTS", "4"),
-                   help="total simultaneous requests; ctx-size is per slot (default 4)")
+    p.add_argument("--server-slots", type=int, default=os.environ.get("OCR_HUNYUAN_SLOTS", "1"),
+                   help="total simultaneous requests; ctx-size is per slot (default 1)")
     p.add_argument("--workers", type=int,
                    help="this document's outstanding pages; default server-slots, external endpoints default 1")
     p.add_argument("--max-tokens", type=int, default=8000)
@@ -535,6 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ConfigurationError("workers must be 1..server-slots")
         if arguments.endpoint and arguments.workers != 1:
             raise ConfigurationError("external endpoints use one page worker per runner")
+        execution = device_profile(arguments.device, endpoint=bool(arguments.endpoint))
         for name in ("model", "mmproj", "llama_server"):
             value = getattr(arguments, name)
             if value is not None:
@@ -558,6 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                           "serverSlots": arguments.server_slots, "contextPerSlot": arguments.ctx_size,
                           "totalContext": arguments.ctx_size * arguments.server_slots,
                           "clientWorkers": arguments.workers}
+        deployment["executionProfile"] = execution
         if report_path in [Path(__file__).resolve(), arguments.model, arguments.mmproj, arguments.llama_server]:
             raise ConfigurationError("report must not overwrite a tool or model file")
         profile = dict(OCR_PROFILE, maxTokens=arguments.max_tokens, deployment=deployment)
@@ -612,6 +657,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         config={"binary": str(arguments.llama_server), "model": str(arguments.model),
                                 "mmproj": str(arguments.mmproj), "model_id": deployment["modelId"],
                                 "ctx": arguments.ctx_size, "slots": arguments.server_slots,
+                                "device": arguments.device,
                                 "max_tokens": arguments.max_tokens,
                                 "identity": tool.combined_sha256 + profile_sha256(shared_profile)},
                         queue_dir=arguments.gpu_queue_dir, resource=arguments.gpu_resource,
@@ -624,6 +670,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                            arguments.model, arguments.mmproj,
                                            arguments.port, arguments.ctx_size * arguments.server_slots,
                                            deployment["modelId"], parallel=arguments.server_slots,
+                                           device=arguments.device,
                                            lease_fds=lease.pass_fds if lease is not None else ())
             except GPUQueueTimeout as error:
                 queue_deferred = True

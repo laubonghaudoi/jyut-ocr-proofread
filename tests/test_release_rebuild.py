@@ -12,10 +12,6 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "scripts"
 )
 PLAN_REBUILD = SCRIPTS / "plan_release_rebuild.py"

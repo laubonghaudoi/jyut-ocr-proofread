@@ -32,14 +32,12 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import re
-import unicodedata
 from typing import Any
 
+from _note_markers import NOTE_HEAD_RE as NOTE, iter_note_markers, marker_key, math_context
 from _ocr_markdown import (
     FOOTNOTE_CALL_RE,
     FOOTNOTE_HEAD_RE,
-    NOTE_FIGURE,
-    NOTE_LINE_RE,
     THEMATIC_BREAK_RE,
     find_page_markers,
     foot_notes,
@@ -49,10 +47,6 @@ from _ocr_markdown import (
     split_lines,
 )
 
-NUMBER = re.compile(rf"{NOTE_FIGURE}+")
-# A note's line: the colon of a [^N]: and the spaces after the number go
-# (a colon printed after any other number stays in the note's text).
-NOTE = re.compile(NOTE_LINE_RE.pattern + r"(?:(?<=\]):)?[ \t]*")
 # A $...$ pair on a line: math, where no renderer reads a footnote.
 MATH = re.compile(r"\$[^$\n]+\$")
 # A line that opens an HTML block (CommonMark: a block-level tag, or a line
@@ -70,13 +64,8 @@ HTML_BLOCK = re.compile(
 
 
 def key(number: str) -> str:
-    """The value of a note number, glyph by glyph: ① -> '1', ⑦⑨ -> '79',
-    ⑤² -> '52', ❿ -> '10', ②④⓪ -> '240', [^12] -> '12'; '' when any glyph has
-    no integer numeric value."""
-    values = [unicodedata.numeric(c, None) for c in re.sub(r"</?sup>|[\s$^{}\[\]]", "", number)]
-    if not values or any(value is None or value != int(value) for value in values):
-        return ""
-    return "".join(str(int(value)) for value in values)
+    """The printed numeric identity of a supported marker; no inference."""
+    return marker_key(number)
 
 
 def _html(lines: list[str]) -> set[int]:
@@ -166,15 +155,17 @@ def convert(text: str, *, renumber: bool = False) -> tuple[str, dict[str, Any]]:
         for n in range(marker + 1, end):
             body = line_body(lines[n])
             note = None if n in html else NOTE.match(body)
+            if note and math_context(body, note.start("number"), note.end("number")):
+                note = None
             if note:
                 notes[key(note.group("number"))].append((n, note.start("number"), note.end()))
-            for m in NUMBER.finditer(body, note.end() if note else 0):
+            for m in iter_note_markers(body, note.end() if note else 0):
                 spot = (n, m.start(), m.end())
                 if n in html:
                     odd["html"].append(spot)
                 elif note:
                     odd["inside"].append(spot)
-                elif any(
+                elif math_context(body, m.start(), m.end()) or any(
                     s < m.end() and m.start() < e and not m.start() <= s < e <= m.end()
                     for s, e in (pair.span() for pair in MATH.finditer(body))
                 ):
@@ -206,6 +197,10 @@ def convert(text: str, *, renumber: bool = False) -> tuple[str, dict[str, Any]]:
                 if not renumber and len(ps.calls[k]) > 1:
                     # Two footnotes on the same page cannot share the same numeric [^k]: label
                     # without renumbering; keep them as printed unless renumber=True.
+                    ps.extra_why.append({
+                        "kind": "duplicate_label", "number": k,
+                        "calls": len(ps.calls[k]), "notes": len(ps.notes[k]),
+                    })
                     continue
                 for c_spot, n_spot in zip(ps.calls.pop(k), ps.notes.pop(k)):
                     candidates.append((c_spot, n_spot, k, idx, idx))

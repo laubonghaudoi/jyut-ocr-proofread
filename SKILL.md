@@ -5,25 +5,30 @@ description: 逐頁識別、校對同清理歷史中文 PDF／OCR Markdown；支
 
 # Jyut OCR 校對
 
-需要人工標註、對圖裁定或覆核 golden 時，讀 `references/manual-review-tool.md`，經 `scripts/review.py` 啟動 `jyut-ocr-bench` 共用工具；題目、圖片同答案歷史留喺各 project，唔另建標註 server。保存裁定唔會自動改正文或 golden。
+需要互動式人工標註、對圖裁定或覆核 golden 時，可以讀 `references/manual-review-tool.md`，經 `scripts/review.py` 啟動可選嘅 `jyut-ocr-bench` 共用工具；一般 OCR／校對唔要求另一份 repo。題目、圖片同答案歷史留喺各 project，保存裁定唔會自動改正文或 golden。介面未配置好時先保存精確疑點，唔阻塞其他可完成嘅校對。
 
 用呢個 skill 將歷史中文 PDF 忠實轉錄成 Markdown，或者按同名 PDF 校對既有 OCR。目標係保存原文，而唔係現代化、改寫或潤飾。
 
-## 校對模型同可攜性
+## 能力、首次使用同校對模型
 
-- **智能校對同最終內容審核由調用本技能嘅當前 agent 模型負責**：喺 Antigravity／Gemini CLI 用，就由當前 Gemini session 嘅模型核圖、判字、重建結構同審核；喺 Codex 用，就由當前 Codex session 嘅模型做；喺 Claude Code 用，就由當前 Claude session 嘅模型做同一層工作。
-- HunyuanOCR、PaddleOCR-VL、Apple Vision 只係可替換嘅底稿引擎；選擇邊個 OCR backend 唔會改變校對模型。Deterministic scripts 負責底稿字元對齊、字元集鎖定驗證（`verify_characters`）、標點數目守門、格式／結構與證據契約，唔代替 agent 對裁圖與原頁嘅視覺判斷。
-- 分段 writer／packet worker／independent auditor 預設沿用主 session 嘅有效模型設定；平台或用戶明確指定嘅 override 要如實交代。技能唔指定固定平台 model ID，亦唔自行將校對交畀另一個本機／遠端模型服務（除非用戶明確傳 `--backend http --endpoint ...`）。
-- 本技能唔依賴本機 Qwen 校對層、NInfer、RTX 5090 或 `jyut-ocr-qwen` checkout。搬到其他電腦時，只按該機能力設定可用嘅 OCR 底稿引擎及模型／執行檔路徑；機器專屬路徑留喺當地設定或 CLI，唔寫死喺技能。冇可用底稿引擎時，仍由當前 agent 按原圖轉錄校對。
+- **智能校對同最終內容審核由調用本技能嘅當前 agent 模型負責**。需要能直接讀個別原頁／full-resolution render 同裁圖、讀寫 UTF-8／JSON 工作檔，以及執行所需腳本。唔依賴指定平台工具名稱、model ID、custom-agent 角色或外部校對 API key；平台專用設定係可選 adapters。
+- 首次使用先喺技能根目錄跑 `./install.sh --env-only --check`；未就緒時按 [安裝指引](references/install.md) 用同一入口初始化。Linux／WSL2 預設 Hunyuan；macOS 要選 Vision 或 Hunyuan，無互動時明確傳 `--engine`。原生技能管理器放置檔案唔代表 OCR 環境已配置。
+- 腳本採用安裝器設定嘅 `JYUT_OCR_PYTHON`；按實際配置路徑讀過並載入 `env.sh`，唔將 venv Python symlink resolve 成系統 Python。需要嘅系統依賴未就緒時如實列明；原生 Windows 唔在支援範圍，Windows 用 WSL2。
+- HunyuanOCR、PaddleOCR-VL、Apple Vision 只係可替換嘅底稿引擎。Deterministic scripts 負責字元對齊、內容／標點保留、結構及證據契約，唔代替核圖。唔需要本機另一個智能校對模型、指定 GPU 或另一份 OCR repo。
+- 腳本校對明確傳 `--backend packet`：當前 agent 讀圖回答 bundles，再驗證及重播；外部 HTTP 校對服務只有用戶顯式選擇先會啟用，唔由環境變數意外換模型。選 OCR backend 唔會改校對模型。
+- 子 agent 係可選加速；冇子 agent／custom roles 時，由當前 agent 順序寫各頁段或回答 packets。普通 worker 接收完整 logical role assignment 即可。Writer／reviewer 預設沿用 session 嘅有效模型策略，平台或用戶 override 要如實交代。
+- 冇可用 OCR 引擎但仍能讀圖時，直接按原圖逐頁轉錄，唔以空底稿冒充 packet 輸入。冇讀圖能力時，保存已完成準備及待核圖範圍，唔聲稱完成視覺校對。
+- 如工作要求獨立審核，需要不同 reviewer 對 sealed candidate 覆核；可以順序交另一個具只讀存取權嘅 session 或獨立人員。同一 writer 重讀唔算獨立，prompt 禁止寫入亦唔等於權限隔離；缺少所需能力時保留 candidate 及 pending audit，唔降低原有 release 要求。
 
 ## 先讀邊份規則
 
 - 先讀目標 repo 嘅 `AGENTS.md` 或其他本地指示；本地規則優先。
 - 做全文、final pass、長報告、章程、表格、票據、尾頁或速記錄時，讀 `references/jyut-ocr-detailed-rules.md`。
 - 遇到反覆近形錯字、官職、人名、地名、數字符號或舊式標點時，讀 `references/common-ocr-traps.md`。
+- 處理雙底稿同漏、稀疏頁、註號、算式／原印項號遺失，或者按評測更新技能時，讀 `references/content-fidelity.md`；將識字、內容保留、閱讀次序同評分版本分開查。
 - 處理單一長書、掃描 spread、旋轉／重複／缺頁、分段並行、OCR 底稿、跨頁註腳或外部同版復原時，讀 `references/long-book-workflow.md`。
-- Ubuntu／Linux 用本機 GPU 產生雙引擎底稿、執行三階段 Packet 校對與決定論修書流水線時，讀 `references/local-ocr.md`；macOS 保留 Apple Vision。
-- 用 Antigravity／Codex／Claude Code subagent 分段寫稿、並行回答 packet 裁圖任務或做獨立 visual audit 時，讀 `references/subagent-orchestration.md`；raw OCR 由主 agent 統一啟動，唔用一頁一個 LLM agent 包裝。
+- 配置或檢查 OCR 環境時讀 `references/install.md`；用本機引擎產生底稿、分階段 packet 校對或決定論修書時讀 `references/local-ocr.md`。
+- 分段寫稿、回答 packet 裁圖任務或做獨立 visual audit 時，按需要讀 `references/subagent-orchestration.md`；可用普通 worker 或順序執行，raw OCR 由主 agent 統一啟動，唔用一頁一個 LLM agent 包裝。
 - 書內有凡例、編者校勘符號或原書不配對引號時，讀 `references/release-gate.md` 嘅相應 feature；只有已揀 `release` profile 先跟入面嘅 plan／receipt 封關部分。
 - 遇到題名星號／來源題注、獨立覆核後再修改、跨冊證據重用，或者要判斷上游改動令邊批 release evidence 失效時，讀 `references/review-evidence.md`。
 - 收到人工標註、建立疑字覆核介面，或者追查底稿／校對稿之間嘅錯誤來源時，讀 `references/human-review-feedback.md`。
@@ -33,6 +38,7 @@ description: 逐頁識別、校對同清理歷史中文 PDF／OCR Markdown；支
 - 以 PDF／原掃描圖像為最終依據；HunyuanOCR、PaddleOCR-VL、Apple/macOS Vision、Gemini、GJ.cool、OCR JSON 同外部研究都只係底稿或提示。兩引擎、既有成品同 reviewer 可以一致錯；容許兩個候選皆非，唔因一致、通順、較古字形或引擎偏好定案。
 - 保留原有異體字、舊字形同舊式標點，例如 `粤/粵`、`淸/清`、`决/決`、`吿/告`、`塲/場`、`箚/劄/剳/札`；雙圈句號照寫 `。。`，正文與 Markdown 表格內印出嘅字面星號寫 `\*`（HTML `<table>` 格內除外）。唔好靜靜正規化。
 - 優先核對 `[]` 低信心字同雙引擎對齊分歧；冇括號或兩引擎一致嘅字亦可能係高信心錯字，要按語境同圖像檢查。
+- 漢字數量為零、引擎輸出一致或者版面區塊少，都唔證明原頁空白。先睇完整原頁，包括英文、數字、算式、稀疏題字、樹圖根節點與分支，再按區域補讀；只由底稿已偵測區塊產生嘅裁圖唔能夠排除共同漏塊。
 - 開始正文前先讀凡例／編輯說明，建立本書符號政策。`[]`、`［］`、`〈〉`、`□`、`（？）` 同註號可能係原書校勘內容，唔可以當 residual 一律刪；同一系列各冊亦要分開判斷。
 - Annotated audit 唔接受 notation policy 豁免：已核實嘅來源符號可以原樣保留並記成 known annotated-stage issue，但呢一關唔可以聲稱 clean；移除 OCR confidence markup 後，只喺 final mode 先按 exact policy 接受來源 notation。
 - PDF 模糊而底稿合理時，保留最有根據讀法或報告 uncertainty；唔好憑空補字。
@@ -42,14 +48,14 @@ description: 逐頁識別、校對同清理歷史中文 PDF／OCR Markdown；支
 ## OCR 工具次序
 
 1. 立即用 `scripts/survey_pdf.py` render PDF（或用 `--images-dir` 為現成 `page-NNNN.png` 掃描資料夾建立 `source_kind: "images-dir"` 嘅 `page-manifest.json`），唔為任何服務停低。
-2. 按平台產生有 page provenance 嘅底稿：Ubuntu／Linux 支援 **PaddleOCR-VL**（區塊版面與座標）＋ **HunyuanOCR**（整頁讀法）＋ **`run_hunyuanocr_second_look.py`**（針對極窄邊欄／雙欄／漏讀區塊補切裁圖重讀，共用 `SharedHunyuanClient` 同 `GPUQueue`）；macOS 可以用 **Apple Vision**。單引擎或雙引擎底稿分開保存，經 `book_profile.py` 同 `proofread_pages.py`（預設 `--backend packet` 三階段 checkpoint-replay，由當前 session 嘅 Agent／Subagents 批次睇圖回答）逐處核對分歧、標點、結構同表格；引擎不可用就報告原因並繼續按原圖轉錄，唔為安裝／載入模型停低。
+2. 按已配置引擎產生有 page provenance 嘅底稿：**HunyuanOCR** 提供整頁讀法；macOS 亦可用 **Apple Vision**；**PaddleOCR-VL 按需補讀**版面／文字疑點，`run_hunyuanocr_second_look.py` 可以針對窄邊欄／漏讀區塊補切裁圖。單引擎預設直接用 `proofread_pages.py --backend packet`（省略 `--draft2-directory` 同 `--profile` 引擎校準檔）逐頁核圖，封存完成後用 `finish_book.py --single-engine --ocr-a` 指定真實底稿定稿；唔執行雙引擎修書，跨頁不確定接續留下疑點。真正兩份底稿分開保存後，先用 `book_profile.py` 量度，再走雙引擎 packet 流程核對分歧、標點、結構同表格。唔將同一底稿複製成假第二引擎。引擎不可用就報告原因並直接按原圖轉錄，唔反覆等待服務。
 3. GJ.cool 只作可選輔助：已有 token 同可用 API 時先按短 request budget 嘗試，唔阻塞逐頁工作。5 秒係保守等待預設，唔係準確率門檻；用戶／當地配置可指定 budget。timeout、quota、auth、服務錯誤或 `wait for ... seconds` 後，本輪唔再自發重試。
 4. Tesseract/Tessdata 係硬性禁用：唔安裝、唔調用、唔等待、唔讀取現成輸出、唔採納結果。
 
 ## 安全並行
 
-- LLM subagent 只用嚟分段轉錄、版面重建同獨立核圖。macOS Apple Vision 由主 agent 啟動最多八個本機 process；Ubuntu Hunyuan 預設由跨 session broker 共用一份模型，按 session 輪流分派頁面，所有 sessions 合共受 server slots 上限限制。Paddle／不同 backend 設定仍按 FIFO 交棒。Client 底稿完成即離開，最後一個 client 離開後卸載模型並釋放 GPU，唔等 agent 校對；唔為每本書分開 queue，亦唔套用八個 process 嘅規則。外部 endpoint／NInfer 唔受呢個隊列管理，配置同限制見 `references/local-ocr.md`。子 agent 唔自行啟停 OCR 模型或共享推理服務。
-- 同時運行嘅 LLM child 數量不得超過平台實際可用 slots，亦最多八個；agent tasks 多過 slots 時分 wave 執行。Worker／auditor 預設沿用主 session 嘅有效模型策略，唔喺通用技能鎖死平台 model ID。
+- LLM subagent 只用嚟分段轉錄、版面重建同獨立核圖。macOS Apple Vision 由主 agent 啟動最多八個本機 process；Hunyuan 預設由跨 session broker 共用一份模型，按 session 輪流分派頁面，所有 sessions 合共受 server slots 上限限制。Paddle／不同 backend 設定仍按 FIFO 交棒。Client 底稿完成即離開，最後一個 client 離開後卸載模型並釋放 GPU，唔等 agent 校對；唔為每本書分開 queue，亦唔套用八個 process 嘅規則。外部 OCR endpoint 唔受呢個隊列管理，配置同限制見 `references/local-ocr.md`。子 agent 唔自行啟停 OCR 模型或共享推理服務。
+- 同時運行嘅 LLM child 數量不得超過平台實際可用 slots，亦最多八個；agent tasks 多過 slots 時分 wave 執行，冇 slots 時由主 agent 順序處理。Worker／auditor 預設沿用主 session 嘅有效模型策略，唔喺通用技能鎖死平台 model ID。
 - 多份獨立 Markdown/PDF pair 可以一檔一 agent 並行；每個 writer 嘅檔案範圍必須互斥。
 - 單一長書亦可以按連續頁段分工，但每個 agent 只寫獨立暫存 segment，例如 `segments/p001-080.md`；只由主 agent 組裝最終 Markdown。
 - 開工前列明 PDF 頁數、頁段、marker 範圍、表格／尾頁／缺頁風險同輸出檔。唔好畀多人同時改同一份最終檔。
@@ -117,9 +123,12 @@ Profile 只控制證據封存重量，唔會降低逐頁視覺校對標準。先
 - heading 層級除咗按語義，亦要睇 PDF 字級、位置同副題關係。完成後檢查 heading 前後空行同有冇意外跳級。
 - 按來源段落同閱讀次序重建 Markdown，唔保留 OCR 原始行寬；語法未完只係核圖線索，唔推翻真換段或來源半句。
 - 簡單平行枚舉用 tight bullet list，保留原項號；包含多段、引文或其他 block 嘅 item 要保留層次，唔為 tight-list 檢查壓平，工具限制見詳細版面規則。
+- 原印數字項號係內容；例如來源嘅 `3.` 轉成 bullet 時寫 `- 3. ...`，唔刪成 `- ...`，亦唔自動補齊缺號。算式、數字、外文、註號同字面符號要連同所在段落／格位保存；只驗漢字集合或者總字數唔夠。
 - 跨頁同一 list item 嘅續文縮入該 item；新項目另起 bullet。唔好因數字開頭就自動當新項。
 - 長目錄啟用對賬 gate 時，按 `references/long-book-workflow.md` 嘅目錄對賬同 `references/release-gate.md` 嘅「封關長目錄對賬」建立 inventory／ledger、scope 同獨立完整覆核，再做高風險異文／頁碼 challenge。普通目錄仍逐項核圖，保留來源原字同參照；唔自動由正文生成或改寫目錄。
 - 普通規則網格重建 Markdown table；合併格可用 HTML `rowspan`／`colspan`，按原圖保留欄列同跨格關係，唔照 OCR 行序硬排。Bundled table audit 只查 Markdown 欄數；HTML 另核內容、關係同渲染，唔聲稱已由舊腳本驗過。
+- 表格預設 `--table-orientation auto`：按原圖判斷邊個方向係一筆紀錄、邊個係欄位，直排紀錄可轉成邏輯橫列，欄位依閱讀次序排列。`as-printed` 只用於下游**明確要求保留物理格網座標**；「評分器唔會轉置」只描述評分行為，唔等於要求 `as-printed`。格網方向同格內讀序分開核圖，唔憑詞語通順倒字；孤立單行／單列表頭未有圖像證據時保留並記未定。
+- 跨頁表先核對相鄰頁嘅同表證據、欄位及重複表頭，再處理夾住嘅註腳、家具同續表題名。註腳唔當家具刪；未知文字、獨立新表、缺頁或方向未定要留下疑點，唔只靠同欄數拼表。
 - 表格總數、條號、人名數、A–J 等結構 invariants 要另行計算驗證，唔好只靠閱讀語意。
 
 ## 頁面家具
@@ -135,8 +144,8 @@ Profile 只控制證據封存重量，唔會降低逐頁視覺校對標準。先
 
 - `scripts/survey_pdf.py`：由 PDF render 頁面（或以 `--images-dir` 讀取現成 `page-NNNN.png` 掃描目錄，寫入 `source_kind: "images-dir"`）並產生 `page-manifest.json`。
 - `scripts/run_hunyuanocr.py`、`scripts/run_hunyuanocr_second_look.py`（共用 `SharedHunyuanClient` 同 `GPUQueue`）同 `scripts/run_paddleocr_vl.py`＋`scripts/paddleocr_vl_worker.py`（Ubuntu／Linux 本機雙引擎底稿與窄欄／邊欄補讀）：沿用本機 OCR 引擎，逐頁保存 `schemaVersion: 2` JSON／TXT、render／tool／profile hashes 同 run report，支援選頁同續跑。用法、GPU 共用同 provenance 限制見 `references/local-ocr.md`。
-- `scripts/book_profile.py`、`scripts/proofread_pages.py` 同 `scripts/apply_packet_answers.py`：決定論雙引擎字元對齊、字形／異體分類、三階段 `PacketClient` 批次裁圖協定（預設 `--backend packet`，由當前 session 嘅 Agent／平行 Subagents 睇裁圖回答，每步經 `verify_characters` 鎖定字元集同標點計數驗證；支援 `--table-orientation {auto,as-printed}`，短檔 `<=4` 頁自動走免校準快速路徑）。
-- `scripts/stitch_tables.py`、`scripts/repair_book.py` 同 `scripts/finish_book.py`：跨頁表格非破壞性縫合（`--output-dir`）、全書決定論修書（含字面 `\*` 跳脫與 `U+16FE6 -> 。。` 正規化）、腳註轉換（預設保留原印編號如 `[^240]` 及頁底原位定義，支援同頁局部配對與跨頁孤立註號回溯；`--renumber-footnotes`、`--relocate-footnotes`、`--extract-figures` 均為顯式 opt-in）及移除 page markers 產生 `final.md` 與 `doubts.md`。
+- `scripts/book_profile.py`、`scripts/proofread_pages.py` 同 `scripts/apply_packet_answers.py`：單引擎直接核原頁，雙引擎先量度 profile 再對齊字元及分類字形／異體；共用分階段 `PacketClient` 批次裁圖協定（預設 `--backend packet`，由當前 session 嘅 Agent／平行 Subagents 核對整頁及裁圖；內容補讀須綁定原圖與候選 hash，格式整理另經字元／標點保留檢查，最後再核整頁覆蓋；支援 `--table-orientation {auto,as-printed}`，短檔 `<=4` 頁自動走免校準快速路徑）。
+- `scripts/stitch_tables.py`、`scripts/repair_book.py` 同 `scripts/finish_book.py`：單引擎 `--single-engine --ocr-a` 驗封存後組裝及 final audit，保留跨頁未定接續同工作證據；雙引擎路線另支援跨頁表格非破壞性縫合（`--output-dir`）、全書決定論修書（含字面 `\*` 跳脫與 `U+16FE6 -> 。。` 正規化）、腳註轉換（預設保留原印編號如 `[^240]` 及頁底原位定義，支援同頁局部配對與跨頁孤立註號回溯；`--renumber-footnotes`、`--relocate-footnotes`、`--extract-figures` 均為顯式 opt-in）及移除 page markers 產生 `final.md` 與 `doubts.md`。
 - `scripts/run_apple_vision_ocr.py`＋`scripts/apple_vision_ocr.swift`（macOS OCR 底稿）：用 bounded process pool 逐頁產生可續跑、可驗 hash、有 scan provenance 嘅 Apple Vision JSON／text；有效 worker 上限八個，任何輸出仍只係 draft，亦絕不 fallback 去 Tesseract／Tessdata。
 - `scripts/assemble_ocr_segments.py`（`structured`／`release`）：按 strict ordered manifest 驗 segment hashes／連續 scan ranges，並按 sealed page manifest 驗 marker coverage；重播 bytes 同現有 combined annotated 不一致就失敗。
 - `scripts/audit_title_notes.py`（星號題名註 feature）：按主 item 核對 heading 尾端 `*`／`**` 同題注 marker，列 missing／orphan 同 note-shaped 跨頁 hazard。任何 note→running-body transition 預設 fail closed；只有 strict `--transition-reviews` exact match 目前 target、boundary、前後文字、reviewer 同 visual evidence 先接受。報告唔自動證明題注 ownership；普通 Markdown star syntax 必須由人分辨。

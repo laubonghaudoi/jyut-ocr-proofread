@@ -15,10 +15,6 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "scripts"
     / "run_apple_vision_ocr.py"
 )

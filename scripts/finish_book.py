@@ -223,6 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
                        ("ocr-a", "engine A's drafts (PaddleOCR-VL)"), ("ocr-b", "engine B's drafts (HunyuanOCR)"),
                        ("profile", "book-profile.json"), ("page-manifest", "survey_pdf.py's page-manifest.json")):
         parser.add_argument(f"--{name}", type=Path, help=f"{what} (default: found in the book's folder)")
+    parser.add_argument("--single-engine", action="store_true",
+                        help="finalize image-reviewed single-engine pages; requires --ocr-a, rejects --ocr-b, "
+                             "skips two-engine repair, keeps unresolved page joins separate and keeps work")
     parser.add_argument("--workers", type=int, default=min(6, os.cpu_count() or 1),
                         help="CPU processes for the repair's book model and counters")
     parser.add_argument("--extract-figures", action="store_true",
@@ -256,10 +259,11 @@ class Inputs:
     proofread: Path
     renders: Path
     ocr_a: Path
-    ocr_b: Path
+    ocr_b: Path | None
     profile: Path | None
     page_manifest: Path
     notes: list[str] = field(default_factory=list)
+    single_engine: bool = False
 
     def as_dict(self) -> dict[str, str | None]:
         return {name: (str(getattr(self, name)) if getattr(self, name) is not None else None)
@@ -335,6 +339,14 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
     if not book.is_dir():
         raise FinishError(EXIT_USAGE, f"{book} is not a folder")
     notes: list[str] = []
+    single_engine = bool(getattr(arguments, "single_engine", False))
+    if single_engine:
+        if arguments.ocr_b is not None:
+            raise FinishError(EXIT_USAGE, "--single-engine cannot be combined with --ocr-b")
+        if arguments.ocr_a is None:
+            raise FinishError(EXIT_USAGE, "--single-engine requires --ocr-a naming the one actual draft folder")
+        if getattr(arguments, "extract_figures", False):
+            raise FinishError(EXIT_USAGE, "--single-engine preserves full-page transcription; --extract-figures is unsupported")
 
     proofread = _given(arguments.proofread)
     if proofread is None:
@@ -356,7 +368,7 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         except (OSError, ValueError) as error:
             raise FinishError(EXIT_USAGE, f"{profile}: unreadable: {error}") from error
         sources = (data.get("sources") or {}) if isinstance(data, dict) else {}
-    else:
+    elif not single_engine:
         notes.append("no book-profile.json found: the repair runs without the book profile")
 
     def named(key: str) -> Path | None:
@@ -385,7 +397,10 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         return _one(found, f"{engine}'s drafts", switch)
 
     ocr_a = drafts(_given(arguments.ocr_a), "draftA", "ocr-paddle", ENGINE_A_NAME, "--ocr-a")
-    ocr_b = drafts(_given(arguments.ocr_b), "draftB", "ocr-hunyuan", ENGINE_B_NAME, "--ocr-b")
+    ocr_b = (None if single_engine else
+             drafts(_given(arguments.ocr_b), "draftB", "ocr-hunyuan", ENGINE_B_NAME, "--ocr-b"))
+    if single_engine and not _page_numbers(ocr_a, "txt"):
+        raise FinishError(EXIT_USAGE, f"no actual OCR drafts found in --ocr-a {ocr_a}")
     if ocr_a == ocr_b:
         raise FinishError(EXIT_USAGE, f"engine A's and engine B's drafts are the same folder {ocr_a}")
 
@@ -438,7 +453,7 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
             if path is not None and (path == own or own in path.parents):
                 raise FinishError(EXIT_USAGE, f"{switch} {path} is in {own.name}/, which {TOOL} writes and moves "
                                               f"aside - move it out (or rename {own.name}/) and name it with {switch}")
-    return Inputs(book, proofread, renders, ocr_a, ocr_b, profile, manifest, notes)
+    return Inputs(book, proofread, renders, ocr_a, ocr_b, profile, manifest, notes, single_engine)
 
 
 # --- the sealed pages -------------------------------------------------------------------------
@@ -527,6 +542,28 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
             incomplete.append(scan)
             continue
         problems = ri.seal_problems(scan, md_bytes, json_bytes)
+        if inputs.single_engine:
+            provenance = record.get("provenance") or {}
+            if record.get("mode") not in ("transcribe", "image-recovery", "blank-page"):
+                problems.append(f"page {scan}: --single-engine requires an image-reviewed single-engine seal")
+            inventory = record.get("pageInventory") or {}
+            if inventory.get("source_image_sha256") != render_sha[scan]:
+                problems.append(f"page {scan}: image inventory does not match the source render")
+            if record.get("mode") == "blank-page":
+                if inventory.get("page_state") != "blank":
+                    problems.append(f"page {scan}: blank page has no image inventory")
+            else:
+                coverage = record.get("coverageReview") or {}
+                if (coverage.get("complete") is not True
+                        or coverage.get("source_image_sha256") != render_sha[scan]
+                        or coverage.get("result_sha256") != pp.sha256_bytes(md_bytes)):
+                    problems.append(f"page {scan}: full-image coverage is incomplete or belongs to other content")
+            for label, path, expected in (
+                ("draft", inputs.ocr_a / f"page-{scan:04d}.txt", provenance.get("draftSha256")),
+                ("render", inputs.renders / f"page-{scan:04d}.png", render_sha[scan]),
+            ):
+                if not path.is_file() or not expected or pp.sha256_file(path) != expected:
+                    problems.append(f"page {scan}: actual {label} differs from sealed input")
         if problems:
             broken.extend(problems)
             continue
@@ -797,9 +834,20 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
     finish = book / FINISH_DIR
     temporary = finish / f".{FINAL}.tmp"
     temporary.unlink(missing_ok=True)
-    source = repaired / "combined-repaired.md"
+    if inputs.single_engine:
+        source = book / ASSEMBLED / "combined-annotated.md"
+        # A paragraph boundary preserves both pages without claiming the print
+        # proves a cross-page join.  The doubt list retains this limitation.
+        boundaries = {scan: ("start" if index == 0 else "paragraph")
+                      for index, scan in enumerate(sealed.marker_pages())}
+        manifest = finish / "single-engine-boundaries.json"
+        _write_if_changed(manifest, json.dumps({"boundaries": {str(k): v for k, v in boundaries.items()}},
+                                               indent=1) + "\n")
+    else:
+        source = repaired / "combined-repaired.md"
+        manifest = repaired / "boundaries.json"
+        boundaries = load_boundary_manifest(manifest)
     book_text = source.read_bytes().decode("utf-8")
-    boundaries = load_boundary_manifest(repaired / "boundaries.json")
     if getattr(arguments, "extract_figures", False):
         figures = _figures.find(inputs.ocr_a, sealed.marker_pages(), inputs.ocr_b)
         _figures.cut(figures, inputs.renders, book / _figures.FOLDER)
@@ -811,7 +859,6 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
         pictures = []
         placed = book_text
         joins = boundaries
-    manifest = repaired / "boundaries.json"
     if joins != boundaries:
         manifest = finish / BOUNDARIES_NAME
         _write_if_changed(manifest, json.dumps({"boundaries": {str(page): label for page, label in sorted(joins.items())}},
@@ -1209,7 +1256,7 @@ def _runs(text: str) -> list[str]:
             if len(run) >= 2]
 
 
-def collect_items(book: Path, sealed: Sealed) -> list[Item]:
+def collect_items(book: Path, sealed: Sealed, *, single_engine: bool = False) -> list[Item]:
     """Every doubt the pipeline left, research first, by page.  One on text
     a figure's picture took out of final.md (finish/figures.json `removed`,
     _figures.take_out) is kept, and says so (TAKEN_WITH_FIGURE): a run of
@@ -1237,27 +1284,28 @@ def collect_items(book: Path, sealed: Sealed) -> list[Item]:
             kind = str(doubt.get("kind") or "sealed-report")
             detail = str(doubt.get("detail", ""))
             items.append(Item(KINDS.get(kind, ("text", ""))[0], kind, scan, _clip(detail), "phase3", full=detail))
-    repaired = book / REPAIRED
-    try:
-        doubts = json.loads((repaired / "doubts.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        doubts = []
-    for doubt in doubts if isinstance(doubts, list) else []:
-        kind = str(doubt.get("kind"))
-        detail = str(doubt.get("detail", ""))
-        items.append(Item(KINDS.get(kind, ("format", ""))[0], kind, doubt.get("page"), _clip(detail), "repair",
-                          full=detail))
-    try:
-        after = (json.loads((repaired / "lint.json").read_text(encoding="utf-8")).get("after") or {})
-    except (OSError, ValueError, AttributeError):
-        after = {}
-    for name, hits in sorted((after.get("hits") or {}).items()):
-        counter = (after.get("counters") or {}).get(name) or {}
-        if name in COUNTERS_LEFT_OUT or counter.get("reportOnly") or not counter.get("count"):
-            continue
-        for hit in hits:
-            text = hit.get("text") or hit.get("code") or ""
-            items.append(Item(KINDS.get(name, ("format", ""))[0], name, hit.get("page"), _clip(text), "lint", full=text))
+    if not single_engine:
+        repaired = book / REPAIRED
+        try:
+            doubts = json.loads((repaired / "doubts.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            doubts = []
+        for doubt in doubts if isinstance(doubts, list) else []:
+            kind = str(doubt.get("kind"))
+            detail = str(doubt.get("detail", ""))
+            items.append(Item(KINDS.get(kind, ("format", ""))[0], kind, doubt.get("page"), _clip(detail), "repair",
+                              full=detail))
+        try:
+            after = (json.loads((repaired / "lint.json").read_text(encoding="utf-8")).get("after") or {})
+        except (OSError, ValueError, AttributeError):
+            after = {}
+        for name, hits in sorted((after.get("hits") or {}).items()):
+            counter = (after.get("counters") or {}).get(name) or {}
+            if name in COUNTERS_LEFT_OUT or counter.get("reportOnly") or not counter.get("count"):
+                continue
+            for hit in hits:
+                text = hit.get("text") or hit.get("code") or ""
+                items.append(Item(KINDS.get(name, ("format", ""))[0], name, hit.get("page"), _clip(text), "lint", full=text))
     try:
         audit = json.loads((book / FINISH_DIR / AUDIT_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1272,7 +1320,15 @@ def collect_items(book: Path, sealed: Sealed) -> list[Item]:
     # the 375 pages a historical monograph leaves as printed, 3 of 5 on a multi-volume archival compilation 2-5 (2026-10-24).
     doubted = {item.page for item in items if item.kind == "note-markers-unverified"}
     items.extend(note_items(book, doubted))
-    band = Band.of(book)
+    if single_engine:
+        items.append(Item("text", "single-engine-review", None,
+                          "只有一個 OCR 引擎底稿，經當前 agent 核圖；未有第二個獨立引擎互證，亦冇執行雙引擎修補。",
+                          "single-engine"))
+        for scan in sealed.marker_pages()[1:]:
+            items.append(Item("format", "single-engine-boundary", scan,
+                              "同前一掃描頁嘅接合未核實，保留段落分隔；跨頁正文、表格同註文須對圖確認。",
+                              "single-engine"))
+    band = Band() if single_engine else Band.of(book)
     for item in items:
         if band_noise(item, band):
             item.section, item.noise = "noise", True
@@ -1339,7 +1395,7 @@ def figure_items(book: Path) -> list[Item]:
     return items
 
 
-def doubts_markdown(book: Path, sealed: Sealed, items: Sequence[Item]) -> str:
+def doubts_markdown(book: Path, sealed: Sealed, items: Sequence[Item], *, single_engine: bool = False) -> str:
     """doubts.md: what the pipeline could not settle, for the person who reads
     the book against the PDF - what most likely changes the text first: a
     count of every kind, then by section and kind (SECTIONS, KINDS: in
@@ -1362,8 +1418,11 @@ def doubts_markdown(book: Path, sealed: Sealed, items: Sequence[Item]) -> str:
     out = [f"# 疑問清單：{title}", "",
            "呢份係 `final.md` 嘅疑問清單，由 `finish_book.py` 寫。頁碼係掃描頁，即係 PDF 第幾頁。",
            "",
-           "冇人逐頁睇過 PDF：字由兩個 OCR 引擎讀、本機模型對住裁圖定；下面係流程自己定唔到、要人對住原書核嘅位。"
-           "冇列出嚟嘅字唔代表一定啱（兩個引擎一齊讀錯嘅位冇任何訊號）。",
+           ("字由一個 OCR 引擎起稿，再由當前 agent 對整頁圖核讀；未經獨立第二引擎互證或人工逐頁確認。"
+            if single_engine else
+            "冇人逐頁睇過 PDF：字由兩個 OCR 引擎讀、本機模型對住裁圖定；下面係流程自己定唔到、要人對住原書核嘅位。")
+           + ("冇列出嚟嘅字唔代表一定啱。" if single_engine else
+              "冇列出嚟嘅字唔代表一定啱（兩個引擎一齊讀錯嘅位冇任何訊號）。"),
            "",
            "次序：最可能要改字嘅排先（要查資料嘅專名、字），跟住係標點、分頁同標題、表格、圖、格式；"
            "每一段入面，最可能改到字嘅類排先。疑問講緊嘅字其實係書眉、卷次或者頁碼（修書已經當書眉處理，或者唔係正文）嘅，"
@@ -1423,12 +1482,12 @@ def doubts_markdown(book: Path, sealed: Sealed, items: Sequence[Item]) -> str:
     return "\n".join(out) + "\n"
 
 
-def write_doubts(book: Path, sealed: Sealed, log: "Log") -> dict[str, Any]:
-    items = collect_items(book, sealed)
+def write_doubts(book: Path, sealed: Sealed, log: "Log", *, single_engine: bool = False) -> dict[str, Any]:
+    items = collect_items(book, sealed, single_engine=single_engine)
     finish = book / FINISH_DIR
     data = json.dumps([item.as_dict() for item in items], ensure_ascii=False, indent=1) + "\n"
     _write_if_changed(finish / DOUBTS_JSON, data)
-    text = doubts_markdown(book, sealed, items)
+    text = doubts_markdown(book, sealed, items, single_engine=single_engine)
     kept = keep_edited(book, DOUBTS, text.encode("utf-8"), log)
     remember_written(book, DOUBTS, text.encode("utf-8"))
     _write_if_changed(book / DOUBTS, text)
@@ -1642,20 +1701,30 @@ def run(book: Path, arguments: argparse.Namespace, report: dict[str, Any],
 
     sealed = read_sealed(inputs, log)
     report["options"] = {
+        "singleEngine": inputs.single_engine,
         "extractFigures": bool(getattr(arguments, "extract_figures", False)),
         "renumberFootnotes": bool(getattr(arguments, "renumber_footnotes", False)),
         "relocateFootnotes": bool(getattr(arguments, "relocate_footnotes", False)),
     }
     step(1, "assemble", "assemble the sealed pages", lambda: assemble(book, sealed, log))
-    step(2, "repair", "repair the book (repair_book.py)", lambda: repair(book, inputs, arguments, log))
+    if inputs.single_engine:
+        step(2, "repair", "preserve single-engine image-reviewed pages",
+             lambda: {"status": "skipped", "why": "no independent second OCR witness; sealed text preserved",
+                      "edits": 0})
+    else:
+        step(2, "repair", "repair the book (repair_book.py)", lambda: repair(book, inputs, arguments, log))
     finalized = step(3, "finalize", "final.md without page markers, and its audit",
                      lambda: finalize(book, sealed, inputs, arguments, log))
-    doubts = step(4, "doubts", "the doubt list, doubts.md", lambda: write_doubts(book, sealed, log))
-    repair_report = json.loads((book / REPAIRED / "repair-report.json").read_text(encoding="utf-8"))
+    doubts = step(4, "doubts", "the doubt list, doubts.md",
+                  lambda: write_doubts(book, sealed, log, single_engine=inputs.single_engine))
+    repair_report = ({} if inputs.single_engine else
+                     json.loads((book / REPAIRED / "repair-report.json").read_text(encoding="utf-8")))
     counts = repair_report.get("counts") or {}
     line = (f"{len(sealed.marker_pages())} pages in {FINAL} ({finalized['characters']} characters); "
             f"{doubts['items']} doubts on {doubts['pages']} pages in {DOUBTS}; repair {counts.get('edits', 0)} "
             "edits")
+    if inputs.single_engine:
+        line += "; single OCR engine; two-engine repair skipped; page joins unverified"
     if finalized["figures"]:
         line += f"; {finalized['pictures']} of {finalized['figures']} figures kept as pictures in {_figures.FOLDER}/"
     kept = [f"{name} as {result['keptAs']}" for name, result in ((FINAL, finalized), (DOUBTS, doubts))
@@ -1664,6 +1733,8 @@ def run(book: Path, arguments: argparse.Namespace, report: dict[str, Any],
         line += f"; the edited {' and '.join(kept)} kept (not in the new files)"
     outputs = [f"{FINAL}: {book / FINAL}", f"{DOUBTS}: {book / DOUBTS}"]
     both = False
+    if inputs.single_engine and finalized["auditErrors"] != 0:
+        return EXIT_FAILED, line + "; final audit did not pass; delivery skipped", outputs
     if not arguments.no_deliver:
         if sealed.source_pdf is None:
             log.line("source_kind is images-dir (no source PDF): skipping beside-PDF copy")
@@ -1695,7 +1766,7 @@ def deliver_beside_pdf(book: Path, inputs: Inputs, report: dict[str, Any], log: 
     if pdf is not None:
         final = _deliver.figures_for_copy(final, pdf)
         doubts = _deliver.doubts_for_copy(_deliver.figures_for_copy(doubts, pdf), _deliver.copy_name(pdf, "final"))
-    pictures = _figures.pictures(book / _figures.FOLDER)
+    pictures = [] if inputs.single_engine else _figures.pictures(book / _figures.FOLDER)
     # Always: a picture of an earlier delivery the book no longer has goes.
     figures = _deliver.deliver_figures(book, pictures, inputs.page_manifest)
     copies = ([figures] if pictures else []) + [
@@ -1736,6 +1807,8 @@ def clean_work(book: Path, inputs: Inputs, arguments: argparse.Namespace, delive
     removed too), only once the copies are beside the PDF (its checks read
     them there: X.md, X-doubts.md, and final.md the version copied).  Never
     --all: wait_for_run.py and the agent read finish/ after the RESULT line."""
+    if inputs.single_engine:
+        return {"status": "kept", "why": "single-engine evidence and unverified page joins retained"}
     if arguments.keep_work:
         return {"status": "kept", "why": "--keep-work"}
     if not has_pdf:

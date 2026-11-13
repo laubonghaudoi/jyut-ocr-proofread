@@ -17,10 +17,6 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "scripts"
 )
 AUDIT = SCRIPTS / "audit_ocr_markdown.py"

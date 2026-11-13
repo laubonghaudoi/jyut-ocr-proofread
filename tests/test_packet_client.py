@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 from pathlib import Path
 import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zlib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = (
-    REPO_ROOT / "plugins" / "jyut-ocr-proofread" / "skills" / "jyut-ocr-proofread" / "scripts"
+    REPO_ROOT / "scripts"
 )
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -177,11 +181,17 @@ class PacketClientTests(unittest.TestCase):
                 str(ocr_a),
                 str(ocr_b),
                 str(profile_path),
-                "--backend",
-                "packet",
                 "--packets-dir",
                 str(packets_dir),
             ]
+            ambient = mock.patch.dict(os.environ, {"PROOFREAD_BACKEND": "http",
+                                                    "PROOFREAD_ENDPOINT": "https://unused.invalid/v1/chat/completions",
+                                                    "PROOFREAD_MODEL": "wrong-ambient-model"})
+            ambient.start()
+            self.addCleanup(ambient.stop)
+            no_http = mock.patch.object(pp, "Client", side_effect=AssertionError("ambient settings selected HTTP"))
+            no_http.start()
+            self.addCleanup(no_http.stop)
             rc1 = book_profile.main(argv)
             # Only 1 notation packet is queued; ZERO engine-calibration adjudicate packets!
             self.assertEqual(rc1, pc.EXIT_PACKETS_PENDING)
@@ -208,21 +218,144 @@ class PacketClientTests(unittest.TestCase):
             rc2 = book_profile.main(argv)
             self.assertEqual(rc2, 0)
             profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertEqual(profile["backend"], "packet")
+            self.assertIsNone(profile["endpoint"])
+            self.assertEqual(profile["model"], "agent-packet")
             self.assertEqual(profile["engines"]["preferEngine"], "adjudicate")
             self.assertEqual(profile["engines"]["stopped"], "short-document fast path")
             self.assertEqual(profile["notation"]["blocksSurveyed"], 1)
             self.assertTrue(profile["notation"]["doubled"])
             self.assertIn("固定書眉卷一", profile["layout"]["runningHeads"])
 
+    def test_explicit_http_retains_opt_in_environment_model_configuration(self) -> None:
+        with mock.patch.dict(os.environ, {"PROOFREAD_MODEL": "configured-http-model"}):
+            for module, positional in ((pp, ["r", "d", "o"]),
+                                       (book_profile, ["r", "d", "d2", "profile.json"])):
+                with self.subTest(module=module.__name__):
+                    packet = module.build_parser().parse_args(positional)
+                    self.assertEqual(packet.model, "agent-packet")
+                    http = module.build_parser().parse_args([
+                        *positional, "--backend", "http", "--endpoint", "https://selected.invalid/api"])
+                    self.assertEqual(http.model, "configured-http-model")
+
+    def test_http_requires_both_explicit_flags_before_creating_any_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {
+            "PROOFREAD_BACKEND": "http", "PROOFREAD_ENDPOINT": "https://ambient.invalid/api"
+        }), mock.patch.object(pp, "Client", side_effect=AssertionError("must not construct HTTP client")):
+            root = Path(tmp)
+            for module, positional in ((pp, ["r", "d", str(root / "out")]),
+                                       (book_profile, ["r", "d", "d2", str(root / "profile.json")])):
+                for options in (["--backend", "http"], ["--endpoint", "https://explicit.invalid/api"],
+                                ["--backend", "http", "--endpoint", "  "]):
+                    with self.subTest(module=module.__name__, options=options), contextlib.redirect_stderr(io.StringIO()):
+                        with self.assertRaises(SystemExit) as error:
+                            module.main([*positional, *options])
+                        self.assertEqual(error.exception.code, 2)
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_proofread_default_emits_packets_despite_ambient_http_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            renders, drafts, output = root / "renders", root / "drafts", root / "pages"
+            renders.mkdir()
+            drafts.mkdir()
+            (renders / "page-0001.png").write_bytes(_make_solid_png())
+            (drafts / "page-0001.txt").write_text("", encoding="utf-8")
+            (root / "book-profile.json").write_text('{"preferEngine": "adjudicate"}', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PROOFREAD_BACKEND": "http",
+                                             "PROOFREAD_ENDPOINT": "https://ambient.invalid/api",
+                                             "PROOFREAD_MODEL": "ambient-model"}), \
+                    mock.patch.object(pp, "Client", side_effect=AssertionError("packet path selected HTTP")):
+                result = pp.main([str(renders), str(drafts), str(output), "--workers", "1"])
+            self.assertEqual(result, pc.EXIT_PACKETS_PENDING)
+            bundle = json.loads((root / "packets/wave-01/bundle-01.json").read_text())
+            self.assertEqual([item["kind"] for item in bundle["items"]], ["page-inventory"])
+            report = json.loads((root / "proofread-run.json").read_text())
+            self.assertEqual(report["backend"], "packet")
+            self.assertIsNone(report["endpoint"])
+            self.assertEqual(report["model"], "agent-packet")
+
+    def test_explicit_http_uses_selected_endpoint_model_and_api_key(self) -> None:
+        endpoint = "https://selected.invalid/v1/chat/completions"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            renders, drafts, drafts2 = root / "renders", root / "drafts", root / "drafts2"
+            for path in (renders, drafts, drafts2):
+                path.mkdir()
+            (renders / "page-0001.png").write_bytes(_make_solid_png(600, 900))
+            (drafts / "page-0001.txt").write_text("", encoding="utf-8")
+            (root / "book-profile.json").write_text('{"preferEngine": "adjudicate"}', encoding="utf-8")
+            blank = {"schema_version": 1, "page_state": "blank", "regions": [], "features": [],
+                     "evidence": "Synthetic white test image contains no print."}
+            replies = [json.dumps(blank), "符號：。\n雙圈：冇\n圈點：冇\n點數：1"]
+            requests = []
+
+            def answer(request, *, timeout):
+                requests.append(request)
+                return io.BytesIO(json.dumps({"choices": [{"message": {"content": replies.pop(0)},
+                                                          "finish_reason": "stop"}]}).encode())
+
+            options = ["--backend", "http", "--endpoint", endpoint, "--model", "selected-model"]
+            with mock.patch.dict(os.environ, {"PROOFREAD_API_KEY": "synthetic-test-key",
+                                             "PROOFREAD_ENDPOINT": "https://wrong.invalid/api",
+                                             "PROOFREAD_MODEL": "wrong-model"}), \
+                    mock.patch.object(pp.urllib.request, "urlopen", side_effect=answer):
+                output = root / "pages"
+                self.assertEqual(pp.main([str(renders), str(drafts), str(output), *options,
+                                          "--workers", "1", "--no-loop-detector"]), 0)
+                record = json.loads((output / "page-0001.json").read_text())
+                self.assertEqual(record["provenance"]["proofreadTransport"], "http")
+                self.assertEqual(record["provenance"]["proofreadEndpoint"], endpoint)
+                body = "合成頁面只用作測試傳輸設定以及相對資源讀取。"
+                (drafts / "page-0001.txt").write_text(body, encoding="utf-8")
+                (drafts2 / "page-0001.txt").write_text(body, encoding="utf-8")
+                (drafts / "page-0001.json").write_text(json.dumps({
+                    "schemaVersion": 2, "scanPage": 1, "renderWidth": 600, "renderHeight": 900,
+                    "lines": [{"text": body, "blockLabel": "text", "boundingBox": [0.1, 0.1, 0.1, 0.6]}]
+                }, ensure_ascii=False), encoding="utf-8")
+                profile = root / "book-profile.json"
+                self.assertEqual(book_profile.main([str(renders), str(drafts), str(drafts2), str(profile),
+                                                    *options]), 0)
+                metadata = json.loads(profile.read_text())
+                self.assertEqual(metadata["backend"], "http")
+                self.assertEqual(metadata["endpoint"], endpoint)
+            self.assertEqual(len(requests), 2)
+            for request in requests:
+                self.assertEqual(request.full_url, endpoint)
+                self.assertEqual(json.loads(request.data)["model"], "selected-model")
+                self.assertEqual(request.get_header("Authorization"), "Bearer synthetic-test-key")
+
     def test_proofread_pages_table_orientation_flag_and_provenance(self) -> None:
         parser = pp.build_parser()
         args_auto = parser.parse_args(["r", "d", "o"])
         self.assertEqual(args_auto.table_orientation, "auto")
-        self.assertNotIn("tableOrientation", pp.decision_provenance(args_auto))
+        self.assertEqual(pp.decision_provenance(args_auto).get("tableOrientation"), "auto")
 
         args_printed = parser.parse_args(["r", "d", "o", "--table-orientation", "as-printed"])
         self.assertEqual(args_printed.table_orientation, "as-printed")
         self.assertEqual(pp.decision_provenance(args_printed).get("tableOrientation"), "as-printed")
+
+    def test_completed_page_cannot_resume_under_another_orientation_or_helper(self) -> None:
+        args = pp.build_parser().parse_args(["r", "d", "o"])
+        expected = pp.decision_provenance(args)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = pp.PageJob(1, root / "image.png", root / "draft.txt", None, None,
+                             root / "page.json", root / "page.md")
+            body = "甲乙".encode("utf-8")
+            record = {"schemaVersion": pp.SCHEMA_VERSION, "status": "complete",
+                      "provenance": {**expected, "markdownSha256": pp.sha256_bytes(body)}}
+            record["provenance"]["jsonPayloadSha256"] = pp.sha256_bytes(pp.canonical_json_bytes(record))
+            pp.seal_page(job, body, record)
+            self.assertTrue(pp.validate_completion(job, expected)[0])
+            for key, value in (("tableOrientation", "as-printed"),
+                               ("contentFidelitySha256", "changed-helper"),
+                               ("proofreadTransport", "http"),
+                               ("proofreadEndpoint", "https://other.invalid/v1/chat/completions"),
+                               ("proofreadModel", "other-model")):
+                current, reason = pp.validate_completion(job, {**expected, key: value})
+                self.assertFalse(current)
+                self.assertIn(key, reason)
 
 
 if __name__ == "__main__":

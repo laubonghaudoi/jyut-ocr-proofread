@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tempfile
@@ -47,10 +48,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def _create_repository_sources(self) -> None:
-        skill = (
-            self.repo
-            / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread"
-        )
+        skill = self.repo
         (skill / "references").mkdir(parents=True)
         (skill / "SKILL.md").write_bytes(b"canonical skill\n")
         (skill / "references/rules.md").write_bytes(b"\x00rules\xff\n")
@@ -381,11 +379,8 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             self.assert_spec_current(spec)
 
     def test_path_overlap_is_rejected_before_canonical_source_changes(self) -> None:
-        overlapping_codex = self.repo / "plugins/jyut-ocr-proofread"
-        skill_source = (
-            self.repo
-            / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/SKILL.md"
-        )
+        overlapping_codex = self.repo / "nested-config"
+        skill_source = self.repo / "SKILL.md"
         original = skill_source.read_bytes()
         arguments = [
             "--install",
@@ -568,6 +563,255 @@ class LocalAdapterInstallerTests(unittest.TestCase):
         self.assertIn("RESTORED", restore_stdout)
         for entry_id in INSTALLER.LEGACY_SPEC_IDS_V2:
             self.assertFalse(os.path.lexists(self.target_map()[entry_id]))
+
+    def test_portable_targets_separate_gemini_and_antigravity(self) -> None:
+        home = self.root / "user"
+        specs = INSTALLER.build_portable_specs(
+            repo_root=self.repo, agents=list(INSTALLER.PORTABLE_AGENTS), home=home,
+        )
+        targets = {spec["id"]: spec["target"] for spec in specs}
+        self.assertEqual(targets, {
+            "generic-skill": home / ".agents/skills/jyut-ocr-proofread",
+            "claude-skill": home / ".claude/skills/jyut-ocr-proofread",
+            "gemini-skill": home / ".gemini/skills/jyut-ocr-proofread",
+            "antigravity-skill": home / ".gemini/config/skills/jyut-ocr-proofread",
+        })
+        self.assertTrue(all(spec["source"] == self.repo for spec in specs))
+        self.assertEqual(
+            INSTALLER.build_portable_specs(repo_root=self.repo, agents=["codex"], home=home)[0]["id"],
+            "generic-skill",
+        )
+
+    def test_portable_default_installs_only_generic_skill(self) -> None:
+        home = self.root / "user"
+        with mock.patch.object(INSTALLER.Path, "home", return_value=home):
+            result, stdout, stderr = self.run_main([
+                "--install", "--backup-root", str(self.backups),
+            ])
+        self.assertEqual(result, 0, stderr)
+        self.assertEqual(stdout.count("LINKED"), 1)
+        self.assertEqual(os.readlink(home / ".agents/skills/jyut-ocr-proofread"), str(self.repo))
+        self.assertFalse((home / ".codex").exists())
+        self.assertFalse((home / ".claude").exists())
+        manifest = json.loads(self.manifests()[0].read_text())
+        self.assertEqual(manifest["schema_version"], 4)
+        self.assertEqual(manifest["repo_root"], str(self.repo))
+
+    def test_portable_roles_are_opt_in_for_selected_agents(self) -> None:
+        home = self.root / "user"
+        specs = INSTALLER.build_portable_specs(
+            repo_root=self.repo, agents=["codex", "claude", "gemini"],
+            with_agents=True, home=home,
+        )
+        self.assertEqual(len(specs), 7)
+        codex_roles = [spec for spec in specs if spec["id"].startswith("codex-")]
+        self.assertEqual(len(codex_roles), 2)
+        self.assertTrue(all(spec["target"].parent == home / ".codex/agents" for spec in codex_roles))
+        self.assertTrue(all(spec["install_mode"] == "sealed-copy" for spec in codex_roles))
+        only_gemini = INSTALLER.build_portable_specs(
+            repo_root=self.repo, agents=["gemini"], with_agents=True, home=home,
+        )
+        self.assertEqual(len(only_gemini), 1)
+
+    def test_custom_collection_install_restore_and_identical_rerun(self) -> None:
+        collection = self.root / "unusual skill folder"
+        target = collection / "jyut-ocr-proofread"
+        target.mkdir(parents=True)
+        (target / "user.txt").write_bytes(b"preserve existing skill\x00")
+        args = ["--skill-dir", str(collection), "--backup-root", str(self.backups)]
+        result, _, stderr = self.run_main(["--install", *args])
+        self.assertEqual(result, 0, stderr)
+        self.assertEqual(os.readlink(target), str(self.repo))
+        self.assertEqual((target / "references/rules.md").read_bytes(), b"\x00rules\xff\n")
+        manifest = self.manifests()[0]
+        result, stdout, stderr = self.run_main(["--install", *args])
+        self.assertEqual(result, 0, stderr)
+        self.assertIn("all 1 targets", stdout)
+        self.assertEqual(self.manifests(), [manifest])
+        result, _, stderr = self.run_main(["--check", *args])
+        self.assertEqual(result, 0, stderr)
+        result, _, stderr = self.run_main(["--restore", str(manifest), *args])
+        self.assertEqual(result, 0, stderr)
+        self.assertEqual((target / "user.txt").read_bytes(), b"preserve existing skill\x00")
+
+    def test_portable_selection_restore_requires_exact_requested_targets(self) -> None:
+        home = self.root / "user"
+        specs = INSTALLER.build_portable_specs(repo_root=self.repo, agents=["claude"], home=home)
+        with redirect_stdout(io.StringIO()):
+            manifest = INSTALLER.perform_install(specs, self.backups)
+        changed_specs = INSTALLER.build_portable_specs(repo_root=self.repo, agents=["gemini"], home=home)
+        with self.assertRaises(INSTALLER.InstallError):
+            INSTALLER.perform_restore(manifest, changed_specs)
+        self.assertTrue(INSTALLER.spec_installed_current(specs[0]))
+        with redirect_stdout(io.StringIO()):
+            INSTALLER.perform_restore(manifest, specs)
+
+    def test_legacy_v3_nested_source_restores_without_recreating_old_layout(self) -> None:
+        old_source = self.repo / INSTALLER.LEGACY_SKILL_PATH
+        old_source.mkdir(parents=True)
+        (old_source / "SKILL.md").write_text("old layout\n")
+        specs = INSTALLER.build_specs(self.codex, self.claude, self.gemini, repo_root=self.repo)
+        old_specs = [dict(spec) for spec in specs]
+        for spec in old_specs:
+            if spec["source_type"] == "directory":
+                spec["source"] = old_source
+        target = old_specs[0]["target"]
+        target.mkdir(parents=True)
+        (target / "original.txt").write_text("restore me\n")
+        with redirect_stdout(io.StringIO()):
+            manifest_path = INSTALLER.perform_install(old_specs, self.backups)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["schema_version"] = 3
+        manifest_path.write_text(json.dumps(manifest))
+        original_manifest_bytes = manifest_path.read_bytes()
+        shutil.rmtree(old_source)
+        with redirect_stdout(io.StringIO()):
+            INSTALLER.perform_restore(manifest_path, specs)
+        self.assertEqual((target / "original.txt").read_text(), "restore me\n")
+        self.assertEqual(manifest_path.read_bytes(), original_manifest_bytes)
+        self.assertFalse(old_source.exists())
+
+    def test_v3_historical_gemini_identity_is_not_portable_gemini(self) -> None:
+        home = self.root / "user"
+        specs = INSTALLER.build_specs(home / ".codex", home / ".claude", home / ".gemini/config", repo_root=self.repo)
+        with redirect_stdout(io.StringIO()):
+            manifest_path = INSTALLER.perform_install(specs, self.backups)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["schema_version"] = 3
+        manifest_path.write_text(json.dumps(manifest))
+        portable = INSTALLER.build_portable_specs(
+            repo_root=self.repo, agents=["codex", "claude", "gemini"],
+            with_agents=True, home=home,
+        )
+        # Even callers supplying all historical role identities cannot silently
+        # reinterpret the old gemini-skill as the Gemini CLI directory.
+        mixed = [dict(spec) for spec in specs]
+        mixed[2] = next(spec for spec in portable if spec["id"] == "gemini-skill")
+        with self.assertRaisesRegex(INSTALLER.InstallError, "paths do not match"):
+            INSTALLER.load_manifest(manifest_path, mixed)
+
+    def test_portable_unknown_agent_and_mixed_cli_modes_are_rejected(self) -> None:
+        with self.assertRaisesRegex(INSTALLER.InstallError, "unsupported agents"):
+            INSTALLER.build_portable_specs(repo_root=self.repo, agents=["unknown"])
+        result, _, stderr = self.run_main(self.args("--install", "--agent", "generic"))
+        self.assertEqual(result, 1)
+        self.assertIn("cannot be combined", stderr)
+        self.assertFalse(self.backups.exists())
+
+    def test_legacy_link_migrates_to_root_with_recoverable_original_link(self) -> None:
+        specs = INSTALLER.build_portable_specs(repo_root=self.repo, home=self.root / "user")
+        target = specs[0]["target"]
+        target.parent.mkdir(parents=True)
+        old_text = str(self.repo / INSTALLER.LEGACY_SKILL_PATH)
+        target.symlink_to(old_text)
+        with redirect_stdout(io.StringIO()):
+            manifest_path = INSTALLER.perform_install(specs, self.backups)
+        self.assertEqual(os.readlink(target), str(self.repo))
+        with redirect_stdout(io.StringIO()):
+            INSTALLER.perform_restore(manifest_path, specs)
+        self.assertEqual(os.readlink(target), old_text)
+
+    def test_legacy_source_alias_is_bounded_to_known_path_and_schema(self) -> None:
+        specs = INSTALLER.build_specs(self.codex, self.claude, self.gemini, repo_root=self.repo)
+        with redirect_stdout(io.StringIO()):
+            manifest_path = INSTALLER.perform_install(specs, self.backups)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["schema_version"] = 3
+        manifest["entries"][0]["source"] = str(self.repo / "different-skill")
+        manifest["entries"][0]["installed_link_text"] = manifest["entries"][0]["source"]
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(INSTALLER.InstallError, "paths do not match"):
+            INSTALLER.load_manifest(manifest_path, specs)
+        manifest["schema_version"] = 4
+        manifest["entries"][0]["source"] = str(self.repo / INSTALLER.LEGACY_SKILL_PATH)
+        manifest["entries"][0]["installed_link_text"] = manifest["entries"][0]["source"]
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(INSTALLER.InstallError, "paths do not match"):
+            INSTALLER.load_manifest(manifest_path, specs)
+
+    def test_mislocated_source_without_root_skill_is_rejected(self) -> None:
+        (self.repo / "SKILL.md").unlink()
+        specs = INSTALLER.build_portable_specs(repo_root=self.repo, home=self.root / "user")
+        with self.assertRaisesRegex(INSTALLER.InstallError, "no SKILL.md"):
+            INSTALLER.perform_install(specs, self.backups)
+        self.assertFalse(self.backups.exists())
+
+    def _portable_alias_install(self):
+        home = self.root / "user"
+        first = self.root / "first-collection"
+        second = self.root / "second-collection"
+        first.mkdir()
+        second.mkdir()
+        alias = home / ".agents/skills"
+        alias.parent.mkdir(parents=True)
+        alias.symlink_to(first, target_is_directory=True)
+        original = first / "jyut-ocr-proofread"
+        original.mkdir()
+        (original / "old.txt").write_text("preserve\n")
+        specs = INSTALLER.build_portable_specs(repo_root=self.repo, home=home)
+        with redirect_stdout(io.StringIO()):
+            manifest = INSTALLER.perform_install(specs, self.backups)
+        return specs, manifest, alias, first, second
+
+    def test_v4_stable_parent_alias_can_restore_sealed_collection(self) -> None:
+        specs, manifest, alias, first, second = self._portable_alias_install()
+        payload = json.loads(manifest.read_text())
+        self.assertEqual(payload["entries"][0]["target_mutation_path"], str(first / "jyut-ocr-proofread"))
+        with redirect_stdout(io.StringIO()):
+            INSTALLER.perform_restore(manifest, specs)
+        self.assertEqual((first / "jyut-ocr-proofread/old.txt").read_text(), "preserve\n")
+        self.assertEqual(alias.resolve(), first)
+        self.assertEqual(list(second.iterdir()), [])
+
+    def test_v4_restore_refuses_parent_alias_retargeted_to_foreign_collection(self) -> None:
+        specs, manifest, alias, first, second = self._portable_alias_install()
+        foreign = second / "jyut-ocr-proofread"
+        foreign.symlink_to(self.repo)
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(INSTALLER.InstallError, "target parent location changed"):
+            INSTALLER.perform_restore(manifest, specs)
+        self.assertEqual(os.readlink(foreign), str(self.repo))
+        self.assertEqual(os.readlink(first / "jyut-ocr-proofread"), str(self.repo))
+        self.assertEqual(manifest.read_bytes(), before)
+        entry = json.loads(before)["entries"][0]
+        self.assertEqual((Path(entry["backup_path"]) / "old.txt").read_text(), "preserve\n")
+
+    def test_v4_restore_rechecks_alias_after_preflight_before_unlink(self) -> None:
+        specs, manifest, alias, first, second = self._portable_alias_install()
+        foreign = second / "jyut-ocr-proofread"
+        foreign.symlink_to(self.repo)
+        real_preflight = INSTALLER.preflight_restore
+
+        def switch_after_preflight(entries):
+            real_preflight(entries)
+            alias.unlink()
+            alias.symlink_to(second, target_is_directory=True)
+
+        with mock.patch.object(INSTALLER, "preflight_restore", side_effect=switch_after_preflight):
+            with self.assertRaisesRegex(INSTALLER.InstallError, "target parent location changed"):
+                INSTALLER.perform_restore(manifest, specs)
+        self.assertEqual(os.readlink(foreign), str(self.repo))
+        self.assertEqual(os.readlink(first / "jyut-ocr-proofread"), str(self.repo))
+
+    def test_legacy_restore_rejects_parent_alias_without_historical_seal(self) -> None:
+        first = self.root / "legacy-collection"
+        first.mkdir()
+        self.codex.mkdir(parents=True)
+        (self.codex / "skills").symlink_to(first, target_is_directory=True)
+        specs = INSTALLER.build_specs(self.codex, self.claude, self.gemini, repo_root=self.repo)
+        with redirect_stdout(io.StringIO()):
+            manifest = INSTALLER.perform_install(specs, self.backups)
+        payload = json.loads(manifest.read_text())
+        payload["schema_version"] = 3
+        for entry in payload["entries"]:
+            entry.pop("target_mutation_path")
+        manifest.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(INSTALLER.InstallError, "legacy target parent alias cannot be verified"):
+            INSTALLER.perform_restore(manifest, specs)
+        self.assertEqual(os.readlink(first / "jyut-ocr-proofread"), str(self.repo))
+        self.assertTrue(all(INSTALLER.spec_installed_current(spec) for spec in specs))
 
 
 if __name__ == "__main__":

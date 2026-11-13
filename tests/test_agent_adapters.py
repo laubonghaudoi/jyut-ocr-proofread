@@ -10,10 +10,6 @@ CODEX_AGENTS = REPO_ROOT / "adapters" / "codex" / "agents"
 CLAUDE_AGENTS = REPO_ROOT / "adapters" / "claude" / "agents"
 CONTRACT = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "references"
     / "subagent-orchestration.md"
 )
@@ -141,7 +137,8 @@ class SharedContractTests(unittest.TestCase):
             "Apple Vision OCR uses a separate bounded local process pool, not LLM agents",
             "STOP-WRITE",
             "100% of the assigned scans",
-            "effective permission/sandbox mode is still read-only",
+            "reviewer has effective read-only access",
+            "verify actual permissions rather than relying on a prompt or adapter declaration",
             "Only the main agent assembles the final Markdown",
             "A late patch invalidates the affected seal and audit",
         ):

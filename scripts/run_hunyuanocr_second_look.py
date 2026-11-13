@@ -246,12 +246,14 @@ def write_pair(json_path: Path, text_path: Path, json_bytes: bytes, text_bytes: 
         os.replace(sj, json_path)
 
 
-def tool_sha256(model: Path | None, mmproj: Path | None) -> str:
+def tool_sha256(model: Path | None, mmproj: Path | None, binary: Path | None = None) -> str:
     combined = hashlib.sha256()
     combined.update(
         b"run_hunyuanocr_second_look.py\0" + Path(__file__).resolve().read_bytes()
     )
-    for label, path in (("model", model), ("mmproj", mmproj)):
+    for filename in ("run_hunyuanocr.py", "_hunyuan_shared.py", "_gpu_queue.py", "_phase_budget.py"):
+        combined.update(filename.encode() + b"\0" + Path(__file__).with_name(filename).read_bytes())
+    for label, path in (("model", model), ("mmproj", mmproj), ("binary", binary)):
         if path is not None and path.is_file():
             combined.update(f"\0{label}\0".encode() + hy.sha256_file(path).encode())
     return combined.hexdigest()
@@ -324,6 +326,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--port", type=int, default=8095)
     p.add_argument("--ctx-size", type=int, default=16384)
+    p.add_argument("--device", choices=hy.DEVICE_CHOICES,
+                   default=os.environ.get("OCR_HUNYUAN_DEVICE", "auto"),
+                   help="local backend: auto keeps runtime selection; cpu disables all GPU offload")
     p.add_argument(
         "--server-mode",
         choices=("shared", "dedicated"),
@@ -333,8 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--server-slots",
         type=int,
-        default=os.environ.get("OCR_HUNYUAN_SLOTS", "4"),
-        help="total simultaneous requests; ctx-size is per slot (default 4)",
+        default=os.environ.get("OCR_HUNYUAN_SLOTS", "1"),
+        help="total simultaneous requests; ctx-size is per slot (default 1)",
     )
     p.add_argument("--max-tokens", type=int, default=8000)
     p.add_argument("--timeout", type=float, default=1200.0)
@@ -384,6 +389,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
             raise hy.ConfigurationError(
                 "server-mode must be shared/dedicated; server-slots must be 1..32"
             )
+        execution = hy.device_profile(arguments.device, endpoint=bool(arguments.endpoint))
         for name in ("model", "mmproj", "llama_server"):
             value = getattr(arguments, name)
             if value is not None:
@@ -402,7 +408,15 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         "need --model, --mmproj and --llama-server (or HUNYUAN_* environment variables), "
                         "or --endpoint for an already-running server"
                     )
-        tool = tool_sha256(arguments.model, arguments.mmproj)
+        tool = tool_sha256(arguments.model, arguments.mmproj, arguments.llama_server)
+        reread_profile = {
+            "executionProfile": execution, "serverMode": arguments.server_mode,
+            "serverSlots": arguments.server_slots, "ctxSize": arguments.ctx_size,
+            "maxTokens": arguments.max_tokens,
+            "endpoint": arguments.endpoint, "endpointModel": arguments.endpoint_model,
+            "endpointRevision": arguments.endpoint_revision,
+        }
+        reread_profile_sha = hy.profile_sha256(reread_profile)
     except (hy.ConfigurationError, OSError) as error:
         print(f"ERROR {error}", file=sys.stderr)
         return 2
@@ -433,6 +447,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
             earlier.get("schemaVersion") == SCHEMA_VERSION
             and earlier.get("toolSha256") == tool
             and earlier.get("engineADraftSha256") == draft_a
+            and earlier.get("profileSha256") == reread_profile_sha
         ):
             skipped += 1
             results.append({"scanPage": scan_page, "status": "skipped-current"})
@@ -484,6 +499,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         "serverSlots": arguments.server_slots,
                         "contextPerSlot": arguments.ctx_size,
                         "totalContext": arguments.ctx_size * arguments.server_slots,
+                        "executionProfile": execution,
                     }
                     shared_profile = dict(
                         hy.OCR_PROFILE,
@@ -498,6 +514,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                             "model_id": "hunyuanocr",
                             "ctx": arguments.ctx_size,
                             "slots": arguments.server_slots,
+                            "device": arguments.device,
                             "max_tokens": arguments.max_tokens,
                             "identity": hy_tool.combined_sha256
                             + hy.profile_sha256(shared_profile),
@@ -521,6 +538,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         arguments.ctx_size * arguments.server_slots,
                         "hunyuanocr",
                         parallel=arguments.server_slots,
+                        device=arguments.device,
                         lease_fds=lease.pass_fds,
                     )
                 else:
@@ -620,6 +638,8 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                 second_look = {
                     "schemaVersion": SCHEMA_VERSION,
                     "toolSha256": tool,
+                    "profile": reread_profile,
+                    "profileSha256": reread_profile_sha,
                     "engineADraftSha256": page["draftA"],
                     "unreadShare": UNREAD_SHARE,
                     "groups": done,
@@ -688,6 +708,8 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
         "engineADirectory": str(drafts_a),
         "outputDirectory": str(output),
         "toolSha256": tool,
+        "profile": reread_profile,
+        "profileSha256": reread_profile_sha,
         "unreadShare": UNREAD_SHARE,
         "counts": {
             "requested": len(pages),

@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
-"""Phase 3: proofread OCR drafts against the page images with a local VLM.
+"""Proofread one or two OCR drafts against complete page images.
 
-Two passes per page, plus a targeted third pass only where evidence warrants:
+The default packet transport writes resumable question bundles and exits 10
+until the invoking agent has inspected the images and supplied answers. The
+same agent can answer sequentially; parallel workers are optional. An external
+HTTP model is used only with explicit --backend http and --endpoint options.
 
-  1. writer   - transcribe from the page image, treating the OCR draft as a hint
-  2. auditor  - independently re-read the image and report differences
-  3. adjudicate (escalation only) - for blocks where the draft and the writer
-     disagree, crop that block and ask a forced-choice question about it
+A single draft provides reading hints for direct image transcription. A second
+OCR draft enables alignment and targeted disagreement checks; agreement between
+engines never proves that either engine captured all printed content.
 
-Why stage 3 is escalation and not the default: on this project's test pages only
-2.7% of characters differed between the OCR draft and the writer pass, and the
-writer+auditor passes alone got 4/4 of the independently adjudicated ground-truth
-items right. Adjudicating every character spends most of its reasoning
-confirming characters that two independent readings already agree on.
+Every page first receives a whole-image content inventory, including apparently
+blank pages. Content pages then receive image-based recovery, guarded formatting,
+and a final coverage check. Numbers, formulas, note markers, table structure,
+and uncertain readings remain part of those checks rather than being discarded
+as formatting noise. A second pass by the same agent is self-review, not an
+independent audit; an independent audit requires a distinct reviewer.
 
-Why a script and not an agent loop: driving this conversationally cost 24.7 model
-calls per page, each re-sending ~92K of accumulated context - 125x the input
-tokens of the same work done directly, and it did not terminate. Direct calls
-carry ~9K (page) or ~2K (crop) instead.
-
-Prompt shape matters: adjudication asks "A or B" with both candidate readings
-named, never "is this correct?" - the open-ended form was observed to
-rubber-stamp whichever reading was offered.
-
-Output per page is a sealed JSON/markdown pair with the same provenance
-discipline as the OCR runners, so a run resumes safely after any interruption.
+Output is a sealed per-page JSON/Markdown candidate with source, decision, and
+transport provenance for validated resume. A completed candidate does not by
+itself establish independent visual approval or a measured accuracy rate.
 """
 
 from __future__ import annotations
@@ -61,6 +56,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _tables  # noqa: E402
 import _loop_watch  # noqa: E402
+import _content_fidelity  # noqa: E402
 from _packet_client import (  # noqa: E402
     EXIT_PACKETS_PENDING,
     PacketClient,
@@ -147,7 +143,7 @@ def summarize_calls(calls: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, A
 
 PUNCT ="。，、；：？！　 （）()「」《》·．,"
 
-WRITER_SYSTEM = """你係 jyut-ocr-segment-writer。將歷史中文書頁忠實轉錄成 Markdown。
+WRITER_SYSTEM = """你負責本頁轉錄。將歷史中文書頁忠實轉錄成 Markdown。
 
 原文依據（最高優先）：
 - 以頁圖為最終依據。OCR 底稿只係提示，唔係權威。
@@ -183,7 +179,7 @@ rowspan／colspan 表示——Markdown 表表達唔到合併格，唔好拆格�
 
 輸出：只輸出該頁 Markdown 正文，唔好加解釋、唔好加 code fence。"""
 
-AUDITOR_SYSTEM = """你係 jyut-ocr-visual-auditor（read-only）。獨立核對候選轉錄同頁圖。
+AUDITOR_SYSTEM = """你負責唯讀覆核候選轉錄同頁圖。同一轉錄者重讀只算自我覆核，唔構成獨立審核。
 
 只報告實際差異。每項寫：位置、候選讀法、你由圖像睇到嘅正確讀法、理據（部件／語境）。
 特別檢查：閱讀次序、編號（一二三四）、近形字、人名官職、標點有無。
@@ -4512,30 +4508,26 @@ def load_blocks(draft_json: Path | None) -> list[dict[str, Any]]:
     return blocks
 
 
-ORIENT_SYSTEM = """你係直排古籍表格判讀員。畀你一版書頁圖，同埋 OCR 引擎解出嚟嘅格仔
-（Markdown 表；有合併格嘅就係 HTML `<table>`，rowspan／colspan 表示一格跨幾行／幾欄）。
+ORIENT_SYSTEM = """你係古籍表格判讀員。畀你原掃描頁圖同一個現有格仔
+（Markdown 或 HTML；rowspan／colspan 係跨格）。逐格對返圖，分清原圖物理位置同現有格仔位置。
+今次政策係 auto：有充分圖像依據先將格仔整理成每行一筆紀錄、欄名一行嘅邏輯表。
+原圖文字可以橫排或直排、由左至右或由右至左；唔可以用全書慣例、語意通順、表格高闊或
+合計數目推斷方向。合計只係核對線索，唔證明邊條軸係一筆紀錄。
 
-引擎有時畀嘅係**版面次序**（頁面上橫向嘅一條帶做一行），有時已經係**邏輯次序**
-（每一橫行就係一筆紀錄，欄名喺第一行）。你要判斷嘅**唔係頁面**，係**引擎畀你嘅格仔本身**：
-喺呢個格仔入面，**一筆紀錄（record）係一橫行，定係一直列？**
+問題係：喺畀你嘅格仔入面，完整紀錄已經逐行排（row），定係逐列排（column）？
+欄名條帶亦要對圖：如果 Nx1 係欄名而同表其餘部分清楚證明應該成為邏輯欄名一行，可以答
+column；只有孤立 Nx1／1xN 條帶，睇唔到足夠表格關係，就答 unknown，唔好借用另一個表。
+兩種方向都可能、格位對唔返、圖模糊或相關續頁未提供，同樣答 unknown。
 
-判準（唔好靠個表係高定闊，亦唔好淨係睇頁面）：
-- 喺格仔入面，邊一條軸放住**欄名**（一串唔同類別嘅名，例如 品名／規格／單價，
-  或者 地租／房捐／牌照費／…／合計），邊一條軸放住**同類嘅值**（一堆年份、一堆銀碼、
-  一堆物品名）。欄名嗰條軸就係欄位軸，另一條軸嘅每一條就係一筆紀錄。
-- 如果有「合計」「總計」，睇啲數喺格仔入面沿住邊個方向加埋。合計累加嘅方向就係一筆紀錄嘅方向。
-- 頁圖用嚟理解每個格係乜（邊啲係欄名、邊啲係值），唔係用嚟決定轉唔轉——
-  引擎可能已經幫你轉咗，咁就唔使再轉。
-
-輸出淨係兩行，格式一模一樣：
-RECORD: column
-或
+只輸出兩行：
 RECORD: row
-第二行寫一句理由。
-`column` = 喺引擎畀嘅格仔入面，一直列係一筆紀錄（即係要逆時針轉九十度先變成每行一筆）。
-`row`    = 喺引擎畀嘅格仔入面，一橫行已經係一筆紀錄（唔使轉）。"""
+或 RECORD: column
+或 RECORD: unknown
+EVIDENCE: 指出原圖可見嘅欄名／格線／紀錄對應及現有格仔位置；唔清楚就講缺少乜證據。
+row = 現有格仔已經係邏輯行；column = 要交換軸，首筆紀錄次序另行對圖確認。"""
 
-ORIENT_LINE = re.compile(r"^\s*RECORD:\s*(column|row)\s*$", re.I | re.M)
+ORIENT_LINE = re.compile(r"^\s*RECORD:\s*(column|row|unknown)\s*$", re.I | re.M)
+ORIENT_EVIDENCE_LINE = re.compile(r"^\s*EVIDENCE:[ \t]*(\S[^\n]*)$", re.I | re.M)
 
 
 def first_table(text: str) -> "_tables.Table | None":
@@ -4843,17 +4835,11 @@ def chinese_figure(cell: str) -> int | None:
 
 
 def totals_axis(table_text: str) -> str | None:
-    """Which way the figures add up: 'column', 'row', or None if it cannot tell.
+    """Which axis holds an exact arithmetic total, as a review clue only.
 
-    A 合計 line is the arithmetic ground truth for orientation.  Its value is the
-    sum of the series it terminates, and a series is one record - so the axis the
-    total accumulates along IS the record axis.  This decides mechanically what
-    the model was flipping on: asked to judge a multi-page fiscal report p.24 it
-    answered 'column' on some runs and 'row' on others, both with fluent
-    reasoning, while the figures only ever added up one way.
-
-    A merged cell counts once, in its top-left slot: a figure spread over the
-    slots it covers would be added into the series several times.
+    Both a total across fields and a total across records can reconcile, so
+    arithmetic does not establish which axis is a record or authorize a
+    transform.  A merged cell counts once, in its top-left slot.
     """
     table = first_table(table_text)
     if table is None or table.rows < 3:
@@ -4912,18 +4898,17 @@ def totals_axis(table_text: str) -> str | None:
     return None
 
 
-DIRECTION_SYSTEM = """你係古籍表格判讀員。舊書有啲橫排嘅字係**由右至左**排嘅，OCR 引擎照左至右讀就會讀反：
-例如印住「運動場」，引擎讀成「場動運」；印住「動物園」，讀成「園物動」。
-但係同一個表入面唔係每格都反：直排嘅格、本身由左至右排嘅格都唔會反。
-
-下面每個格畀你兩個讀法，甲同乙：同一啲字，次序啱啱相反。淨係靠你嘅語文知識答：
-邊一個先係成詞、通順、表格會咁寫嘅寫法（類別名、項目名、年份、職銜、人名、地名等等）？
-- 一個通順、另一個唔通：答嗰個，"甲" 或者 "乙"。
-- 兩個都通順（倒轉都成詞）：答 "兩個都得"。
-- 兩個都唔通，或者你唔肯定：答 "兩個都唔係"。唔肯定就唔好估——冇人會因為呢個答案倒轉個格。
-
-淨係輸出一個 JSON array：元素數目、次序同格仔一樣，每個元素係 "甲"、"乙"、"兩個都得" 或者 "兩個都唔係"。
-唔好加解釋。"""
+DIRECTION_SYSTEM = """你係古籍表格逐格核圖員。依據附上嘅原掃描圖，同現有表格、block 定位及
+每格嘅零起算 row／col／rowspan／colspan，先確定圖上對應嗰一格，再判斷字嘅閱讀次序。
+甲乙係同一格兩種相反讀法，必須由圖上字形位置、該格局部排字方向同相鄰格關係定案。
+唔可以因為成詞、通順、常見姓名／地名、全書直排慣例、其他格嘅方向，或者另一引擎同意就倒轉。
+原書可能真係印咗睇似反序或唔通順嘅字；兩個字嘅短格亦冇例外。
+格仔本身可能已經轉軸；row／col 指下面提供嘅現有表格位置，唔直接代表原圖座標。
+如果定位唔唯一、格內有混合方向、圖像模糊、兩個讀法都可能或都唔符，就答「兩個都唔係」。
+淨係輸出 JSON array，每個候選一個 object，次序相同：
+{"row": 0, "col": 1, "choice": "甲", "evidence": "圖上該格可見字序與局部方向"}
+choice 只可係「甲」、「乙」、「兩個都得」或「兩個都唔係」。evidence 必須講圖像依據；唔肯定就講缺少乜。
+唔好改字、補字或者推算答案。"""
 
 # Paired marks swap when a cell is turned round: reversed as a string,
 # （甲項　乙項） would read ）項乙　項甲（.
@@ -4938,17 +4923,23 @@ def turned_round(text: str) -> str:
 
 
 def direction_candidates(table: "_tables.Table") -> list["_tables.Cell"]:
-    """The cells a right-to-left question is asked about: on the label axes of
-    the oriented table (the first row and the first column), two or more CJK
-    characters, not the same either way round, and not a figure."""
+    """Header cells and both outside label axes, each physical cell once.
+
+    A right-to-left grid can put labels on its right edge.  A spanned cell
+    reaches that edge when its covered columns do, not only when its anchor
+    does.  Candidate selection only schedules visual review; it never
+    authorizes a reversal, including for a short label.
+    """
     return [cell for cell in table.cells
-            if (cell.row == 0 or cell.col == 0) and len(CJK(cell.text)) >= 2
-            and CJK(cell.text) != CJK(cell.text)[::-1] and chinese_figure(cell.text) is None]
+            if (cell.header or cell.row == 0 or cell.col == 0
+                or cell.col + cell.colspan == table.cols)
+            and len(CJK(cell.text)) >= 2 and CJK(cell.text) != CJK(cell.text)[::-1]
+            and chinese_figure(cell.text) is None]
 
 
 def parse_direction_answers(reply: str, count: int) -> list[str | None]:
-    """The model's JSON list as first / second / both / neither per cell; None
-    for an answer it cannot read, and all None when the list is not `count` long."""
+    """Parse candidate choices.  Visual decisions also require exact locators
+    and evidence through parse_visual_direction_answers below."""
     try:
         match = re.search(r"\[.*\]", reply or "", re.S)
         answers = json.loads(match.group(0)) if match else []
@@ -4959,74 +4950,117 @@ def parse_direction_answers(reply: str, count: int) -> list[str | None]:
     return [DIRECTION_ANSWERS.get(str(answer).strip().strip("\"'「」").lower()) for answer in answers]
 
 
-def fix_cell_direction(table_text: str, client: "Client", max_tokens: int,
-                       block: int | None = None) -> tuple[str, list[dict[str, Any]]]:
-    """Turn round the label cells printed right to left, by a checked verdict.
+def parse_visual_direction_answers(reply: str, cells: Sequence["_tables.Cell"]
+                                   ) -> list[tuple[str | None, str]]:
+    """Reject absent, shifted or duplicated locators and evidence-free answers.
 
-    Nothing in the grid says which way a horizontal label was printed, and a
-    right-to-left one comes out of the engine reversed; the other engine, when
-    it read the table at all, reads it the same way.  So the decision is a
-    question of meaning, asked of the model as text: both readings named, 甲
-    and 乙, for every label cell of the table at once, and asked again with
-    the two readings the other way round, because a judge that leans towards
-    the first option would otherwise decide.  A cell is turned only when the
-    turned reading wins in both orders; when the answers split, or say both
-    or neither, or cannot be read, the cell stays as read and is sealed
-    undecided.  Earlier this was left to the formatter by a hint, and the
-    deletion guard then refused the turned table as deleted text, so the
-    retry put the cells back reversed.
+    Legacy text-only arrays and fragments embedded in contradictory prose
+    do not authorize image-backed changes.
+    """
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate answer field")
+            result[key] = value
+        return result
 
-    Only the label axes are asked (direction_candidates): every one of the 41
-    reversed cells known in the corpus lies there, and a data cell turned by
-    a wrong answer would be a new error where there was none.  A reversal
-    cannot add, drop or change a character, so a wrong verdict costs order
-    only.  Measured: a book-lexicon test without the model was right on 2 of
-    25 cells (it turned a month number the wrong way round).
+    try:
+        answers = json.loads(reply or "", object_pairs_hook=unique_object)
+    except (ValueError, TypeError):
+        answers = []
+    if not isinstance(answers, list) or len(answers) != len(cells):
+        return [(None, "invalid visual answer list")] * len(cells)
+    locators = [(answer.get("row"), answer.get("col")) for answer in answers
+                if isinstance(answer, dict) and type(answer.get("row")) is int
+                and type(answer.get("col")) is int]
+    if len(set(locators)) != len(locators):
+        return [(None, "duplicated cell locator")] * len(cells)
+    out: list[tuple[str | None, str]] = []
+    for cell, answer in zip(cells, answers):
+        if (not isinstance(answer, dict) or type(answer.get("row")) is not int
+                or type(answer.get("col")) is not int
+                or (answer["row"], answer["col"]) != (cell.row, cell.col)):
+            out.append((None, "missing or mismatched cell locator"))
+            continue
+        evidence = answer.get("evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            out.append((None, "missing visual evidence"))
+            continue
+        choice = DIRECTION_ANSWERS.get(str(answer.get("choice", "")).strip().lower())
+        out.append((choice, evidence.strip()))
+    return out
 
-    Returns the table and one record per cell asked: its reading, the turned
-    reading, both answers, and what was done.
+
+def fix_cell_direction(table_text: str, client: "Client | None", max_tokens: int,
+                       block: int | None = None, *, render_bytes: bytes | None = None,
+                       context: str = "", table_orientation: str = "auto"
+                       ) -> tuple[str, list[dict[str, Any]]]:
+    """Reverse a label only after two image-backed, located visual verdicts.
+
+    The option order is exchanged between the two questions.  Both must
+    identify the same current-grid cell and support its reversed reading
+    from the image.  Missing images, ambiguous correspondence and malformed
+    answers preserve the reading and emit an explicit undecided record.
+    The transformation changes cell text only, preserving dimensions/spans
+    under either output policy.  Records bind decisions to input bytes.
     """
     table = first_table(table_text)
     cells = direction_candidates(table) if table is not None else []
     if not cells:
         return table_text, []
     readings = [(cell.text, turned_round(cell.text)) for cell in cells]
+    common = {"tableOrientation": table_orientation,
+              "tableSha256": sha256_bytes(table_text.encode("utf-8")),
+              "sourceImageSha256": sha256_bytes(render_bytes) if render_bytes else None,
+              "context": context}
 
-    def ask(turned_first: bool) -> list[str | None]:
+    def ask(turned_first: bool) -> list[tuple[str | None, str]]:
         listing = "\n".join(
-            f"{number + 1}. 甲「{turned if turned_first else read}」 乙「{read if turned_first else turned}」"
-            for number, (read, turned) in enumerate(readings))
+            f"row={cell.row}, col={cell.col}, rowspan={cell.rowspan}, colspan={cell.colspan}: "
+            f"甲「{turned if turned_first else read}」 乙「{read if turned_first else turned}」"
+            for cell, (read, turned) in zip(cells, readings))
         reply, _ = client.ask_answering(
-            DIRECTION_SYSTEM, f"表格入面 {len(readings)} 個格，每個兩個讀法：\n{listing}\n\n"
-            "逐個答邊個讀法先係通順嘅寫法，輸出 JSON array。", None, max_tokens, kind="cell-direction")
-        return parse_direction_answers(reply, len(readings))
+            DIRECTION_SYSTEM,
+            f"block={block}; policy={table_orientation}; grid={table.rows} x {table.cols}\n"
+            f"定位／轉軸紀錄：{context or '以表格全部格位對照原圖；不能唯一定位就未定'}\n"
+            f"現有表格：\n---\n{table_text}\n---\n"
+            f"要核圖嘅格（row/col 由零開始）：\n{listing}\n"
+            "按圖上實際字序回答，輸出含 row、col、choice、evidence 嘅 JSON array。",
+            render_bytes, max_tokens, kind="cell-direction")
+        return parse_visual_direction_answers(reply, cells)
 
-    # Asked with the reading as read first (乙 is the turned one), then with
-    # the turned reading first (甲 is).
     pending_err: PacketPending | None = None
-    as_read_first: list[str | None] = []
-    turned_first: list[str | None] = []
-    for is_turned, sink in ((False, as_read_first), (True, turned_first)):
-        try:
-            sink.extend(ask(is_turned))
-        except PacketPending as err:
-            if pending_err is None:
-                pending_err = err
-    if pending_err is not None:
-        raise pending_err
+    as_read_first: list[tuple[str | None, str]] = []
+    turned_first: list[tuple[str | None, str]] = []
+    if not render_bytes or client is None or table.problems:
+        reason = ("no source image" if not render_bytes else "no visual reviewer" if client is None
+                  else "source grid requires repair: " + "; ".join(table.problems))
+        as_read_first = turned_first = [(None, reason)] * len(cells)
+    else:
+        for is_turned, sink in ((False, as_read_first), (True, turned_first)):
+            try:
+                sink.extend(ask(is_turned))
+            except PacketPending as err:
+                if pending_err is None:
+                    pending_err = err
+        if pending_err is not None:
+            raise pending_err
     first_order = {"first": "as read", "second": "turned"}
     second_order = {"first": "turned", "second": "as read"}
     records: list[dict[str, Any]] = []
     texts = {(cell.row, cell.col): cell.text for cell in table.cells}
     for cell, (read, turned), one, two in zip(cells, readings, as_read_first, turned_first):
-        verdicts = [first_order.get(one, one), second_order.get(two, two)]
+        verdicts = [first_order.get(one[0], one[0]), second_order.get(two[0], two[0])]
         outcome = ("turned" if verdicts == ["turned", "turned"]
                    else "kept" if verdicts == ["as read", "as read"] else "undecided")
         if outcome == "turned":
             texts[(cell.row, cell.col)] = turned
-        records.append({**({"block": block} if block is not None else {}),
-                        "row": cell.row, "col": cell.col, "read": read, "turned": turned,
-                        "verdicts": verdicts, "outcome": outcome})
+        records.append({**common, **({"block": block} if block is not None else {}),
+                        "row": cell.row, "col": cell.col,
+                        "rowspan": cell.rowspan, "colspan": cell.colspan,
+                        "read": read, "turned": turned, "verdicts": verdicts,
+                        "visualEvidence": [one[1], two[1]], "outcome": outcome})
     if not any(record["outcome"] == "turned" for record in records):
         return table_text, records
     fixed = _tables.with_texts(table, [texts[(cell.row, cell.col)] for cell in table.cells])
@@ -5076,156 +5110,146 @@ def single_line_grid(table_text: str) -> bool:
     return table is not None and (table.rows == 1 or table.cols == 1)
 
 
-def orient_table(table_text: str, render_bytes: bytes, client: "Client",
-                 max_tokens: int, turn: Callable[[str], tuple[str, str]] | None = None,
-                 table_orientation: str = "auto") -> tuple[str, str]:
-    """Put a recovered table into reading order, asking the page which way it goes.
+def orientation_undecided(how: str) -> bool:
+    """Whether an orientation note preserves a grid pending source review."""
+    return "UNDECIDED" in how or how.startswith(SINGLE_LINE_KEPT) or "NO VERDICT PARSED" in how
 
-    The judgement is the model's and the rotation is arithmetic, because that is
-    where each is strong.  Asked to do both at once the model reversed the
-    engine's column order correctly and then failed to transpose a 19x3 grid at
-    all - mentally rotating nineteen columns is not what it is good at.  Split
-    apart, it answers one question about the page and the code does the algebra.
 
-    There is no structural rule to fall back on: a data table whose printed
-    columns are years and a blank voucher whose printed rows are entries look
-    identical in the grid, and only the page says which is which.
+def parse_table_visual_verdict(reply: str, directive: str) -> str | None:
+    """Accept only the two-line visual contract, never a usable fragment.
 
-    TURN makes a grid whose records are its columns one whose records are
-    rows, and says how (turn_records, for a table the formatter wrote); by
-    default the engine's grid is rotated counter-clockwise (rotate_table).
+    Searching for one well-formed line would overlook a second, malformed
+    or qualified directive that contradicts it.  Extra prose/directives and
+    empty evidence therefore leave the decision unresolved.
     """
+    lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
+    if len(lines) != 2:
+        return None
+    pattern = ORIENT_LINE if directive == "RECORD" else FIRST_LINE
+    verdict = pattern.fullmatch(lines[0])
+    evidence = ORIENT_EVIDENCE_LINE.fullmatch(lines[1])
+    return verdict.group(1).lower() if verdict is not None and evidence is not None else None
+
+
+def table_orientation_record(before: str, after: str, how: str,
+                             render_bytes: bytes | None, policy: str,
+                             block: int | None = None) -> dict[str, Any]:
+    """Keep the source grid and bind the selected representation to its image."""
+    original, output = first_table(before), first_table(after)
+    return {**({"block": block} if block is not None else {}),
+            "policy": policy, "decision": how,
+            "outcome": "undecided" if orientation_undecided(how) else "resolved",
+            "inputText": before, "outputText": after,
+            "inputShape": [original.rows, original.cols] if original else None,
+            "outputShape": [output.rows, output.cols] if output else None,
+            "inputSha256": sha256_bytes(before.encode("utf-8")),
+            "outputSha256": sha256_bytes(after.encode("utf-8")),
+            "sourceImageSha256": sha256_bytes(render_bytes) if render_bytes else None}
+
+
+def orient_table(table_text: str, render_bytes: bytes | None, client: "Client | None",
+                 max_tokens: int, turn: Callable[[str], tuple[str, str]] | None = None,
+                 table_orientation: str = "auto", *, context: str = "") -> tuple[str, str]:
+    """Select logical rows only when the source image establishes their axes.
+
+    As-printed preserves the existing physical grid, including merged cells.
+    Auto checks both axes and record order visually; arithmetic and OCR
+    witnesses supply review clues only.  An isolated header strip can be
+    oriented when the image/context establishes its table relationship,
+    otherwise it stays explicitly undecided.  No missing/unknown answer
+    falls back to a book-wide reading direction.
+    """
+    if table_orientation not in {"auto", "as-printed"}:
+        raise ValueError(f"unknown table orientation policy: {table_orientation}")
     if table_orientation == "as-printed":
-        return table_text, "kept — --table-orientation as-printed"
+        return table_text, "kept — policy=as-printed; physical grid and spans preserved"
+    table = first_table(table_text)
+    if table is None:
+        return table_text, "kept, UNDECIDED — policy=auto; table could not be parsed"
 
-    def turned(reason: str) -> tuple[str, str]:
-        if turn is None:
-            return rotate_table(table_text), f"rotated — {reason}"
-        text, how = turn(table_text)
-        return text, f"{how} — {reason}"
+    def undecided(reason: str) -> tuple[str, str]:
+        prefix = SINGLE_LINE_KEPT if single_line_grid(table_text) else "kept"
+        return table_text, f"{prefix}, UNDECIDED — policy=auto; {reason}"
 
-    # Arithmetic first: where a 合計 reconciles, it settles the question and no
-    # model call is needed or wanted.
+    if not render_bytes or client is None:
+        return undecided("no source image" if not render_bytes else "no visual reviewer")
+    if table.problems:
+        return undecided("source grid requires repair: " + "; ".join(table.problems))
     axis = totals_axis(table_text)
-    if axis == "column":
-        return turned("合計 reconciles down the column")
-    if axis == "row":
-        return table_text, "kept — 合計 reconciles along the row"
-    # One row or one column of cells has no second axis on this page that
-    # could hold records, so there is nothing for the page to settle and the
-    # question is not asked.  Measured: a nineteen-cell label column whose
-    # figures are printed on the following pages cost a 132-second question,
-    # truncated once, answered from the years of the other table on the page.
-    # The grid is kept as read and the caller seals the choice as undecided,
-    # for a pass that sees the table this line belongs to.  A guard against a
-    # degenerate question, not a rule about orientation.
-    if single_line_grid(table_text):
-        table = first_table(table_text)
-        return table_text, (f"{SINGLE_LINE_KEPT} ({table.rows} x {table.cols}); the page "
-                            "holds no second axis for records, so no question was asked")
-
-    verdict, metrics = client.ask_answering(
+    hint = f"數目核對線索：現有格仔 {axis} 軸加總吻合；呢個唔證明紀錄方向。" if axis else ""
+    verdict, _ = client.ask_answering(
         ORIENT_SYSTEM,
-        "OCR 引擎解出嚟嘅格仔（可能係版面次序，亦可能已經係邏輯次序）：\n---\n"
-        f"{table_text}\n---\n\n對住頁圖理解每格係乜，然後答：**喺上面呢個格仔入面**，"
-        "一筆紀錄係一橫行（RECORD: row）定係一直列（RECORD: column）？",
+        f"定位／相關表格上下文：{context or '只可用附圖中同一個表嘅證據'}\n"
+        f"現有格仔 ({table.rows} x {table.cols})：\n---\n{table_text}\n---\n{hint}\n"
+        "逐格對照原圖，再答 RECORD: row / column / unknown 同 EVIDENCE: 圖上依據。",
         render_bytes, max_tokens, kind="orient")
-    match = ORIENT_LINE.search(verdict or "")
-    # Seal the model's own words, not just the outcome.  A bare "kept" is not
-    # diagnosable: it cannot be told apart from a truncated reply, a mis-parse,
-    # or the model genuinely reading the page the other way.
-    said = (verdict or "").strip().replace("\n", " ")[:200] or "(empty reply)"
-    if match and match.group(1).lower() == "column":
-        return turned(said)
-    if match:
-        return table_text, f"kept — {said}"
-    return table_text, f"kept, NO VERDICT PARSED — {said}"
+    axis = parse_table_visual_verdict(verdict, "RECORD")
+    said = (verdict or "").strip().replace("\n", " ")[:300] or "(empty reply)"
+    if axis not in {"row", "column"}:
+        return undecided(said)
+    if axis == "row":
+        return table_text, f"kept — policy=auto; {said}"
+    if turn is None:
+        oriented, how = turn_records(table_text, None, ask=lambda grid: ask_first_record(
+            grid, render_bytes, client, max_tokens, context=context))
+    else:
+        oriented, how = turn(table_text)
+    if orientation_undecided(how):
+        return undecided(f"axis=column; {how}; {said}")
+    return oriented, f"{how} — policy=auto; {said}"
 
 
-FIRST_RECORD_SYSTEM = """你係直排古籍表格判讀員。畀你一版書頁圖，同埋一個格仔（Markdown 表或者 HTML `<table>`）。
-呢個格仔入面，**每一直列係一筆紀錄**（例如品名、規格、單價由上至下排）。
-
-問題：照頁上嘅閱讀次序（直排書由右至左讀），**第一筆紀錄**係格仔入面**最左**嗰一直列，定係**最右**嗰一直列？
-對住頁圖睇：頁上最右（最先讀到）嗰筆紀錄嘅字，喺格仔入面擺咗喺邊一邊。
-
-輸出淨係兩行，格式一模一樣：
+FIRST_RECORD_SYSTEM = """你係古籍表格判讀員。畀你原掃描頁圖，同埋現有格仔
+（Markdown 或 HTML）。圖像覆核已確認要交換軸，令每列內容變成邏輯上嘅一行。
+再逐格對圖確認：第一筆紀錄（或第一組欄名）喺現有格仔最左列，定最右列？
+唔可以假定直排書一定由右至左、OCR 一定由左至右，亦唔可以單憑文字排列／語意決定。
+要指出圖上原格位同現有格仔嘅對應；位置唔唯一、看唔清或欠相關續頁就答 unknown。
+只輸出兩行：
 FIRST: left
-或
-FIRST: right
-第二行寫一句理由。"""
+或 FIRST: right
+或 FIRST: unknown
+EVIDENCE: 指出原圖可見嘅閱讀次序同現有格仔位置；唔清楚就講缺少乜證據。"""
 
-FIRST_LINE = re.compile(r"^\s*FIRST:\s*(left|right)\s*$", re.I | re.M)
+FIRST_LINE = re.compile(r"^\s*FIRST:\s*(left|right|unknown)\s*$", re.I | re.M)
 
 
-def ask_first_record(table_text: str, render_bytes: bytes | None, client: "Client",
-                     max_tokens: int) -> tuple[str | None, str]:
-    """Which side of a grid whose records are its columns holds the first
-    record in the page's reading order - "left", "right", or None when the
-    answer cannot be read - and the model's words (turn_records asks it
-    when engine B's reading gives no evidence)."""
+def ask_first_record(table_text: str, render_bytes: bytes | None, client: "Client | None",
+                     max_tokens: int, *, context: str = "") -> tuple[str | None, str]:
+    """Read record order from the source image; missing evidence stays unknown."""
+    if not render_bytes or client is None:
+        return None, "no source image" if not render_bytes else "no visual reviewer"
     reply, _ = client.ask_answering(
-        FIRST_RECORD_SYSTEM, f"格仔：\n---\n{table_text}\n---\n\n對住頁圖答：第一筆紀錄係最左定最右嗰直列？",
+        FIRST_RECORD_SYSTEM,
+        f"定位／相關表格上下文：{context}\n格仔：\n---\n{table_text}\n---\n"
+        "對住原圖答 FIRST: left / right / unknown 同 EVIDENCE: 圖上依據。",
         render_bytes, max_tokens, kind="record-order")
-    found = FIRST_LINE.search(reply or "")
-    said = (reply or "").strip().replace("\n", " ")[:200] or "(empty reply)"
-    return (found.group(1).lower() if found else None), said
+    first = parse_table_visual_verdict(reply, "FIRST")
+    said = (reply or "").strip().replace("\n", " ")[:300] or "(empty reply)"
+    return (first if first in {"left", "right"} else None), said
 
 
 def turn_records(table_text: str, witness: str | None,
                  ask: Callable[[str], tuple[str | None, str]] | None = None) -> tuple[str, str]:
-    """A table whose records are its columns, turned so that each record is a
-    row, in reading order; and how it was turned.
+    """Exchange already-verified axes using a visually established record order.
 
-    Two turns make records of columns: a counter-clockwise rotation (the
-    last column becomes the first row - an engine's grid of a vertical table
-    runs left to right across the page, so its last column is the first
-    record) and a transpose (the first column becomes the first row).  An
-    engine's grid always takes the rotation (orient_table); a table the
-    formatter wrote from the crop does not say which way its columns run.
-    Measured on the three tables the formatter rebuilt for one page of a
-    vertical textbook table, each record written as a column: two listed the
-    page's columns in reading order (right to left: the first record in
-    the first column) and one in page order (left to right), so no fixed
-    turn is right.  Engine B's reading of the page is in reading order, so it
-    decides: each cell found there places its column - a cell of
-    WITNESS_ANCHOR characters or more by its first piece engine B read once
-    (witness_anchors), a shorter one of two or more when engine B read it
-    whole, once (variants folded) - and every pair of such cells in
-    different columns votes for the column order it shows.  The turn the
-    votes favour is taken.  With no vote, or a tie, the page is asked (ASK,
-    ask_first_record: is the first record the grid's leftmost column or its
-    rightmost), and with no answer it can read, the rotation (the question
-    orient_table asks defines "column" by it).  Measured on those three
-    tables: engine B voted on one (its notes cells each hold a piece engine
-    B read once); the other two wrote both notes in one cell and the labels
-    engine B never read, so nothing in them places a column."""
+    An OCR witness may suggest where to inspect but cannot authorize a
+    transpose/rotation.  Missing or conflicting visual order preserves the
+    original grid.  A single column needs no left/right choice: transposition
+    and rotation have identical order in that case.
+    """
     table = first_table(table_text)
     if table is None:
-        return table_text, "kept, unparsed"
-    reading = variant_fold(CJK(witness or ""))
-    matcher = difflib.SequenceMatcher(None, "", reading, autojunk=False)
-    placed: list[tuple[int, int, int]] = []
-    for cell in table.cells:
-        text = variant_fold(CJK(cell.text))
-        if len(text) >= WITNESS_ANCHOR:
-            anchors = witness_anchors(text, reading, matcher)
-            if anchors:
-                placed.append((cell.col, cell.col + cell.colspan - 1, anchors[0][1] - anchors[0][0]))
-        elif len(text) >= 2 and reading.count(text) == 1:
-            placed.append((cell.col, cell.col + cell.colspan - 1, reading.index(text)))
-    forward = backward = 0
-    for (lo1, hi1, at1), (lo2, hi2, at2) in itertools.combinations(placed, 2):
-        if hi1 < lo2 or hi2 < lo1:
-            left_first = (at1 < at2) == (hi1 < lo2)
-            forward, backward = forward + left_first, backward + (not left_first)
-    votes = f"engine B's reading order: {forward} pair(s) left to right, {backward} right to left"
-    first = "left" if forward > backward else "right" if backward > forward else None
-    if first is None and ask is not None:
-        first, said = ask(table_text)
-        votes += f"; asked, the first record is the {first or 'unread'} column - {said}"
+        return table_text, "kept, UNDECIDED — unparsed table"
+    if table.cols == 1:
+        return _tables.render(_tables.transpose(table)), "transposed (one column; no record-order ambiguity)"
+    if ask is None:
+        return table_text, "kept, UNDECIDED — no visual record-order decision"
+    first, said = ask(table_text)
     if first == "left":
-        return _tables.render(_tables.transpose(table)), f"transposed ({votes})"
-    return rotate_table(table_text), f"rotated ({votes})"
+        return _tables.render(_tables.transpose(table)), f"transposed (visual first=left; {said})"
+    if first == "right":
+        return rotate_table(table_text), f"rotated (visual first=right; {said})"
+    return table_text, f"kept, UNDECIDED — visual record order unknown; {said}"
 
 
 TABLE_BRACKET_REACH = 4   # characters of engine A's reading either side that place a bracket in a cell
@@ -5352,7 +5376,8 @@ def recover_tables(
     rejected: list[dict[str, Any]] = []
     orientations: list[str] = []
     sources: list[int] = []
-    sealed: dict[str, Any] = {"doubts": [], "figureGrouping": [], "cellDirection": [], "edges": {}}
+    sealed: dict[str, Any] = {"doubts": [], "figureGrouping": [], "cellDirection": [],
+                              "tableOrientationEvidence": [], "edges": {}}
     span_at = (list(itertools.accumulate((len(CJK(text)) for text in spans), initial=0))
                if spans is not None else None)
     for index, block in enumerate(blocks):
@@ -5395,31 +5420,31 @@ def recover_tables(
                 f"TABLE NOTE MARKERS UNVERIFIED: block {layout}: {len(markers)} note marker(s) in its cells as "
                 f"engine A read them ({'、'.join(m.strip() for m in markers[:6])}{'…' if len(markers) > 6 else ''}); "
                 "a circled number above 20 is often misread")})
-        if render_bytes is not None and client is not None:
-            try:
-                restated, how = orient_table(
-                    restated, render_bytes, client, max_tokens, table_orientation=table_orientation
-                )
-                orientations.append(f"block {layout}: {how}")
-                if how.startswith(SINGLE_LINE_KEPT):
-                    # Which way a lone line of labels runs is settled by the table
-                    # it labels - on this page or, where the page prints only the
-                    # labels, on the page the table continues on.
-                    sealed["doubts"].append({"kind": "table-orientation-undecided", "detail": (
-                        f"TABLE ORIENTATION UNDECIDED: block {layout} is a single line of cells, kept "
-                        "as read; the page shows no records to orient it by")})
-                # After the orientation, so the label axes are the first row and
-                # the first column of the table as it will be written.
-                restated, directions = fix_cell_direction(restated, client, max_tokens, block=layout)
-                sealed["cellDirection"] += directions
-                undecided = [record["read"] for record in directions if record["outcome"] == "undecided"]
-                if undecided:
-                    sealed["doubts"].append({"kind": "cell-direction-undecided", "detail": (
-                        f"CELL DIRECTION UNDECIDED: block {layout}: {len(undecided)} label cell(s) kept "
-                        f"as read ({'、'.join(undecided[:6])}{'…' if len(undecided) > 6 else ''}); the two "
-                        "answers on which way they read did not agree")})
-            except PacketPending:
-                sealed["packetPending"] = True
+        before_orientation = restated
+        context = (f"block={layout}; page box (x,y,width,height)={block.get('box')}; "
+                   f"source grid before orientation:\n{before_orientation}")
+        try:
+            restated, how = orient_table(
+                restated, render_bytes, client, max_tokens,
+                table_orientation=table_orientation, context=context)
+            orientations.append(f"block {layout}: {how}")
+            sealed["tableOrientationEvidence"].append(table_orientation_record(
+                before_orientation, restated, how, render_bytes, table_orientation, block=layout))
+            if orientation_undecided(how):
+                sealed["doubts"].append({"kind": "table-orientation-undecided", "detail": (
+                    f"TABLE ORIENTATION UNDECIDED: block {layout}: {how}")})
+            restated, directions = fix_cell_direction(
+                restated, client, max_tokens, block=layout, render_bytes=render_bytes,
+                context=f"{context}\norientation decision: {how}", table_orientation=table_orientation)
+            sealed["cellDirection"] += directions
+            undecided = [record["read"] for record in directions if record["outcome"] == "undecided"]
+            if undecided:
+                sealed["doubts"].append({"kind": "cell-direction-undecided", "detail": (
+                    f"CELL DIRECTION UNDECIDED: block {layout}: {len(undecided)} label cell(s) kept "
+                    f"as read ({'、'.join(undecided[:6])}{'…' if len(undecided) > 6 else ''}); "
+                    "source image evidence was absent, ambiguous or not agreed")})
+        except PacketPending:
+            sealed["packetPending"] = True
         recovered.append(restated)
         sources.append(index)
     return recovered, rejected, orientations, sources, sealed
@@ -6346,10 +6371,9 @@ REBUILD_SYSTEM = """你係 jyut-ocr-table-builder。畀你一個版面區域嘅�
 先睇裁圖：呢個區域係咪一個表格（有欄有行、一格格嘅資料，有冇格線都算）？
 - 如果唔係表格（係一段段嘅文字、一條條直行嘅正文），淨係答：唔係表格
 - 如果係表格，對住裁圖將佢寫出嚟：
-  1. 由裁圖判斷結構：幾多行、幾多欄、邊啲格合併咗。直排書嘅表，一條直欄往往係一筆紀錄：
-     版面上嘅直欄變成表格嘅一行，最右嗰條直欄先係第一行（通常係欄名）；
-     但空白表格、單據、名冊嗰類，欄名本來就橫排喺頂，每一橫行係一筆紀錄，照頁上橫行寫。
-     有「合計」嘅，睇啲數沿住邊個方向加埋——嗰個方向就係一筆紀錄。
+  1. 由裁圖重建物理格網：上至下係行、左至右係欄，記清楚邊啲格合併咗。
+     本步唔轉置；下一步會獨立對圖判斷紀錄軸同閱讀方向。
+     唔可以因為直排中文就假定最右先，亦唔可以靠合計方向決定轉置。
   2. 冇合併格寫 Markdown 表；有合併格（一格跨幾行或者幾欄）寫 HTML `<table>`，用 rowspan／colspan，
      唔好拆格、補空格或者將同一段字抄入幾格。
   3. **字淨係可以用畀你嗰啲**：每個字最多用佢喺下面出現嘅次數，可以按裁圖重新排次序，
@@ -7008,7 +7032,7 @@ FORMAT_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一串**已經定咗�
    表格：冇合併格就寫 Markdown 表；有合併格（一格跨幾行或者幾欄，例如一格附註管住幾行、
    一個標題蓋住幾欄）就寫 HTML `<table>`，合併格用 rowspan／colspan 表示。
    Markdown 表表達唔到合併格，唔好為咗塞入 Markdown 而拆格、補空格，或者將同一段字抄入幾格。
-3. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。
+3. 來源覆核已經移除確認嘅家具；保留收到嘅全部文字、數字、外文同算式。
 
 **絕對唔准改字，亦唔准加任何漢字。** 唔准正規化異體字，唔准「修正」你覺得怪嘅字。
 
@@ -7017,8 +7041,8 @@ FORMAT_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一串**已經定咗�
 要做 list 就用 Markdown 嘅 `-`，唔好自己補漢字數字。
 但係如果頁上嘅編號係括住嘅（例如「（一）」「（二）」），括號要加返——括號係標點，唔係字；
 括號入面嘅數字就照字串，唔准改。
-畀你嘅字係由兩個獨立 OCR 引擎核對過嘅，比你單獨睇圖準。你改咗就係倒退。
-唯一準你刪嘅係頁面家具；正文一個字都唔准動。
+本階段只做格式；如懷疑來源讀法有問題，留待隨後整頁圖像覆核裁定。兩引擎一致唔係正確保證。
+本階段唔准刪字；家具判斷只由整頁圖像覆核處理。
 
 輸出：淨係輸出加咗標點同結構嘅 Markdown 正文。唔好解釋，唔好 code fence。"""
 
@@ -7067,7 +7091,7 @@ STRUCTURE_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一頁**字同標�
 
 你**唯一**嘅工作係加版面結構：
 1. heading、段落、list、原書編號——先由頁圖判斷版式（直排／橫排、欄數、閱讀方向），唔好假設。
-2. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。
+2. 來源覆核已經移除確認嘅家具；唔准再刪收到嘅文字、數字、外文同算式。
 3. 表格：文本入面自己一行嘅表格記號（例如 ⟦T1⟧）代表一個已經定咗嘅表——嗰行原封不動照抄、擺喺原位，
    唔好自己寫嗰個表，亦唔好刪走或者重複個記號。
    頁上明明係表格、但文本入面冇記號嘅，按頁圖重建：冇合併格寫 Markdown 表；有合併格（一格跨幾行
@@ -7079,7 +7103,7 @@ STRUCTURE_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一頁**字同標�
 括號係結構，唔係字；括號入面嘅數字照文本，唔准改。
 舊書凡例好多時每條都用同一個「一」做項目符號，唔係一二三四五；你**唔准**幫佢重新編號，
 要做 list 就用 Markdown 嘅 `-`。
-唯一準你刪嘅係頁面家具；正文一個字、一個符號都唔准動。
+本階段唔准刪字或符號；家具判斷只由整頁圖像覆核處理。
 
 輸出：淨係輸出加咗結構嘅 Markdown 正文。唔好解釋，唔好 code fence。"""
 
@@ -7584,6 +7608,13 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
     decisions (another profile, new rulings, a switch set otherwise) is not
     mixed in."""
     return {
+        "proofreadTransport": getattr(arguments, "backend", "packet"),
+        "proofreadModel": getattr(arguments, "model", None) or DEFAULT_MODEL,
+        "proofreadEndpoint": (getattr(arguments, "endpoint", None) or "")
+                             if getattr(arguments, "backend", "packet") == "http" else "",
+        "proofreadScriptSha256": sha256_file(Path(__file__)),
+        "contentFidelitySha256": sha256_file(Path(_content_fidelity.__file__)),
+        "contentNoteMarkersSha256": sha256_file(Path(_content_fidelity.__file__).with_name("_note_markers.py")),
         "profileSha256": getattr(arguments, "profile_sha", "") or "",
         "enginePreference": getattr(arguments, "prefer_engine", "") or "",
         "fallbackEngine": getattr(arguments, "fallback_engine", "") or "",
@@ -7628,8 +7659,7 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # what was learned (learned_heads_seal), so a page sealed under another
         # book's evidence or another profile's is not current.  Only when on.
         **({"learnedHeads": learned_heads_seal(arguments)} if getattr(arguments, "learned_heads", False) else {}),
-        **({"tableOrientation": "as-printed"}
-           if getattr(arguments, "table_orientation", "auto") == "as-printed" else {}),
+        "tableOrientation": getattr(arguments, "table_orientation", "auto") or "auto",
     }
 
 
@@ -9207,29 +9237,24 @@ def restore_merged_characters(resolved: str, formatted: str) -> str | None:
 
 
 def verify_characters(resolved: str, formatted: str) -> tuple[bool, str]:
-    """The formatter may add punctuation and structure, never change characters.
+    """Formatting may rearrange text, but cannot invent or delete glyphs.
 
-    Deterministic and assumption-free: it asks only whether the CJK sequence
-    survived. Furniture removal means the output may be a subsequence of the
-    input, so a pure prefix/equality test would reject correct work - what is
-    rejected is any character the formatter INVENTED or SUBSTITUTED.
+    Image-confirmed furniture removal happens in content-recovery before this
+    lock.  Include Latin, numerals and formula signs; a CJK-only subsequence
+    check used to accept both a missing digit and a completely empty output.
+    Position-sensitive source features are checked separately against their
+    image-confirmed anchors and in the final full-page coverage review.
     """
-    src, out = CJK(resolved), CJK(formatted)
-    # Counts, not sequence.  The question is whether a character was INVENTED,
-    # and that is a multiset question: a sequence diff also fires when the
-    # formatter merely MOVES text, which is its job.  Measured on a table page
-    # of a finance report, where the OCR reading order puts the running head
-    # first and the page title last: the formatter lifted the title to a
-    # heading and was rejected for "introducing" its fourteen characters,
-    # which were sitting in the merged text all along.  Deletions stay legal
-    # (furniture removal); only a character appearing MORE often than the merge
-    # sanctioned is an invention.
-    have = Counter(src)
-    invented = Counter(out) - have
+    have, output = (_content_fidelity.character_counts(t) for t in (resolved, formatted))
+    invented = output - have
     if invented:
         detail = "".join(char * count for char, count in invented.items())
         return False, (f"formatter introduced {sum(invented.values())} character(s) "
                        f"not in the merged text: {detail[:40]}")
+    lost = have - output
+    if lost:
+        detail = "".join(char * count for char, count in lost.items())
+        return False, f"formatter deleted {sum(lost.values())} retained character(s): {detail[:40]}"
     return True, "characters preserved"
 
 
@@ -11230,6 +11255,9 @@ def _proofread_page_inner(
     known_heads: list[str] = []
     tables_rejected: list[dict[str, Any]] = []
     table_orientation: list[str] = []
+    table_orientation_evidence: list[dict[str, Any]] = []
+    source_table_mapping_current = True
+    recovery_table_correspondence: list[dict[str, Any]] = []
     table_grouping: list[str] = []
     cell_direction: list[dict[str, Any]] = []
     table_nominations: list[dict[str, Any]] = []
@@ -11262,19 +11290,41 @@ def _proofread_page_inner(
     engine_a_characters = len(CJK(draft))
     engine_b_characters = len(CJK(draft2 or ""))
 
+    # Every page first receives a full-image inventory, including pages for
+    # which both CJK streams are empty.  Packet replay binds image and prompt;
+    # no standalone old sidecar can authorize a blank or a content repair.
+    inventory, inventory_metrics = _content_fidelity.inventory_page(
+        client, render_bytes, [draft, draft2 or ""], arguments.max_tokens)
+    add(inventory_metrics)
+    content_recovery: dict[str, Any] | None = None
+    coverage_review: dict[str, Any] | None = None
+
+    def image_review(candidate: str, stage: str) -> tuple[str, dict[str, Any]]:
+        result, evidence, used = _content_fidelity.review_page(
+            client, render_bytes, candidate, inventory, arguments.max_tokens, stage=stage,
+            table_orientation=table_orientation_mode)
+        add(used)
+        return result, evidence
+
     # A page carrying no text either engine can corroborate.  Two shapes:
     # genuinely blank (both engines silent) and unsupported (one engine emitted
     # a page of degenerate text the other never saw).  Both are sealed rather
     # than failed, so the assembled deliverable has no hole where a page should
     # be - three such pages failed the whole phase before this existed.
     unsupported = unsupported_reading(draft, draft2)
-    if (not CJK(draft) and not CJK(draft2 or "")) or unsupported:
+    if inventory["page_state"] == "blank" or (not CJK(draft) and not CJK(draft2 or "")) or unsupported:
         if unsupported:
             doubts.append({"kind": "unsupported-reading", "detail": (
                 f"one engine returned {len(CJK(unsupported))} characters the other "
                 f"never saw, and the text repeats itself "
                 f"({distinct_ngram_ratio(CJK(unsupported)):.3f} distinct 4-grams); "
-                "discarded as unsupported")})
+                "requires a full-image transcription rather than a blank shortcut")})
+        writer_text = ""
+        if inventory["page_state"] != "blank":
+            writer_text, content_recovery = image_review(draft if not unsupported else "", "content-recovery")
+            writer_text, coverage_review = image_review(writer_text, "coverage-review")
+            if not coverage_review["complete"]:
+                raise ProofreadError("full-page coverage unresolved: " + json.dumps(coverage_review, ensure_ascii=False))
         record = {
             "schemaVersion": SCHEMA_VERSION,
             "scanPage": job.scan_page,
@@ -11286,7 +11336,10 @@ def _proofread_page_inner(
             "renderFile": str(job.render),
             # An unsupported reading is not a clean page: a human should look.
             "auditorClean": not doubts,
-            "mode": "blank-page",
+            "mode": "blank-page" if inventory["page_state"] == "blank" else "image-recovery",
+            "pageInventory": inventory,
+            "contentRecovery": content_recovery,
+            "coverageReview": coverage_review,
             "inkFraction": round(page_ink_fraction(job.render), 6),
             "engineDisagreements": [],
             "auditorReport": "; ".join(d["detail"] for d in doubts),
@@ -11304,12 +11357,12 @@ def _proofread_page_inner(
                 "renderSha256": sha256_file(job.render),
                 "draftSha256": sha256_file(job.draft_text),
                 **decision_provenance(arguments),
-                "markdownSha256": sha256_bytes(b""),
+                "markdownSha256": sha256_bytes(writer_text.encode("utf-8")),
             },
         }
         record["provenance"]["jsonPayloadSha256"] = sha256_bytes(
             canonical_json_bytes(record))
-        seal_page(job, b"", record)
+        seal_page(job, writer_text.encode("utf-8"), record)
         return record
 
     if draft2 is None:
@@ -11326,6 +11379,7 @@ def _proofread_page_inner(
         if not writer_text:
             raise ProofreadError("writer returned empty output")
         resolved, mode = writer_text, "transcribe"
+        writer_text, content_recovery = image_review(writer_text, "content-recovery")
     else:
         # MERGE. Where two independent engines agree, that reading is frozen and
         # no model is allowed to revise it. Only differences go to adjudication.
@@ -12759,6 +12813,7 @@ def _proofread_page_inner(
         doubts.extend(recovery["doubts"])
         table_grouping = recovery["figureGrouping"]
         cell_direction = recovery["cellDirection"]
+        table_orientation_evidence.extend(recovery.get("tableOrientationEvidence", []))
         table_edge.update((index, dict(found, source="recovered"))
                           for index, found in recovery["edges"].items() if index in table_sources)
 
@@ -13057,35 +13112,32 @@ def _proofread_page_inner(
                            + "".join(f"{mark}×{n}" for mark, n in a_marks.items()) + ")" if a_marks else "")
                         + " - check the marks against the image")})
                 continue
-            # The arithmetic's turn alone (a 合計 that reconciles down a
-            # column), to tell whether the question below turned it otherwise.
-            as_written = (rotate_table(table)
-                          if totals_axis(table) == "column" and table_orientation_mode != "as-printed"
-                          else table)
-            # Decision D23: the question a recovered table is asked
-            # (orient_table: the arithmetic first, a single line of cells
-            # kept), with the turn read off engine B's reading order
-            # (turn_records).  Measured: the three tables the formatter
-            # rebuilt for a vertical textbook table each wrote a
-            # horizontal band of the page as a row - a field per row -
-            # and none was asked.
+            as_written = table
+            orientation_context = (f"rebuilt block {layout}, full-page boxes "
+                                   f"{[blocks[j].get('box') for j in region]}; source grid:\n{table}")
+            # Orientation is a separate image-backed decision after rebuilding
+            # the physical grid.  Arithmetic and OCR order are hints only.
             try:
                 oriented, how = orient_table(
                     table, render_bytes, client, arguments.max_tokens,
                     turn=lambda written: turn_records(written, draft2, ask=lambda grid: ask_first_record(
-                        grid, render_bytes, client, arguments.max_tokens)),
-                    table_orientation=table_orientation_mode)
-                if how.startswith(SINGLE_LINE_KEPT):
+                        grid, render_bytes, client, arguments.max_tokens, context=orientation_context)),
+                    table_orientation=table_orientation_mode, context=orientation_context)
+                table_orientation_evidence.append(table_orientation_record(
+                    as_written, oriented, how, render_bytes, table_orientation_mode, layout))
+                if orientation_undecided(how):
                     doubts.append({"kind": "table-orientation-undecided", "detail": (
-                        f"TABLE ORIENTATION UNDECIDED: block {layout} is a single line of cells, kept as "
-                        "rebuilt; the page shows no records to orient it by")})
+                        f"TABLE ORIENTATION UNDECIDED: block {layout}; kept as rebuilt: {how}")})
                 if oriented != as_written:
                     decision_changes.append({
                         "decision": "D23", "rule": "rebuilt-table-oriented",
                         **where, "engineA": "", "engineB": "", "after": oriented, "mergedOffset": at,
                         "evidence": {"orientation": how[:300]}})
                 table = oriented
-                table, directions = fix_cell_direction(table, client, arguments.max_tokens, block=layout)
+                table, directions = fix_cell_direction(
+                    table, client, arguments.max_tokens, block=layout, render_bytes=render_bytes,
+                    context=orientation_context + "\norientation: " + how,
+                    table_orientation=table_orientation_mode)
             except PacketPending:
                 rebuild_packet_pending = True
                 continue
@@ -13484,6 +13536,25 @@ def _proofread_page_inner(
         if recovery_packet_pending or rebuild_packet_pending:
             raise PacketPending("table-wave")
 
+        # Before formatting, review the actual candidate including full tables.
+        # This is the one bounded opportunity to recover regions or non-CJK
+        # content dropped by the CJK merge, and to remove image-confirmed
+        # furniture.  Never restore raw OCR digits by agreement alone.
+        if placeholders:
+            format_input, misplaced_input, _ = place_recovered_tables(format_input, tables)
+            if misplaced_input:
+                raise ProofreadError("content-recovery table expansion failed: " + misplaced_input)
+            placeholders = False
+        format_input, content_recovery = image_review(format_input, "content-recovery")
+        # Keep a recovered table's confirmed repairs when the formatter copies
+        # it.  A changed table count cannot be mapped to old block IDs safely;
+        # final image coverage will verify those regions without such mapping.
+        recovered_grids = [format_input[a:b] for a, b in table_spans(format_input)]
+        source_table_mapping_current, recovery_table_correspondence = _content_fidelity.refresh_table_mapping(
+            tables, recovered_grids)
+        if source_table_mapping_current:
+            tables = recovered_grids
+
         # Stage B - structure.  With punctuation locked the model may only add
         # headings, lists, tables and remove furniture; never touch a mark.
         table_hint = ""
@@ -13493,7 +13564,7 @@ def _proofread_page_inner(
                 "每一行代表一個已經由引擎格仔定咗嘅表格，內容同方向都唔使你理。"
                 "每行記號原封不動照抄一次，自己一行，擺喺個表喺頁上嘅位置（通常就係佢喺文本入面嘅位置）；"
                 "唔好自己寫呢啲表，唔好刪走、改寫或者重複記號。\n")
-        elif tables:
+        elif tables and source_table_mapping_current:
             # The whole-page path has no block spans to put a token in: the
             # formatter copies the recovered tables, with their label cells
             # as the engines read them (cells_as_read: the deletion guard
@@ -13532,15 +13603,9 @@ def _proofread_page_inner(
             else:
                 table_hint += (
                     "\n頁上有表格要你對住頁圖重建（引擎嘅格仔信唔過，冇畀你）。"
-                    "兩種常見情況都要識分：\n"
-                    "① 直排書嘅表，一條直欄往往就係一筆紀錄（record）："
-                    "版面上嘅直欄變成表格嘅一行，而且因為直欄由右至左讀，"
-                    "最右嗰條直欄先係第一行（通常係欄名嗰行）。\n"
-                    "② 但係空白表格、單據、名冊嗰類，欄名本來就係橫排喺頂，"
-                    "每一橫行係一筆紀錄，咁就照頁上橫行寫。\n"
-                    "點分？睇邊一條軸放住『欄名』（一串唔同類別嘅名），"
-                    "邊一條軸放住『同類嘅值』。仲有：如果有『合計』，"
-                    "睇下啲數係沿住邊個方向加埋——合計嗰邊就係一筆紀錄嘅方向。\n"
+                    "按當前表格圖像確認欄名、紀錄軸同每筆紀錄嘅位置。"
+                    "唔可以只因直排中文就假定最右先，亦唔可以靠合計方向決定轉置。"
+                    "冇清楚圖像證據就保留物理格網，由整頁覆核記為未定。\n"
                     "重建淨係搬字，一個字都唔准加、唔准刪、唔准換。\n")
         layout = profile_section(arguments, "layout")
         layout_hint = ""
@@ -13563,10 +13628,10 @@ def _proofread_page_inner(
             formatted, m = client.ask_answering(
                 format_system,
                 (f"字同標點都已定（唔准改）：\n---\n{format_input}\n---\n{table_hint}{layout_hint}\n"
-                 "睇頁圖，加版面結構（heading／段落／list／表格），刪走欄外書眉／頁碼。標點原封不動。")
+                 "睇頁圖，加版面結構（heading／段落／list／表格），保留全部來源覆核後嘅字、數字、算式同符號。標點原封不動。")
                 if punct_locked else
                 (f"已定嘅字（唔准改）：\n---\n{format_input}\n---\n{table_hint}\n{whole_page_hint}"
-                 "睇頁圖，加返句讀同版面結構，刪走欄外書眉／頁碼。"),
+                 "睇頁圖，加返句讀同版面結構，保留全部來源覆核後嘅字、數字、算式同符號。"),
                 render_bytes, arguments.max_tokens, kind="format")
             add(m)
         formatted = strip_fence(formatted)
@@ -13579,13 +13644,16 @@ def _proofread_page_inner(
         misplaced = None
         if placeholders:
             formatted, misplaced, placement_notes = place_recovered_tables(formatted, tables)
-        # The merged text, and what the rebuilt tables hold beyond it (D20).
-        sanctioned = resolved + ("\n" + "".join(table_added.elements()) if table_added else "")
+        # Source recovery has already removed only image-confirmed furniture;
+        # formatting has no remaining deletion exemption, for any script.
+        sanctioned = format_input
         ok, reason = ((False, silent) if silent else (False, misplaced) if misplaced
                       else verify_characters(sanctioned, formatted))
+        if ok and _content_fidelity.feature_losses(formatted, inventory):
+            ok, reason = False, "formatter lost or displaced an image-confirmed source feature"
         # The recovered tables carry their own marks (、 separators, brackets)
         # that the block text does not, so they count as expected input.
-        lock_input = format_input + "\n" + "\n".join(tables)
+        lock_input = format_input
         if ok and punct_locked and not punctuation_kept(lock_input, formatted):
             ok, reason = False, "changed punctuation: " + punctuation_delta(lock_input, formatted)
         if ok and punctuation_density(formatted) > density_limit(arguments):
@@ -13609,6 +13677,8 @@ def _proofread_page_inner(
             repaired = restore_merged_characters(sanctioned, formatted)
             if repaired is not None:
                 ok2r, reason2r = verify_characters(sanctioned, repaired)
+                if ok2r and _content_fidelity.feature_losses(repaired, inventory):
+                    ok2r = False
                 if ok2r:
                     formatted, ok = repaired, True
                     reason = "characters restored from the merge after a variant swap"
@@ -13665,8 +13735,8 @@ def _proofread_page_inner(
                     + ("你上一次諗得太耐，喺 token 上限之前冇寫出答案。唔使逐個字再諗，直接對住頁圖輸出。\n"
                        if cut_off else
                        "你上一次交咗個空白答案，一個字都冇寫。直接對住頁圖輸出。\n")
-                    + ("睇頁圖，加版面結構（heading／段落／list／表格），刪走欄外書眉／頁碼。標點原封不動。"
-                       if punct_locked else "睇頁圖，加返句讀同版面結構，刪走欄外書眉／頁碼。"),
+                    + ("睇頁圖，加版面結構（heading／段落／list／表格），保留全部來源覆核後嘅字、數字、算式同符號。標點原封不動。"
+                       if punct_locked else "睇頁圖，加返句讀同版面結構，保留全部來源覆核後嘅字、數字、算式同符號。"),
                     render_bytes, arguments.max_tokens, kind="format-retry")
             else:
                 retry, m = client.ask_answering(
@@ -13681,8 +13751,8 @@ def _proofread_page_inner(
                     "重新編號咗——唔好咁做，重複嘅編號照抄。\n"
                     "如果係標點太密：你差唔多逐個字都加咗符號。返去頁圖數清楚"
                     "真係印咗幾多個，冇印就唔好加。\n"
-                    "如果係刪走咗字：嗰段字兩個 OCR 引擎都讀到，即係頁上真係有。"
-                    "你只准刪欄外書眉同頁碼，正文一個字都唔准刪。表格入面嘅格"
+                    "如果係刪走咗字：本階段收到嘅文字必須保留，唔可以用格式化決定刪字。"
+                    "家具已喺來源覆核處理；表格入面嘅格"
                     "(人名、職銜、籍貫嗰啲)係正文，唔係書眉，照留。\n\n"
                     "重新輸出：加句讀同結構，但一個漢字都唔准加，亦唔准刪正文。",
                     render_bytes, arguments.max_tokens, kind="format-retry")
@@ -13696,6 +13766,8 @@ def _proofread_page_inner(
             ok2, reason2 = ((False, "retry: " + silent_retry) if silent_retry
                             else (False, "retry: " + misplaced) if misplaced
                             else verify_characters(sanctioned, retry))
+            if ok2 and _content_fidelity.feature_losses(retry, inventory):
+                ok2, reason2 = False, "retry lost or displaced an image-confirmed source feature"
             if ok2 and punct_locked and not punctuation_kept(lock_input, retry):
                 ok2, reason2 = False, "retry still changed punctuation"
             if ok2 and punctuation_density(retry) > density_limit(arguments):
@@ -13718,7 +13790,7 @@ def _proofread_page_inner(
                 retry_refusal = reason2 if not ok2 else "the retry answered nothing"
                 rejected_retry = retry[:4000]
         rejected_output = None if ok else formatted[:4000]
-        if ok and tables:
+        if ok and tables and source_table_mapping_current:
             # droppedRuns reports what the formatter dropped, so it is taken
             # on the text the deletion guard passed: enforcement only puts a
             # written table's cells in the recovered order and direction, which
@@ -13757,79 +13829,18 @@ def _proofread_page_inner(
                 doubts.append({"kind": "table-disputed", "detail": (
                     "RECOVERED TABLE LAYOUT DISPUTED: block(s) "
                     + ", ".join(str(layout_index(blocks, table_sources[i])) for i in tables_disputed))})
-        elif punct_locked:
-            # The structure pass failed but the per-block punctuation held: keep
-            # it, one paragraph per block, furniture blocks left out.  A table
-            # block is not furniture here: it becomes the table recovered from it,
-            # or its own text when the table was refused - leaving it out, as this
-            # once did, deleted every table on the page where no check could see
-            # it (droppedRuns leaves table blocks out of its comparison).  The
-            # table stands in only when it holds every character both engines
-            # read in the block; otherwise the block's own text is kept and the
-            # table is recorded missing.  What only engine B read there - its
-            # reading of the folio or of a heading, which restatement places in
-            # no cell (twelve characters on one page, all misreadings) - goes
-            # with the block, and is recorded rather than dropped unseen.
-            recovered_from = {}
-            # A block a rebuilt table took in (D22) counts what its table had
-            # to hold of it (absorbed_held).
-            agreed = [absorbed_held.get(index, text)
-                      for index, text in enumerate(agreed_block_text(blocks, agreed_segments))]
-            left_out = []
-            for position, (index, table) in enumerate(zip(table_sources, tables)):
-                # A rebuilt table's region is its block and the blocks it took in (D22).
-                region = [index] + [j for j, owner in absorbed_into.items() if owner == index]
-                # With the text beside it, as the structure pass was given it.
-                beside = edge_written.get(index, ("", ""))
-                if Counter("".join(agreed[j] for j in region)) - Counter(CJK(table + "".join(beside))):
-                    tables_missing.append(position)
-                    continue
-                recovered_from[index] = "\n\n".join(part for part in (beside[0], table, beside[1]) if part)
-                extra = (Counter(CJK("".join(punctuated[j] for j in region)))
-                         - Counter(CJK(recovered_from[index])))
-                if extra:
-                    left_out.append(f"block {layout_index(blocks, index)}: {''.join(extra.elements())[:20]}")
-            # A block listing entries with leaders, one entry a paragraph
-            # (listed: engine A's lines).
-            writer_text = "\n\n".join(
-                recovered_from.get(index, text.replace("\n", "\n\n") if index in listed else text)
-                for index, (block, text) in enumerate(zip(blocks, punctuated))
-                if absorbed_into.get(index) not in recovered_from and (index in recovered_from or (CJK(text) and (
-                    block["label"] == "table" or block["label"] not in FURNITURE_LABELS))))
-            # Switch --keep-arabic-numerals: a figure written into a block
-            # this leaves out (one with no character: a contents entry's
-            # number on a line of its own) is not in the page.
-            for kept in figures_kept:
-                if kept.get("placed") in FIGURE_IN_BLOCK and not CJK(punctuated[kept["block"]]):
-                    kept["structure"] = "block left out"
-            doubts.append({"kind": "structure-rejected",
-                           "detail": f"STRUCTURE PASS REJECTED: {reason}"
-                                     + (f"; retry refused: {retry_refusal}" if retry_refusal else "")})
-            if tables_missing:
-                doubts.append({"kind": "table-missing", "detail": (
-                    "block text kept instead of the recovered table (the table lacks "
-                    "characters both engines read there): block(s) "
-                    + ", ".join(str(layout_index(blocks, table_sources[i])) for i in tables_missing))})
-            if left_out:
-                doubts.append({"kind": "table-text-left-out", "detail": (
-                    "characters only engine B read in a table block, not in its "
-                    "table, left out: " + "; ".join(left_out))})
         else:
-            # Refuse invented characters; keep the merged text unformatted -
-            # with no block spans in this mode, there is nowhere to put the
-            # recovered tables back, so they are all recorded as missing.
-            writer_text = resolved
-            # Switch --keep-arabic-numerals: the figures the formatter was
-            # given are not in the merged text (characters only).
+            # Keep the latest image-reviewed checkpoint after either formatter
+            # fails.  Reconstructing from punctuated blocks or the older CJK
+            # merge would lose confirmed additions and could reapply stale
+            # source-table mappings.  Final coverage still checks this fallback.
+            writer_text = format_input
             for kept in figures_kept:
                 if "given" in kept:
-                    kept["structure"] = "formatter rejected"
-            doubts.append({"kind": "formatter-rejected", "detail": f"FORMATTER REJECTED: {reason}"
+                    kept["structure"] = "source-recovery fallback"
+            doubts.append({"kind": "structure-rejected" if punct_locked else "formatter-rejected",
+                           "detail": f"FORMATTER REJECTED: {reason}; image-reviewed input preserved"
                            + (f"; retry refused: {retry_refusal}" if retry_refusal else "")})
-            tables_missing = list(range(len(tables)))
-            # The page is the merged text with no marks at all, not a page the
-            # formatter punctuated whole: that doubt no longer describes it.
-            doubts[:] = [d for d in doubts if d["kind"] != "punctuation-whole-page"]
         # Every run of dots the page keeps is 「……」 (D4).  The block passes'
         # and the whole-page formatter's are written so and sealed where they
         # are punctuated; one a structure pass wrote with another number of
@@ -13993,6 +14004,22 @@ def _proofread_page_inner(
                 if unkept else "") if part)
             + " - check the numbers against the image")})
 
+    # Final full-image coverage is after table enforcement and every mechanical
+    # rewrite.  A rejected formatter fallback is still a candidate, never
+    # evidence of full-page coverage.  Unresolved critical losses fail the page
+    # explicitly and cannot be resumed as a completed seal.
+    writer_text, coverage_review = image_review(writer_text, "coverage-review")
+    if not coverage_review["complete"]:
+        raise ProofreadError("full-page coverage unresolved: " + json.dumps(coverage_review, ensure_ascii=False))
+    final_tables = [writer_text[a:b] for a, b in table_spans(writer_text)]
+    table_mapping_current, table_correspondence = _content_fidelity.refresh_table_mapping(tables, final_tables)
+    table_mapping_current = source_table_mapping_current and table_mapping_current
+    if table_mapping_current:
+        tables = final_tables
+    for evidence in table_orientation_evidence:
+        evidence["status"] = ("active" if evidence.get("outputSha256") in
+                              {sha256_bytes(t.encode("utf-8")) for t in final_tables} else "historical")
+        evidence["finalCoverageSha256"] = coverage_review["result_sha256"]
     model_sites = variant_model_sites(disagreements, arguments)
     record: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -14005,6 +14032,9 @@ def _proofread_page_inner(
         "renderFile": str(job.render),
         "auditorClean": not doubts,
         "mode": mode,
+        "pageInventory": inventory,
+        "contentRecovery": content_recovery,
+        "coverageReview": coverage_review,
         "engineDisagreements": disagreements,
         "auditorReport": "; ".join(d["detail"] for d in doubts),
         "doubts": doubts,
@@ -14085,6 +14115,12 @@ def _proofread_page_inner(
         # (table_characters_lost).
         "tableCharactersLost": table_characters,
         "tableOrientation": table_orientation,
+        "tableOrientationEvidence": table_orientation_evidence,
+        "tableMappingCurrent": table_mapping_current,
+        "tableCorrespondence": table_correspondence,
+        "recoveryTableCorrespondence": recovery_table_correspondence,
+        "finalTables": [{"text": table, "sha256": sha256_bytes(table.encode("utf-8")),
+                         "format": "html" if "<table" in table else "markdown"} for table in final_tables],
         # Figures whose group marks were taken from engine B (restate_table).
         "tableFigureGrouping": table_grouping,
         # The label cells asked which way they read, with both answers
@@ -14107,8 +14143,6 @@ def _proofread_page_inner(
         # waitSeconds the time spent queued for a free lane.
         "calls": summarize_calls(ledger),
     }
-    if "\U00016fe6" in writer_text:
-        writer_text = writer_text.replace("\U00016fe6", "。。")
     record["provenance"] = {
         "renderSha256": sha256_file(job.render),
         "draftSha256": sha256_file(job.draft_text),
@@ -14146,8 +14180,28 @@ def seal_page(job: PageJob, markdown: bytes, record: Mapping[str, Any]) -> None:
         job.out_json.write_bytes(canonical_json_bytes(record))
 
 
+class AgentTransportParser(argparse.ArgumentParser):
+    """External model routing always needs an explicit command-line choice.
+
+    Native agent sessions answer packet questions. Ambient HTTP settings must
+    not redirect a skill invocation to a different model or endpoint.
+    """
+
+    def parse_args(self, args=None, namespace=None):
+        arguments = super().parse_args(args, namespace)
+        if arguments.backend == "http":
+            if not arguments.endpoint or not arguments.endpoint.strip():
+                self.error("--backend http requires an explicit --endpoint; PROOFREAD_ENDPOINT is not used")
+            arguments.model = arguments.model or os.environ.get("PROOFREAD_MODEL") or DEFAULT_MODEL
+        else:
+            if arguments.endpoint is not None:
+                self.error("--endpoint requires explicit --backend http")
+            arguments.model = arguments.model or DEFAULT_MODEL
+        return arguments
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = AgentTransportParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("render_directory", type=Path)
@@ -14160,30 +14214,34 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-pair variant-form rulings (default: variant-rulings.json next "
                              "to the profile, if present)")
     parser.add_argument("--draft2-directory", type=Path,
-                        help="a SECOND independent OCR draft dir; where the two "
-                             "engines disagree is the strongest signal available")
+                        help="optional second OCR draft directory for alignment and disagreement checks; "
+                             "both drafts still require whole-image coverage checks")
     selector = parser.add_mutually_exclusive_group(required=False)
     selector.add_argument("--pages", help="comma-separated pages/ranges, e.g. 1,3-5")
     selector.add_argument("--first-page", type=int)
     parser.add_argument("--last-page", type=int)
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
-                        help=f"pages in flight (default {DEFAULT_WORKERS}; match the server's --max-concurrency)")
+                        help=f"pages processed concurrently (default {DEFAULT_WORKERS}); "
+                             "packet answers may be supplied sequentially or by optional workers")
     parser.add_argument("--backend", choices=("packet", "http"),
-                        default=os.environ.get("PROOFREAD_BACKEND", "packet"),
+                        default="packet",
                         help="model transport: 'packet' (default) writes checkpoint-replay wave bundles "
-                             "for session subagents and exits 10 until answered; 'http' calls --endpoint")
+                             "for the invoking agent or optional workers and exits 10 until answered; "
+                             "'http' requires an explicit --endpoint")
     parser.add_argument("--packets-dir", type=Path, default=None,
                         help="packet checkpoint directory for --backend packet "
                              "(default: <output_directory.parent>/packets)")
     parser.add_argument("--max-bundles", type=int,
                         default=int(os.environ.get("PROOFREAD_MAX_BUNDLES") or 8),
-                        help="maximum subagent bundle files per wave in --backend packet (default 8)")
+                        help="maximum question bundle files per wave in --backend packet (default 8)")
     parser.add_argument("--table-orientation", choices=("auto", "as-printed"),
                         default=os.environ.get("PROOFREAD_TABLE_ORIENTATION", "auto"),
                         help="table orientation policy: 'auto' (default) puts vertical-column records into "
                              "logical rows; 'as-printed' keeps the printed row/column grid without transposing")
-    parser.add_argument("--endpoint", default=os.environ.get("PROOFREAD_ENDPOINT", DEFAULT_ENDPOINT))
-    parser.add_argument("--model", default=os.environ.get("PROOFREAD_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--endpoint", default=None,
+                        help="explicit HTTP endpoint; required with --backend http (no environment fallback)")
+    parser.add_argument("--model", default=None,
+                        help="HTTP model or packet provenance label; PROOFREAD_MODEL applies only to explicit HTTP")
     parser.add_argument("--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", DEFAULT_EFFORT),
                         help=f"low|medium|xhigh, or 'none' to omit (default {DEFAULT_EFFORT})")
     parser.add_argument("--max-tokens", type=int, default=16000)
@@ -14377,13 +14435,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.variant_rulings:
             raise ProofreadError(f"variant rulings do not exist: {rulings_path}")
         arguments.variant_rulings = arguments.variant_rulings_data
-        if arguments.profile_data is None:
+        if arguments.profile_data is None and drafts2 is not None:
             raise ProofreadError(
                 "no engine preference: which OCR engine reads a book better differs from "
                 "book to book, so measure it first - run scripts/book_profile.py "
                 f"RENDER_DIR DRAFT_DIR DRAFT2_DIR {drafts.parent / 'book-profile.json'}")
-        arguments.prefer_engine = arguments.profile_data.get("preferEngine") or "adjudicate"
-        preference_source = f"profile {profile_path.name}"
+        arguments.prefer_engine = (arguments.profile_data or {}).get("preferEngine") or "adjudicate"
+        preference_source = (f"profile {profile_path.name}" if arguments.profile_data is not None else
+                             "single-engine image transcription; no engine calibration")
         # When the profile could not state a preference, budget overflow and
         # unusable verdicts still need an engine: the probe's leader.
         votes = (((arguments.profile_data or {}).get("engines") or {}).get("decision") or {}).get("pairVotes") or {}

@@ -11,10 +11,11 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts"
+SCRIPTS = ROOT / "scripts"
 RAW_TEXT = "  輙與弑\n\n[原書符號]  \n"
 
 FAKE_SERVER = r'''
@@ -25,6 +26,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--port', type=int)
 parser.add_argument('--alias')
 a, _ = parser.parse_known_args()
+if os.environ.get('FAKE_ARGV_FILE'): Path(os.environ['FAKE_ARGV_FILE']).write_text(json.dumps(sys.argv[1:]))
 log = Path(os.environ['FAKE_LOG'])
 def record(event):
     label = os.environ.get('FAKE_LABEL')
@@ -110,7 +112,7 @@ class LocalOCRTestBase(unittest.TestCase):
         self.env = dict(os.environ, FAKE_LOG=str(self.log))
         for key in ('HUNYUAN_MODEL', 'HUNYUAN_MMPROJ', 'HUNYUAN_LLAMA_SERVER',
                     'HUNYUAN_ENDPOINT', 'OCR_PHASE_DEADLINE', 'OCR_PHASE_PROGRESS',
-                    'PADDLEOCR_PYTHON', 'PADDLEOCR_MODEL_REVISION'):
+                    'PADDLEOCR_PYTHON', 'PADDLEOCR_MODEL_REVISION', 'OCR_HUNYUAN_DEVICE'):
             self.env.pop(key, None)
         self.queue_dir = self.base / 'gpu-queue'
         self.env['OCR_GPU_QUEUE_DIR'] = str(self.queue_dir)
@@ -156,6 +158,55 @@ class LocalOCRTestBase(unittest.TestCase):
 
 
 class LocalOCRCLITest(LocalOCRTestBase):
+    def test_device_policy_controls_decoder_and_projector_and_invalidates_resume(self):
+        argv_file = self.base / 'argv.json'
+        for device, selector, layers, projector in (
+            ('cpu', 'none', '0', '--no-mmproj-offload'),
+            ('cuda', 'CUDA0', '99', '--mmproj-offload'),
+            ('metal', 'MTL0', '99', '--mmproj-offload'),
+        ):
+            with self.subTest(device=device):
+                result, report = self.run_cli(
+                    'hunyuan', ['--pages', '1', '--device', device, '--overwrite'],
+                    env=dict(self.env, FAKE_ARGV_FILE=str(argv_file)))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = json.loads(argv_file.read_text())
+                self.assertEqual(args[args.index('--device') + 1], selector)
+                self.assertEqual(args[args.index('--mmproj-device') + 1], selector)
+                self.assertEqual(args[args.index('--n-gpu-layers') + 1], layers)
+                self.assertIn(projector, args)
+                self.assertIn('--no-kv-offload' if device == 'cpu' else '--kv-offload', args)
+                profile = report['ocrProfile']['deployment']['executionProfile']
+                self.assertEqual(profile['requestedDevice'], device)
+                self.assertEqual(profile['effectiveDevice'], device)
+                self.assertEqual(profile['projectorOffload'], device != 'cpu')
+                other = 'cpu' if device != 'cpu' else 'cuda'
+                stale, stale_report = self.run_cli('hunyuan', ['--pages', '1', '--device', other])
+                self.assertEqual(stale.returncode, 1)
+                self.assertEqual(stale_report['counts']['blocked'], 1)
+
+    def test_fresh_slot_default_and_existing_environment_override(self):
+        sys.path.insert(0, str(SCRIPTS))
+        import run_hunyuanocr as hy
+        import run_hunyuanocr_second_look as second
+        for module, positional in ((hy, ['renders', 'drafts']), (second, ['renders', 'a', 'b'])):
+            with self.subTest(runner=module.__name__):
+                with mock.patch.dict(os.environ, {}, clear=True):
+                    args = module.build_parser().parse_args(positional)
+                    self.assertEqual(args.server_slots, 1)
+                    self.assertEqual(args.device, 'auto')
+                with mock.patch.dict(os.environ, {'OCR_HUNYUAN_SLOTS': '16', 'OCR_HUNYUAN_DEVICE': 'cpu'}, clear=True):
+                    args = module.build_parser().parse_args(positional)
+                    self.assertEqual(args.server_slots, 16)
+                    self.assertEqual(args.device, 'cpu')
+
+    def test_projector_environment_change_invalidates_existing_draft(self):
+        result, _ = self.run_cli('hunyuan', ['--pages', '1'], env=dict(self.env, MTMD_BACKEND_DEVICE='CUDA0'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result, report = self.run_cli('hunyuan', ['--pages', '1'], env=dict(self.env, MTMD_BACKEND_DEVICE='none'))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report['counts']['blocked'], 1)
+
     def test_hunyuan_selected_pages_raw_preserved_owned_server_closed_and_resume(self):
         result, report = self.run_cli('hunyuan', ['--pages', '1,3'])
         self.assertEqual(result.returncode, 0, result.stderr)

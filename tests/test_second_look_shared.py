@@ -13,7 +13,7 @@ import zlib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = (
-    REPO_ROOT / "plugins" / "jyut-ocr-proofread" / "skills" / "jyut-ocr-proofread" / "scripts"
+    REPO_ROOT / "scripts"
 )
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -203,10 +203,11 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
 
             class FakeSharedClient:
                 calls = 0
+                configs = []
                 report = {"mode": "shared-local-server", "acquired": True}
 
                 def __init__(self, **_kwargs):
-                    pass
+                    self.configs.append(_kwargs['config'])
 
                 def ocr(self, _crop_path: Path, _max_tokens: int, _timeout: float):
                     FakeSharedClient.calls += 1
@@ -274,6 +275,25 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
             self.assertEqual(FakeSharedClient.calls, 1)
             rep2 = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(rep2["counts"]["skippedCurrent"], 1)
+            self.assertEqual(updated_json['secondLook']['profile']['executionProfile']['requestedDevice'], 'auto')
+
+            # A changed execution policy must reread instead of reusing the old
+            # completion seal, and both paths must identify the same profile.
+            with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+                rc3 = sl.main([
+                    str(renders), str(ocr_a), str(ocr_b), '--server-mode', 'shared',
+                    '--model', str(fake_model), '--mmproj', str(fake_mmproj),
+                    '--llama-server', str(fake_bin), '--report', str(report_path),
+                    '--device', 'cpu',
+                ])
+            self.assertEqual(rc3, 0)
+            self.assertEqual(FakeSharedClient.calls, 2)
+            self.assertEqual(FakeSharedClient.configs[-1]['device'], 'cpu')
+            rep3 = json.loads(report_path.read_text(encoding='utf-8'))
+            self.assertEqual(rep3['counts']['skippedCurrent'], 0)
+            updated3 = json.loads((ocr_b / 'page-0001.json').read_text(encoding='utf-8'))
+            self.assertEqual(updated3['secondLook']['profile']['executionProfile']['effectiveDevice'], 'cpu')
+            self.assertNotEqual(updated_json['secondLook']['profileSha256'], updated3['secondLook']['profileSha256'])
 
 
 if __name__ == "__main__":

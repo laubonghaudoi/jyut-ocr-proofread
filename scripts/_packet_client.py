@@ -28,6 +28,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import tempfile
 import threading
@@ -499,9 +500,10 @@ class PacketClient:
                 "bundle_count": len(buckets),
                 "request_ids": wanted_ids,
                 "bundles": bundle_summaries,
-                "apply_command": (
-                    f"python3 scripts/apply_packet_answers.py {self.packets_dir} {wave_dir}"
-                ),
+                "apply_command": shlex.join([
+                    sys.executable, str(Path(__file__).with_name("apply_packet_answers.py").resolve()),
+                    str(self.packets_dir), str(wave_dir),
+                ]),
             }
             _atomic_write_bytes(
                 wave_dir / "manifest.json",

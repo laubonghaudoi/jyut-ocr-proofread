@@ -1,14 +1,34 @@
 # Subagent orchestration contract
 
-Use this contract when one historical Chinese PDF is split among multiple LLM
-agents. It supplements the normal proofreading rules; it does not lower the
-requirement to treat the PDF image as the text authority.
+Use this contract when splitting one historical Chinese PDF into assignments,
+answering packet bundles, or requesting independent review. It supplements the
+normal proofreading rules; the PDF image remains the text authority. Custom
+agent registrations are optional. Logical roles can use generic workers with
+complete assignments, and writer/packet tasks can run sequentially in the main
+session when no child-agent facility is available.
 
 The invoking session's agent model performs intelligent proofreading and final
 content review. Writers and auditors follow that session's effective model
 policy, subject to explicit user/platform overrides; the skill pins no model ID.
 Choosing a local OCR draft backend never selects a separate proofreading model
 or requires a local Qwen/NInfer service.
+
+## Capability routing
+
+The current model must be able to inspect the supplied original page images and
+crops. A text-only worker must return the work as pending rather than infer a
+visual decision from OCR. File access, script execution and any required audit
+capabilities must likewise be checked before claiming completion.
+
+Parallelism is optional. A single writer may finish all scan ranges or packet
+bundles in sequence, retaining the same ownership, coverage and sealing rules.
+A second pass by that writer is self-review, not independent review. If the
+selected profile or project requires independence, pass the sealed candidate to
+a distinct reviewer in another read-only session or to an independent human
+with read-only candidate access. Until that review is available, preserve the
+candidate and an explicit pending audit; do not silently reduce the requirement.
+Platform role names, invocation tools and sandbox syntax belong in the optional
+`adapters/` documentation, not in the logical role contract.
 
 ## Two separate kinds of parallelism
 
@@ -19,9 +39,10 @@ or requires a local Qwen/NInfer service.
   has no model or reasoning setting, and its draft output never becomes text
   authority. Do not spend LLM-agent slots merely to wrap identical Vision
   processes.
-- On Ubuntu/Linux, the main agent runs HunyuanOCR for drafts and optionally
-  PaddleOCR-VL for selected scans. These are GPU models: on a single GPU, run
-  one OCR backend at a time, with one persistent server/worker. Do not apply
+- The main agent runs the configured HunyuanOCR or Apple Vision backend, and
+  optionally PaddleOCR-VL for selected scans. Hunyuan can use CPU, CUDA or Metal;
+  its runs use the configured resource queue and one persistent server/worker
+  for a given backend identity. Do not apply
   the Vision process-pool limit to them, and do not let children start OCR
   backends or stop shared inference services. See `local-ocr.md`.
 - Keep concurrently active LLM children at or below
@@ -33,8 +54,9 @@ or requires a local Qwen/NInfer service.
 The main agent owns range partitioning and final assembly. Before a child
 starts, give it one complete assignment containing:
 
-1. a unique assignment ID and exactly one role:
-   `jyut-ocr-segment-writer` or `jyut-ocr-visual-auditor`;
+1. a unique assignment ID and exactly one logical role: segment writer,
+   packet worker, or independent visual auditor; no registered platform role
+   name is required;
 2. the exact source PDF path, its SHA-256, and the in-scope PDF scan count;
 3. an inclusive owned scan range or explicit scan set, plus the adjacent
    boundary-context scans that may be read but not written;
@@ -88,20 +110,31 @@ Any byte change after sealing invalidates that candidate and every audit based
 on it. The main agent must designate one writer, produce a new SHA-256 seal, and
 send the affected scans and boundary context to a different auditor again.
 
-## PacketClient wave bundle lifecycle (dual-OCR scripted pipeline)
+## PacketClient wave bundle lifecycle
 
-When dual-OCR alignment and crop preparation run through `book_profile.py` and
-`proofread_pages.py --backend packet`, deterministic Python settles agreed text
-first and emits compact work bundles (`packets/wave-NN/bundle-XX.json` plus PNG
+For a single genuine OCR draft, run `proofread_pages.py --backend packet`
+without a second draft or a book profile. For two genuine drafts, measure
+`book_profile.py` first, then pass that profile and both draft directories to
+the same packet pipeline. Never copy one draft to fabricate independent engine
+evidence. Both routes emit compact work bundles (`packets/wave-NN/bundle-XX.json` plus PNG
 crops under `packets/crops/`).
 
-1. The main agent dispatches at most `min(runtime child slots, 8)` concurrent
-   workers (`jyut-ocr-segment-writer` in Codex/Claude Code, or `invoke_subagent`
-   inheriting the session model in Antigravity), assigning each worker one
-   mutually exclusive input `bundle-XX.json` (with its SHA-256) and one output
-   `packets/wave-NN/answers-XX.json`.
+1. The main agent assigns at most `min(runtime child slots, 8)` concurrent
+   generic packet workers, or processes the bundles itself sequentially. Each
+   assignment owns one input `bundle-XX.json` (with its SHA-256) and one output
+   `packets/wave-NN/answers-XX.json`. A registered custom role is optional; model
+   settings follow the invoking session's effective policy.
 2. Each worker inspects the exact PNG crop (or full-page render for `format`
    items) referenced by each request in its bundle:
+   - `page-inventory`: inspect the complete page before accepting even a blank
+     draft; return the requested JSON with visible regions, boxes and printed
+     features. Include sparse text, Latin/numerals, tree labels and note
+     apparatus. Agreement between drafts is not evidence of completeness.
+   - `content-recovery` / `coverage-review`: compare every inventoried region
+     with the current candidate and full-page image. Return the exact JSON
+     contract, current candidate hash and uniquely located edits. Recover
+     only visible content; mark uncertain readings explicitly. Never infer a
+     missing call from the presence of a note definition or a numbering run.
    - `adjudicate`: read the highlighted glyph spot directly from the crop and
      follow the prompt's answer format (`字: ...`).
    - `table-rebuild`: rebuild the table from the crop using every `required`
@@ -111,10 +144,14 @@ crops under `packets/crops/`).
      tile (`census`) and insert those exact marks into the locked character
      span (`punctuated`) without adding, deleting, or swapping any character.
    - `orient-table` / `cell-direction` / `notation`: answer the exact structural
-     or notation question from the supplied crop/grid.
+     or notation question from the supplied image and current grid. Cell
+     direction needs the exact row/column locator and visual evidence; a
+     plausible word or a matching arithmetic total does not authorize reversal.
    - `format`: add Markdown structure (headings, paragraphs, lists, tables) and
      remove margin running heads/folios while keeping every locked character,
-     locked punctuation mark, and `⟦Tn⟧` table placeholder intact.
+     locked punctuation mark, source-confirmed number/formula/item label and
+     `⟦Tn⟧` table placeholder intact. Printed list numbers remain content when
+     adding a bullet prefix.
 3. Each worker writes only its assigned `answers-XX.json`, computes its SHA-256,
    reports the answered `request_id` count, and enters **STOP-WRITE**
    immediately. Workers never touch `packets/answers.jsonl` or `page-NNNN.md`.
@@ -125,17 +162,27 @@ crops under `packets/crops/`).
    `punctuation_pass_ok`, `deleted_runs`) and advance to the next wave or seal
    `page-NNNN.md` + `page-NNNN.json`.
 
+The full-page inventory, pre-format recovery and final coverage review are
+bounded steps, not an open-ended correction loop. Invalid or unresolved
+coverage cannot become a complete page seal. Compatible old packet answers may
+replay only under their unchanged content-addressed requests; new image,
+candidate or question contracts require fresh answers. See
+`content-fidelity.md` for measurement and source-preservation requirements.
+
 ## Independent visual auditor lifecycle
 
-The auditor must be a different agent from the writer and is read-only. It must
+The auditor must be a different reviewer from the writer and is read-only. An
+independent human or a separate agent/session can fill this logical role. It must
 not patch the candidate, use shell redirection to change it, or generate a
 replacement segment.
 
-Before spawning it, the main agent must confirm that the platform's effective
-permission/sandbox mode is still read-only. A live parent `yolo`, bypass, or
-other broader runtime override can supersede an adapter default; an agent
-started under such an override does not qualify as the read-only auditor in
-this contract. Start the audit in an effective read-only/plan turn instead.
+Before assigning it, confirm that the reviewer has effective read-only access
+to the sealed candidate and source evidence. For an automated auditor, verify
+actual permissions rather than relying on a prompt or adapter declaration;
+a broader runtime override can invalidate the claimed isolation. If the
+platform cannot provide that capability, request review through another
+read-only session or independent human, and leave the gate pending meanwhile.
+The reviewer returns findings to the main agent, which owns evidence storage.
 
 1. Recompute the candidate SHA-256 and reject drift from the writer's seal.
 2. Verify the source and render hashes, then inspect 100% of the assigned scans
@@ -168,8 +215,10 @@ Before assembly, the main agent must verify that:
 - writer-owned scan sets are mutually exclusive and together cover the intended
   scope;
 - every current segment byte-matches its writer seal;
-- every segment has a passing audit from a different agent, with 100% owned
-  scans plus the required boundary context accounted for;
+- where independent review is required, every segment has a passing audit
+  from a distinct reviewer, with 100% owned scans plus the required boundary
+  context accounted for; self-review is recorded separately and cannot satisfy
+  that gate;
 - no writer remains active or may still modify a sealed segment; and
 - cross-segment boundaries, marker order, structure, and unresolved findings
   are reconciled.

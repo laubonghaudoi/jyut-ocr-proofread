@@ -1,5 +1,23 @@
 # 更新摘要
 
+## Unreleased — 通用技能與跨平台安裝
+
+- 將唯一技能來源移到 repo 根目錄，保留 `SKILL.md`、`scripts/`、`references/` 同可選 metadata；移除 Codex plugin／marketplace 包裝。更新現行文件、相對引用、安裝入口及測試，保留既有內容完整性修正。
+- 新增 `install.sh` 統一入口，分開技能安裝、可選 custom-agent adapters 同 OCR 環境初始化；區分 Gemini CLI／Antigravity 位置，支援指定技能集合目錄、只讀檢查、備份及舊版 manifest 復原。
+- 固定 Hunyuan BF16 模型／projector 同 llama.cpp commit；Linux／WSL2 支援 CUDA／CPU，macOS 可選 Vision 或 Hunyuan Metal／CPU。獨立 venv、下載校驗及實際單頁 OCR smoke 決定就緒狀態，新環境預設一個 slot，保留已有配置。
+- 核心按讀圖、檔案、腳本同可選子 agent 能力選流程；普通 worker／順序執行毋須安裝特定角色。校對明確使用 packet，外部 HTTP 服務須顯式選擇；同一 writer 重讀唔當成獨立審核，人工標註介面係可選整合。
+- 新增真實單引擎嘅免 profile packet 校對及 `finish_book.py --single-engine --ocr-a` 定稿入口；唔偽造第二底稿，唔跑依賴雙引擎嘅 repair，跨頁接續疑點同工作證據保留。
+- 跨平台支援、fake-runtime 測試、真實引擎 smoke 同各 agent 技能發現分開驗證；唔以安裝／搬遷成功宣稱 CER 改善。
+
+## Unreleased — 2026-11-12
+
+- 表格方向改用原頁與格位證據，檢查右側標題格；`auto` 代表邏輯紀錄方向，`as-printed` 只保留物理格網。未知軸向／紀錄先後唔再按合計或者語意猜定，單行／單列表頭亦須有圖像依據。
+- 加完整頁圖區域普查、排版前內容補讀及排版後 coverage 覆核，涵蓋兩底稿同漏、零漢字頁、數字／外文、算式、原印項號與註號。補讀綁定當前候選及原圖；未解覆蓋問題唔封成完成頁。
+- 跨頁表格發現夾住嘅註文、續表題名及未知正文，嚴格檢查同表證據、相鄰頁、方向政策及精確表頭；保留註文與題名，模糊歸屬留待核圖，同欄數本身唔授權拼接。
+- 共用受限數字註號 parser，識別數字上標、全形數字及巢狀圓圈包裝，保留原號；數學式、普通列項、損壞包裝同 HTML 表內未能安全配對嘅註號唔自動升格成 Markdown 腳註。
+- 新增合成正反例同內容完整性驗證指引；程式測試、實書核圖與同條件識別錯誤率比較分開報告，唔將測試通過當成準確率改善。
+- 修正測試發現嘅 Hunyuan broker 原有啟動競態：首個子程序釋放 owner lock、但未退出時唔再重複啟動，保留原程序退出碼及日誌錯誤。
+
 ## Unreleased — 2026-11-11
 
 - 新增 checkpoint-replay 批次問答傳輸層（`_packet_client.py` 同 `apply_packet_answers.py`）：`book_profile.py` 同 `proofread_pages.py` 預設採用 `--backend packet`（`EXIT_PACKETS_PENDING = 10`），將雙底稿異字裁決、融合式 `census+punctuate` 標點切片、表格重建同整頁結構排版自動去重打包成 `wave-NN/bundle-01..KK.json`，交由 Antigravity／Codex／Claude Code 嘅並行 subagent 批次作答；重跑時 `0ms` 重播並通過所有確定性校驗（`verify_characters`、標點計數、表格字元校驗），同時保留 `--backend http` 兼容本機 OpenAI 介面端點。

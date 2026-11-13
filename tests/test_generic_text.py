@@ -24,7 +24,10 @@ class GenericTextTests(unittest.TestCase):
             REPO_ROOT / "README.md",
             REPO_ROOT / "CHANGELOG.md",
             REPO_ROOT / "adapters",
-            REPO_ROOT / "plugins",
+            REPO_ROOT / "SKILL.md",
+            REPO_ROOT / "references",
+            REPO_ROOT / "agents",
+            REPO_ROOT / "docs",
             REPO_ROOT / "scripts",
         ]
         violations: list[str] = []
@@ -53,10 +56,6 @@ class GenericTextTests(unittest.TestCase):
     def test_variant_equivalents_is_valid_json_without_book_titles(self) -> None:
         variant_path = (
             REPO_ROOT
-            / "plugins"
-            / "jyut-ocr-proofread"
-            / "skills"
-            / "jyut-ocr-proofread"
             / "references"
             / "variant-equivalents.json"
         )

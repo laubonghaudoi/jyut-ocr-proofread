@@ -1,251 +1,97 @@
 # 粵文 OCR 校對
 
-呢個係一份跨 Antigravity（Gemini）／Codex／Claude Code 嘅 Agent Skill，亦包裝成 Codex plugin，用嚟按同名 PDF 或掃描頁圖忠實轉寫及校對歷史中文 OCR Markdown；流程基於 `jyut-ocr` repo 嘅校對守則。
+一份通用 [Agent Skill](https://agentskills.io/specification)，用原掃描圖像將歷史中文 PDF 忠實轉錄、校對成 Markdown。Repo 根目錄就係技能目錄：`SKILL.md`、`scripts/` 同 `references/` 只有一份，Codex、Claude Code、Gemini CLI、Antigravity 或其他支援技能嘅 agent 都可以載入。
 
-plugin 會安裝一個 skill：`jyut-ocr-proofread`。同一個 canonical skill directory 可以由 Antigravity、Codex 同 Claude Code 共用；skill body 同 bundled OCR rules 都用粵文寫，令 agent 處理 OCR 校對時直接讀到同 repo 指示一致嘅工作語言。
+**智能校對由調用技能嘅當前 agent 模型負責。** HunyuanOCR、Apple Vision 同按需使用嘅 PaddleOCR-VL 只提供底稿。Agent 要能直接讀原頁／裁圖、讀寫工作檔及執行所需腳本；唔需要指定模型、外部校對 API key 或 custom-agent adapters。冇子 agent 時可以順序完成；同一 writer 重讀唔算獨立審核。
 
-**智能校對層使用調用技能嘅當前 agent 模型**：Antigravity／Gemini CLI session 由當前 Gemini 模型核圖同審核，Codex session 由當前 Codex 模型做，Claude Code session 由當前 Claude 模型做；subagent 預設沿用 session 嘅有效模型設定。HunyuanOCR、PaddleOCR-VL 同 Apple Vision 只提供底稿。本技能可裝喺其他電腦，唔依賴固定 Qwen 校對模型、NInfer、RTX 5090 或 `jyut-ocr-qwen` checkout；OCR 執行環境同路徑由各機自行配置。
+## 安裝
 
-## 佢會做咩
-
-- 以 PDF／原掃描圖像作最終依據；支援 PDF（`survey_pdf.py`）同固定掃描頁資料夾（`survey_pdf.py --images-dir`，`source_kind: "images-dir"`）；
-- 先揀 `basic`、`structured` 或 `release` profile，再按文件實際特徵啟用 notation、題名註、長目錄、表格等專項 gate；
-- 保留原書字形、異體字、舊字形同舊式標點；雙圈句號統一寫 `。。`，正文與 Markdown 表格內字面星號寫 `\*`；
-- 按原圖同交付範圍移除重複導航家具、OCR notice，保留範圍內一次性出版／承印／來源資料；預設唔裁走圖版內文字（`--extract-figures` 為顯式 opt-in）；
-- 支援雙引擎底稿對齊（`run_paddleocr_vl.py`＋`run_hunyuanocr.py`＋`run_hunyuanocr_second_look.py`）、`book_profile.py` 同 `proofread_pages.py` 三階段 `PacketClient` checkpoint-replay（預設 `--backend packet` 由當前 session 嘅 Agent／平行 Subagents 批次睇裁圖回答並經 `apply_packet_answers.py` 寫入，每步受 `verify_characters` 字元集鎖定與標點計數守門保護）；
-- 支援跨頁表格非破壞性縫合（`stitch_tables.py --output-dir`）、原印表格方向鎖定（`--table-orientation as-printed`）、全書決定論修書（`repair_book.py`）同定稿（`finish_book.py`：預設保留原印註號如 `[^240]` 及頁底原位定義，支援同頁局部配對與跨頁孤立註號回溯）；
-- 先讀本書凡例，分清 OCR confidence bracket 同原書訂正／增補／缺損符號；
-- Apple Vision 底稿可以用最多八個本機 process 並行，安全續跑並保存逐頁 hash／run report；
-- 單一長書可以按頁段寫入獨立 segment 或並行處理 packet 批次，再由主 agent 驗證交界同統一合併；
-- Antigravity／Codex／Claude Code 可以用同一份角色 contract 分派 segment writer／packet worker 同 read-only visual auditor；LLM worker 依平台有效 model-resolution chain 揀模型，Apple Vision process 本身無 LLM model；
-- 分辨 PDF scan page 同書內 printed page，記錄旋轉、spread、重複掃描同真正缺頁；
-- 分開對賬長目錄條目、分組、TOC-eligible 正文題名、原書頁碼差異同高風險異文；合訂本可明定分冊 scope，而範圍外項目仍有 disposition；
-- 人工核對題名尾端星號同來源題注 ownership，另用 deterministic auditor 檢查 item-level arity 同跨頁 hazard；
-- `structured` 工作用 project-local review 記錄同 annotated＋boundary exact reconstruction 封關；只有要求可重播交付時，先用 canonical late-amendment ledger 同 dependency graph 重建 stale evidence；
-- 用 bundled scripts 重播 ordered segments，並檢查 page marker、跨頁黐行、tight list、table 欄數、成對標點、Markdown 結構、final residue；`release` profile 再驗完整 evidence closure 同 stale assembly；
-- 長文或 final pass 時載入更完整嘅粵文 `jyut-ocr` 校對 reference。
-
-## 泛化原則
-
-- 書名、頁碼、人名、地名、頁面家具、單一來源句式同版次符號全部留喺 project-local policy／ledger／profile，唔 hard-code 入 plugin。
-- 一本書出現一次嘅問題先記做 candidate lesson；只有跨互不相關材料重現，或者揭示格式無關嘅資料遺失、fail-open、hash／provenance／安全問題，先更新核心。
-- 每本書重新核實字形、標點、版面同引擎漏讀；語法、套語、引擎一致或字串重複只產生核圖線索，唔直接決定改字、黐段、拆 heading 或刪重。
-- 核心 regression tests 用最小 synthetic 正反例；實書作外部 forward test，記錄覆蓋範圍，但唔將書名、實頁碼或大段原文寫入技能規則。未做跨材料驗證，唔以規則更新或 audit clean 聲稱準確率已提升。
-
-## Unreleased 本機更新
-
-- 新增雙引擎決定論對齊、三階段 `PacketClient` 批次裁圖協定（`--backend packet`＋`apply_packet_answers.py`）、跨頁表格縫合（`stitch_tables.py`）、全書決定論修書（`repair_book.py`）同定稿流水線（`finish_book.py`）：唔需要本機 Qwen 或外部付費 API key，直接由 Antigravity／Codex／Claude Code 當前 session 嘅 Agent 與平行 Subagents 批次處理裁圖任務，並由 `verify_characters` 嚴格鎖定字元集。
-- 新增 `survey_pdf.py`（支援 PDF 及 `--images-dir` 無 PDF 圖片目錄）、`run_hunyuanocr_second_look.py`（共用 `SharedHunyuanClient` 同 `GPUQueue`，短檔 `<3` 頁自動保護邊欄文字）、`--table-orientation {auto,as-printed}`、預設保留原印腳註編號（如 `[^240]`）與頁底位置（`--renumber-footnotes`、`--relocate-footnotes`、`--extract-figures` 均改為顯式 opt-in），以及字面 `\*` 跳脫同 `U+16FE6 -> 。。` 正規化。
-- 本機 Hunyuan 預設自動加入跨 session 共用服務：一份模型、有限並行頁面、按 session 輪流分派；單個 session 中斷唔影響其他書，最後 client 離開後卸載並釋放 GPU。Paddle／不同模型設定仍按 FIFO 接棒，唔等 agent 校對。可設 server slots／每書 workers，保留 dedicated 模式；部署配置見 [本機 OCR 指引](plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/references/local-ocr.md)。
-- 收窄舊文類例詞、句法黐段、套語拆 heading 同家具刪除規則；加入兩引擎皆錯、錯位裁圖、真重複文字、標點漏／增等核圖原則。規則網格用 Markdown，合併格可用 HTML 並另驗格位／渲染；完整 release 步驟移到專用 reference，保留既有證據契約。
-- 新增平台中立 `subagent-orchestration.md`，將 writer／packet worker assignment、互斥寫入、candidate seal、read-only independent audit、late-patch 重核同最多八個 LLM child 嘅規則集中成一份 contract。
-- 新增 Codex TOML 同 Claude Code Markdown adapters，並擴充 `scripts/install_local_adapters.py` 同時支援 Antigravity／Gemini（`~/.gemini/config/skills/jyut-ocr-proofread`）、Codex 同 Claude Code 共 7 個本機安裝目標，支援完整備份與 fail-closed `--restore`。
-
-## 0.2.5 更新重點
-
-- 新增 `audit_title_notes.py`，逐 main item 核對題名 `*`／`**` 同題注 marker arity，列 missing／orphan 同跨頁 note hazard。任何語言嘅 note→running-body transition 都預設 fail closed；只可由 project-local、綁定目前 target／boundary hash 同逐項視覺證據嘅 transition review 放行，逐 heading ownership 仍由人核圖。
-- 新增 `build_notation_inventory.py`，封存目前 annotated target、凡例 authority、可選 project literal profile、generator toolchain／invocation profile，同通用 residual symbols 嘅 scan provenance；metadata、code、單行 HTML comments 同 Markdown links 唔當來源 notation，星號題名註亦只喺明確啟用時 inventory。
-- 新增 strict `validate_review_evidence.py`，統一 late-amendment status、current hashes、非空而相異嘅 before／after rows、render／evidence、writer／independent verifier 同 changed＋neighbor scan coverage；before／after 嘅內容關係仍由 reviewer 證明。
-- 新增 `plan_release_rebuild.py`，找 direct hash drift／可由 discovery 重建嘅 missing artifacts，再沿 reverse dependencies 傳播 transitive staleness，輸出 dependency-first rebuild order；scope 外 missing path 直接 invalid，JSON output 亦唔可 alias plan、declared artifacts 或工具，clean／stale／invalid 有獨立 exit status。
-- 補跨冊 evidence import 規則：byte-identical renders 仍要封 upstream receipt、scan mapping、review coverage 同 projection→amendment→current hash chain；亦明確分開 annotated-only 同 final audit CLI options。
-- 衍生報告封 generator toolchain hash 同 invocation profile；要令 planner 偵測工具/schema 升級，release plan 亦要封 project-local tool snapshot 同 typed dependency。
-- 技能新增明確泛化門檻：單一材料嘅書名、頁碼、專名、符號同來源句式留喺 project contracts；核心只吸收跨無關材料重現嘅失效類型，或者格式無關嘅資料遺失、fail-open、hash／provenance／安全問題。Regression tests 只用 synthetic fixtures；實書只作外部 forward test。
-
-## 0.2.4 更新重點
-
-- 長目錄對賬新增 `reconciliation_scope` 同 partitions，分開「全書目錄」同「本次交付正文」，所有範圍外條目要有明確 disposition。
-- Release sidecars 改用 typed evidence graph，明分 active／historical／superseded；active provisional／failing artifact、失效 supersession、依賴環同未封存 closure 都會阻止交付。
-- 新增 deterministic segment assembler，按 ordered manifest 重播 combined annotated；除咗 byte-for-byte 同連續 ranges，亦將實際 markers 同 sealed page manifest 嘅 `marker_expected` exact 對賬。
-- 新增 `release-plan.json` validator，要求每個發現嘅 artifact 都係 `include`，或者 `exclude` 並寫理由；同時核對 reconciliation partitions 同 canonical subset hashes。
-- Finalizer 寫 schema v2 receipt 時必須帶已驗證 `--release-plan`，用唯一 `release-plan` role 封存 pre-final active closure；final audit 會重驗目前 plan 同 exact closure，legacy v1 receipt 唔可以通過 final gate。Final／receipt／post-final audit 另屬第二層 bundle，唔回餵舊 receipt。
-- Annotated audit 會即時核對 page manifest marker policy，但唔接受 notation policy 豁免；來源符號可記為 known issue，只有 final mode 先 exact accept。Notation policy 已擴充至多種來源符號，audit 亦可用 `--json-report` 保存 tool hash 同穩定 QA 報告。
-- Page manifest 專責 source/render、scan facts 同 marker policy；boundary contract 同 independent review evidence 分開封存，唔靠 page manifest 一個 status 欄代替。
-
-## 0.2.3 更新重點
-
-- 每個 TOC scan 先建立末端印刷頁碼 inventory；保存 OCR 將頁碼黐入題名／日期嘅 recovery，並獨立逐頁核對全部引用。
-- 將條目 ledger、分組 ledger 同 TOC-eligible heading inventory 分開；正文未列目錄嘅後記、書目等要有明確 exclusion reason。
-- 實質題名／日期／人名／官職／數字異文，以及所有頁碼差異／異序，必須由另一 reviewer 同時核對目錄同正文頁圖，先可以標成 `source-verified-*`。
-- Independent review 後嘅修改要 fresh re-review 受影響頁，或者保存 exact、可重驗嘅 amendment ledger；final 聲明依賴嘅所有 sidecar 都封入 receipt。
-- Audit 同 finalizer 新增 opt-in `--summary-only`，可避免數百頁 context 淹沒終端，同時保留 issue counts、exit code 同 write／receipt 摘要。
-
-## 0.2.2 更新重點
-
-- 防止跨頁 list 續文／nested item 因預先 `.strip()` 而被誤標 `join`；audit／finalizer 會要求 `list-cont`、`list-new` 或經視覺確認並由 receipt 保存嘅真正結構 break。
-- Receipt 必須封存 final audit 實際使用嘅 notation policy、source exceptions 同 page manifest，避免定稿後新增白名單改變結果。
-- Final audit 可用目前 PDF 路徑重驗來源 SHA、scan sequence、sealed annotated marker coverage 同每張 render hash；刻意略去 marker 嘅 scan 要喺 manifest 明寫 `marker_expected: false`。
-- Review sidecar 狀態禁止降級，獨立覆核要記 writer 以外嘅 reviewer、頁段同 evidence hash；長目錄每個差異亦要有已核圖 disposition。
-
-## 0.2.1 更新重點
-
-- 新增本書 notation policy：凡例證明 ASCII `[ ]` 係編者訂正時，可以同 OCR 低信心 markup 分開處理，避免機械刪除來源符號。
-- 新增 exact line／column／symbol source exception ledger；原書本身未閉或錯序引號／括號要先核圖，位置、line text 或 issue 改變就會報 stale exception。
-- Finalizer 可以輸出 SHA-256 assembly receipt，hash ordered upstream segments、combined annotated、boundary manifest 同 final；late patch 或 receipt 後修改會令 final audit 失敗。
-- 結構 audit 補 tight-list continuation、table 欄數、delimiter 配對、space-before-tab、missing final newline 同 EOF 多餘空行。
-- 將高信心 correction propagation、平行篇章互校、multi-pass OCR disagreement 同「收齊所有 auditor 後重新 assemble」寫成 release gate；所有差異只產生核圖候選。
-
-## 0.2.0 更新重點
-
-- 長單檔可安全並行：每個 agent 只寫獨立頁段 segment，主 agent 獨佔最終檔、assemble 同跨段覆核。
-- 新增 long-book page manifest 流程，同時追蹤 scan page／printed page、spread、旋轉、空白、完整或局部重複、缺失印刷頁。
-- 原 PDF 真缺頁時，先證實缺頁，再以可確認嘅同版來源交叉復原，保存 evidence manifest，並披露非視覺核實部分。
-- 明確分類 page marker 移除後應係正文 join、段落 break、list boundary 定 item continuation；頁底註腳插斷正文時先重建完整正文。
-- 新增純 Python stdlib audit/finalize scripts，檢查 marker inventory、顯式 boundary manifest、soft break、heading/list spacing、OCR residue 同重複長段；無完整 boundary contract 時拒絕寫入。
-- Final pass 加入結構 invariants，例如條號、人名數、A–J 項目同表格總數；亦補充 untracked 新檔令 `git diff --check` 失效嘅盲點。
-- Apple/macOS Vision 可以加速建立有 page provenance 嘅底稿，但直排次序、註腳、表格同跨頁內容仍以 PDF 圖像為準。
-
-詳細版本摘要見 [CHANGELOG.md](CHANGELOG.md)。
-
-## Bundled audit scripts
-
-喺 skill 目錄執行。`basic` profile 唔需要完整 evidence chain；以下係 `release` profile 範例，只加入文件實際啟用嘅 feature gate。`--transition-reviews` 只喺逐項視覺核對後加入；`--authority`、`--inventory-profile` 同 `--include-starred-title-notes` 亦各自按來源結構選用。
+支援 Linux、macOS 同 Windows WSL2；目前唔支援原生 Windows。先 clone 呢個 repo，再喺 repo 根目錄執行：
 
 ```bash
-python3 scripts/assemble_ocr_segments.py ordered-segments.json
-python3 scripts/assemble_ocr_segments.py ordered-segments.json --output TARGET-annotated.md --write --receipt segment-assembly-receipt.json
-python3 scripts/assemble_ocr_segments.py ordered-segments.json --output TARGET-annotated.md
-python3 scripts/audit_ocr_markdown.py TARGET-annotated.md --mode annotated --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf
-python3 scripts/audit_title_notes.py TARGET-annotated.md --boundary-manifest boundaries.json --json-report title-note-audit.json
-python3 scripts/audit_title_notes.py TARGET-annotated.md --boundary-manifest boundaries.json --transition-reviews transition-reviews.json --json-report title-note-audit.json
-python3 scripts/build_notation_inventory.py TARGET-annotated.md --authority notation-authority.json --inventory-profile inventory-profile.json --include-starred-title-notes --require-markers --json-report notation-inventory.json
-python3 scripts/validate_review_evidence.py --root /path/to/book-evidence /path/to/book-evidence/segments/*.amendment.json
-python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json
-python3 scripts/validate_release_evidence.py release-plan.json
-python3 scripts/plan_release_rebuild.py release-plan.json --json-report release-rebuild.json
-python3 scripts/finalize_page_markers.py TARGET-annotated.md --expected-count "$EXPECTED_SCAN_COUNT" --boundary-manifest boundaries.json --output TARGET.md --receipt assembly-receipt.json --release-plan release-plan.json --write
-python3 scripts/audit_ocr_markdown.py TARGET.md --mode final --notation-policy notation-policy.json --source-exceptions source-exceptions.json --page-manifest page-manifest.json --source-pdf /current/path/source.pdf --assembly-receipt assembly-receipt.json --json-report final-audit.json
+# Linux／WSL2：配置 HunyuanOCR；可用 CUDA 就用，否則用 CPU。
+./install.sh --agent claude
+
+# 可以同時裝畀幾個 agent。
+./install.sh --agent codex --agent gemini --agent antigravity
+
+# macOS：選 Apple Vision，或者 --engine hunyuan 下載固定模型。
+./install.sh --agent claude --engine vision
+
+# 其他 agent：傳「技能集合」目錄，程式會放入 jyut-ocr-proofread 子目錄。
+./install.sh --skill-dir /path/to/agent/skills --engine hunyuan
+
+# 只讀檢查已安裝入口、依賴、設定同已有試跑證據。
+./install.sh --agent claude --check
 ```
 
-第一次 boundary review 保留預設 verbose 輸出；全部 contract 已逐頁核實之後，長書重跑可以加 `--summary-only`。Audit 會按 severity/code 輸出 deterministic `ISSUE-COUNT`，finalizer 仍會保留 dry-run、write 同 receipt 摘要；任何非零 issue 要移除 `--summary-only` 重跑以查看位置。
+安裝器先檢查並重用已核實嘅環境，建立獨立 Python venv、配置依賴同 OCR 引擎，再實際試跑一張合成頁，成功先標為就緒。HunyuanOCR 固定 BF16 模型與 projector，約 1.94 GiB；`llama.cpp` 固定 commit 建置，唔跟隨 `latest`。需要系統套件、管理員權限或 Apple Command Line Tools 時會列出缺項；可補齊後重跑，唔會自動改顯示卡驅動。詳見 [安裝、平台選項及復原](references/install.md)。
 
-`ordered-segments.json` 要用 strict v1 root：`schema_version`、`separator_utf8`、`scan_start`／`scan_end`、`page_manifest: {path, sha256}` 同 ordered `segments`；每段提供 path／sha256／scan range。Separator 只可係空字串或全由 LF newline characters 組成，唔准夾文字或其他 whitespace。Assembler 會將每段同組裝後嘅實際 markers 同 sealed page manifest 嘅 `marker_expected`／ordered segment inventory exact 比較，唔只係 concatenate 檔案。
+| 選項 | 預設個人技能目錄 |
+|---|---|
+| `--agent generic` | `~/.agents/skills/` |
+| `--agent codex` | `~/.agents/skills/` |
+| `--agent claude` | `~/.claude/skills/` |
+| `--agent gemini` | `~/.gemini/skills/` |
+| `--agent antigravity` | `~/.gemini/config/skills/` |
 
-`boundaries.json` 用 marker page 作 key，label 係 `start`、`join`、`paragraph`、`structural`、`list-cont`、`list-new` 或 `table-cont`。`table-cont` 保留跨頁表格行之間嘅單換行。每個實際 marker 必須恰好有一條記錄；無 manifest 時 dry-run 只會列 context，任何 `--write` 都會拒絕。寫入亦必須指定另一個 `--output`，腳本永不覆寫 annotated 底稿。完整 schema 同跨頁例子見 `references/long-book-workflow.md`。
+Gemini CLI 同 Antigravity 係兩個安裝目標。平台原生技能管理器通常只放置檔案，唔會執行環境初始化；用嗰種方式安裝後，首次使用時喺技能根目錄跑 `./install.sh --env-only`，再 `./install.sh --env-only --check`。macOS 無互動安裝要明確指定 `--engine vision` 或 `--engine hunyuan`。新增技能後按平台要求重新載入技能／開新 session。
 
-Annotated mode 故意唔用 `--notation-policy` 放行來源符號；已核圖符號可以列為 known annotated-stage issue，但唔可以將該 audit 稱為 clean。Final mode 先按 exact notation policy 接受；本書冇相應來源符號／異常時，省略 notation／exception 選項。
+額外 writer／auditor 角色只係可選便利設定：`--with-agents` 先會安裝目前支援嘅 Codex／Claude adapters。通用核心用能力同角色職責分工，冇安裝 adapters 亦可用普通 worker 或順序處理。平台權限及模型繼承細節見 [adapters](adapters/README.md)。
 
-`release-plan.json` 只 inventory finalizer 之前已存在嘅 active inputs，同所有 discovery 命中嘅 historical／superseded candidates；唔包含待生成 final、receipt 或 `final-audit.json`。只要 active artifacts 出現任何 TOC reconciliation 專用 type，就必須提供 `reconciliation_scope`。Finalizer 會先驗 plan，再自動將 plan 同 active closure 封入 schema v2 receipt，毋須手寫 `--upstream`；output／receipt 唔可以 alias plan 或任何 classified artifact，亦唔可以喺生成後新命中 pre-final discovery globs。Final audit 會重驗 plan、每份 classified hash 同 receipt 嘅 ordered active closure；legacy v1 receipt 雖可讀作診斷，但 final audit 必定失敗，必須重新 finalize。如要封存成品同 post-final QA，完成後另建 `release-bundle-plan.json`，將 pre-final plan、final、receipt、interpretation gates、audit report 同 audit tool hash 列入新 closure，再獨立跑 validator；唔好將佢回餵舊 finalizer 造成 hash cycle。完整 schema 同 migration 規則見 `references/release-gate.md`。
+## 點樣用
 
-舊 rich manifests／policies 唔由 strict parser 猜欄位；先做 current-schema projection 同 sealed crosswalk，再重驗／重封。只要既有逐頁 OCR、render hashes 同 review evidence 仍可對返目前內容，schema migration 毋須重做 OCR。
+可以直接要求 agent：
 
-## 由 GitHub 安裝
+> 用 jyut-ocr-proofread，將呢份 PDF 全部掃描頁轉錄成 Markdown，保留原字形、標點、表格同註號，列出未能確定嘅地方。
 
-發佈後，可以直接將呢個 repo 加入 Codex plugin marketplace：
+首次使用先做環境檢查，讀本書凡例同目標 repo 指示，再選最低足夠嘅工作 profile。`basic` 係預設逐頁工作；有跨頁結構或分段時用 `structured`；明確要求可重播證據封存時先用 `release`。全部 profile 都要求逐頁直接核原圖。
+
+腳本命令喺技能根目錄執行。以下係已初始化環境嘅起點；自訂設定目錄時改成安裝器印出嘅路徑：
 
 ```bash
-codex plugin marketplace add laubonghaudoi/jyut-ocr-proofread --ref main
-codex plugin add jyut-ocr-proofread@jyut-ocr-proofread
+. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"
+"$JYUT_OCR_PYTHON" scripts/survey_pdf.py /path/to/book.pdf /path/to/book-work
+"$JYUT_OCR_PYTHON" scripts/run_hunyuanocr.py \
+  /path/to/book-work/renders /path/to/book-work/ocr-hunyuan \
+  --report /path/to/book-work/hunyuan-run.json
 ```
 
-安裝後開新 Codex thread，先會載入新 plugin/skill metadata。
+macOS Vision 改用 `scripts/run_apple_vision_ocr.py`。單引擎預設毋須 `book-profile.json` 引擎校準：直接以 `proofread_pages.py --backend packet` 核圖，完成後用 `finish_book.py --single-engine --ocr-a` 指定真實底稿組裝；未定跨頁接續保留為疑點，唔跑雙引擎修書。完整底稿、packet 核圖、補讀、定稿及續跑命令見 [本機 OCR](references/local-ocr.md)。使用安裝器配置嘅 `JYUT_OCR_PYTHON`，唔將 venv Python 路徑 resolve 成系統 Python。
 
-## 由本地 clone 安裝
+Packet 流程明確傳 `--backend packet`，由當前 agent 讀所需圖像及回答 JSON bundles；exit `10` 代表等待答案，經 `apply_packet_answers.py` 驗證後重跑同一命令。外部 HTTP 校對服務只有顯式選擇先會啟用。冇可用底稿時，可以直接逐頁視覺轉錄，唔假造空底稿令 packet pipeline 繼續；冇讀圖能力就不能聲稱完成視覺校對。
 
-如果你已經 clone 咗 repo，亦可以用本地路徑加入 marketplace：
+## 內容保留同驗證
+
+- 原掃描圖像係最終依據；引擎一致、文字通順、測試通過同 hash seals 都唔等於原文正確。完整頁圖普查與最後覆核用嚟找雙底稿共同漏塊。
+- 保留原字形、數字、外文、算式、原印項號與註號、舊標點；雙圈句號寫 `。。`，正文及 Markdown 表內字面星號寫 `\*`。頁面家具按交付範圍移除，唔將一次性出版資料或圖版內文字當成家具。
+- 表格方向與格內讀序分開核圖。預設 `auto` 按圖重建邏輯紀錄；只有明確要求物理格網先用 `as-printed`。跨頁接表須有同表、格位及註文歸屬證據。
+- 每個 writer 只改自己頁段；封存後停寫。需要獨立審核時，由不同 reviewer 核 sealed candidate；平台未提供所需只讀隔離，或者未有獨立 reviewer，就保留相應未完成狀態。
+- 正文／標點、閱讀次序、表格格位同識別錯誤率分開驗證。單元測試、實頁試驗、跨平台實機驗證同同條件 benchmark 亦分開報告，唔以安裝成功宣稱準確率改善。
+
+[SKILL.md](SKILL.md) 提供完整規則及按需要載入嘅 references；[內容完整性](references/content-fidelity.md) 說明漏讀與忠實保留；[release gate](references/release-gate.md) 保存可重播交付契約。實書嘅書名、頁碼、專名、來源句式及單一版次政策留喺 project-local 記錄，核心回歸測試用 synthetic 正反例。
+
+## 可選人工標註
+
+一般 OCR／校對唔需要另一個 repo。需要互動式人工對圖裁定時，可以用 `scripts/review.py` 接上 `jyut-ocr-bench` 共用介面；圖片、題目同 append-only 答案歷史留喺相應 project。未裝介面時仍可完成一般校對並保存疑點，唔以缺少介面為理由丟棄未定讀法。詳見 [人工標註工具](references/manual-review-tool.md)。
+
+## 維護
 
 ```bash
-codex plugin marketplace add /path/to/jyut-ocr-proofread
-codex plugin add jyut-ocr-proofread@jyut-ocr-proofread
+python3 -m unittest discover -s tests -v
 ```
 
-### Codex 同 Claude Code 共用 canonical skill
-
-本機開發可以唔經 plugin cache，直接由目前 clone 安裝兩邊嘅 personal skill 同 custom agents。兩個 skill directory 同兩個 Claude agent adapter 係 exact symlink；實測 Codex `0.149.0-alpha.4.1` 會 discover leaf-symlink agent 名，但套用 TOML 時用 [no-follow sensitive read](https://github.com/openai/codex/blob/97e7c55e2b64738ec6fe2311ad77a60b106fefae/codex-rs/exec-server/src/regular_file.rs#L20-L43) 而報 `ELOOP`，而目前 upstream 亦有明確拒絕測試，所以兩個 Codex agent adapter 係 byte-for-byte sealed regular-file projection。Repo 仍然係唯一 canonical source；adapter 改動後 `--check` 會報 hash drift，再跑 `--install` 先刷新 projection。
-
-先 dry-run，再安裝；installer 會先備份任何現有 directory／file／foreign symlink，並封存完整 tree inventory。Source／target／backup path 有重疊，或者 nested backup／sealed projection 喺 restore 前漂移，都會 fail closed：
-
-```bash
-python3 scripts/install_local_adapters.py --dry-run
-python3 scripts/install_local_adapters.py --install
-python3 scripts/install_local_adapters.py --check
-```
-
-備份 manifest 會印喺 install output；要還原時用：
-
-```bash
-python3 scripts/install_local_adapters.py --restore /absolute/path/to/manifest.json
-```
-
-安裝後要開新 Codex task／Claude Code session，先保證兩邊重新 discover custom agents。Codex adapters 刻意唔設 `model`／`model_reasoning_effort`：按 [Codex custom-agent model resolution](https://learn.chatgpt.com/docs/agent-configuration/subagents)，逐項依次採用 explicit spawn override、`[agents]` default、再到 parent value。Claude adapters 用 `model: inherit`；按 [Claude Code subagent resolution](https://code.claude.com/docs/en/sub-agents)，平台級 `CLAUDE_CODE_SUBAGENT_MODEL` 或 per-invocation override 仍然有較高優先權。技能本身唔鎖死任何 model ID。
-
-Auditor adapter 會宣告 Codex `sandbox_mode = "read-only"`，或用 Claude `permissionMode: plan` 並移除直接 write tools。不過實測上述 Codex 版本唔會將 role-level sandbox override 套入 child；Claude 嘅 live parent bypass 類 mode 亦可優先過 adapter default。主 agent 只可以喺 parent／child effective mode 確實係 read-only／plan 時，先將結果當成合約所講嘅獨立 read-only audit；單靠 prompt 禁止寫入唔係權限隔離。
-
-### Apple Vision 並行底稿
-
-macOS 有 Apple Vision 同 Swift toolchain 時，可直接由 skill 目錄跑：
-
-```bash
-python3 scripts/run_apple_vision_ocr.py RENDER_DIR OUTPUT_DIR \
-  --first-page 1 --last-page 800 --workers auto \
-  --report /path/to/reports/apple-vision-run.json
-```
-
-亦可以用 `--pages 1-40,45,50-80`。`auto` 取待處理頁數、physical cores 同八者中最小值；一頁失敗會保留其他已原子提交嘅頁並 exit nonzero，之後用同一 selector 續跑。舊 schema 或 hash／profile 漂移預設拒絕，只有確認要重做時先加 `--overwrite`。Apple Vision JSON／TXT 永遠只係 draft，逐頁校對仍以原 PDF／full-resolution render 為準，而且 runner 絕不調用 Tesseract／Tessdata。
-
-## GJ.cool token
-
-GJ.cool 唔係必需。若你有 token，可以喺自己本機 shell 或本地環境設定其中一個變數：
-
-- `GJCOOL_ACCESS_TOKEN`
-- `GJCOOL_AUTH`
-
-唔好 commit 真 token。`.env.example` 只列出支援嘅變數名。skill 會先由 PDF render 圖像做視覺轉寫；只有 GJ.cool 即時有結果時，先會用佢做底稿再核 PDF。
-
-## Repo 結構
+測試以合成資料及 fake runtimes 驗證契約；實際 OCR 引擎 smoke、平台原生技能發現，以及當前模型讀技能／核原圖嘅操作驗證分開記錄。成功列出技能唔等於模型已核圖；未實機驗證嘅平台唔標成已通過。版本歷史只維護喺 [CHANGELOG.md](CHANGELOG.md)。GJ.cool 係可選底稿來源；已有 token 可用 `GJCOOL_ACCESS_TOKEN`／`GJCOOL_AUTH`，唔將真 token 提交入 repo。
 
 ```text
-.agents/plugins/marketplace.json
-adapters/
-  codex/agents/jyut-ocr-segment-writer.toml
-  codex/agents/jyut-ocr-visual-auditor.toml
-  claude/agents/jyut-ocr-segment-writer.md
-  claude/agents/jyut-ocr-visual-auditor.md
-plugins/jyut-ocr-proofread/
-  .codex-plugin/plugin.json
-  skills/jyut-ocr-proofread/
-    SKILL.md
-    agents/openai.yaml
-    references/common-ocr-traps.md
-    references/jyut-ocr-detailed-rules.md
-    references/long-book-workflow.md
-    references/release-gate.md
-    references/review-evidence.md
-    references/subagent-orchestration.md
-    scripts/_ocr_markdown.py
-    scripts/apple_vision_ocr.swift
-    scripts/assemble_ocr_segments.py
-    scripts/audit_ocr_markdown.py
-    scripts/audit_title_notes.py
-    scripts/build_notation_inventory.py
-    scripts/finalize_page_markers.py
-    scripts/plan_release_rebuild.py
-    scripts/run_apple_vision_ocr.py
-    scripts/validate_release_evidence.py
-    scripts/validate_review_evidence.py
-scripts/install_local_adapters.py
-tests/
-  test_agent_adapters.py
-  test_apple_vision_pool.py
-  test_local_adapters.py
-  test_notation_inventory.py
-  test_ocr_markdown_scripts.py
-  test_release_evidence_tools.py
-  test_release_rebuild.py
-  test_review_evidence.py
-  test_title_note_tools.py
+SKILL.md             # 通用技能入口
+install.sh           # 安裝／環境檢查入口
+scripts/             # 安裝、OCR、packet、校對及驗證工具
+references/          # 按任務需要載入嘅規則
+agents/              # 可選平台展示 metadata
+adapters/            # 可選平台 custom-agent 設定
+tests/              # 合成回歸測試
 ```
-
-## 共用人工標註工具
-
-人工對圖、疑字裁定同 golden 覆核統一用 `jyut-ocr-bench` 嘅共用介面；本 skill 只提供薄啟動器。程式集中維護，圖片、題目同 append-only 裁定歷史留喺各 project。
-
-```bash
-export JYUT_OCR_BENCH_ROOT=/path/to/jyut-ocr-bench
-python3 plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/scripts/review.py \
-  --project-root /path/to/book-project --port 8765
-```
-
-需要 Python 3.10+ 及 review API 1。由已安裝 skill 目錄啟動時用 `python3 scripts/review.py`；設定、舊 audit／goldgate 匯入同 benchmark 覆核見 [共用人工標註工具](plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread/references/manual-review-tool.md)。保存答案唔會自動改正文或 golden，既有 release evidence 驗證仍按原流程執行。
 
 ## License
 

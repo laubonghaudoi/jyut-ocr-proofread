@@ -14,10 +14,6 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = (
     REPO_ROOT
-    / "plugins"
-    / "jyut-ocr-proofread"
-    / "skills"
-    / "jyut-ocr-proofread"
     / "scripts"
 )
 ASSEMBLE = SCRIPTS / "assemble_ocr_segments.py"

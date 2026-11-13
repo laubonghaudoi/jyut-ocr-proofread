@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import _tables
+from _note_markers import NOTE_CIRCLED, NOTE_LINE_RE
 from validate_release_evidence import (
     _artifact_path as release_artifact_path,
     _load_json as load_release_plan_json,
@@ -40,12 +41,6 @@ FENCE_RE = _tables.FENCE_RE
 BOUNDARY_LABELS = frozenset(
     {"start", "join", "paragraph", "structural", "list-cont", "list-new", "table-cont"}
 )
-NOTE_CIRCLED = "①-⑳㉑-㉟㊱-㊿⓪-⓿❶-➓"
-NOTE_FIGURE = (
-    rf"(?:\[\^[0-9]{{1,4}}\]|[{NOTE_CIRCLED}]|[⁰¹²³⁴-⁹]|<sup>\s*[0-9]{{1,3}}\s*</sup>"
-    rf"|\$\s*\^\{{+\s*(?:[0-9]{{1,3}}|[{NOTE_CIRCLED}]+)\s*\}}+\s*\$)"
-)
-NOTE_LINE_RE = re.compile(rf"^(?P<number>{NOTE_FIGURE}+)")
 THEMATIC_BREAK_RE = re.compile(r" {0,3}(?:[-*_][ \t]*){3,}")
 FOOTNOTE_HEAD_RE = re.compile(r" {0,3}\[\^(?P<label>[^\]\s]+)\]:")
 FOOTNOTE_CALL_RE = re.compile(r"\[\^(?P<label>[^\]\s]+)\]")

@@ -617,7 +617,7 @@ def survey_layout(pool: Sequence[int], drafts: Path, learned_heads: bool = False
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = pp.AgentTransportParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("render_directory", type=Path)
@@ -627,7 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=("packet", "http"),
-        default=os.environ.get("PROOFREAD_BACKEND", "packet"),
+        default="packet",
         help="packet (default: emit wave bundles for session subagents) or http (OpenAI chat endpoint)",
     )
     parser.add_argument(
@@ -671,9 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-inflight-cap", action="store_true")
     parser.add_argument(
-        "--endpoint", default=os.environ.get("PROOFREAD_ENDPOINT", pp.DEFAULT_ENDPOINT)
+        "--endpoint", default=None,
+        help="explicit HTTP endpoint; required with --backend http (no environment fallback)"
     )
-    parser.add_argument("--model", default=os.environ.get("PROOFREAD_MODEL", pp.DEFAULT_MODEL))
+    parser.add_argument("--model", default=None,
+                        help="HTTP model or packet provenance label; PROOFREAD_MODEL applies only to explicit HTTP")
     parser.add_argument(
         "--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", pp.DEFAULT_EFFORT)
     )
@@ -789,6 +791,9 @@ def profile_book(arguments: argparse.Namespace) -> int:
             previous.get("schemaVersion") == SCHEMA_VERSION
             and previous.get("probePages") == pages
             and (previous.get("sources") or {}).get("probeDraftsSha256") == digest
+            and previous.get("backend") == arguments.backend
+            and previous.get("endpoint") == (arguments.endpoint if arguments.backend == "http" else None)
+            and previous.get("model") == arguments.model
         ):
             engines = previous.get("engines")
             print("  engines: reused from the existing profile", flush=True)
@@ -890,6 +895,8 @@ def profile_book(arguments: argparse.Namespace) -> int:
     profile = {
         "schemaVersion": SCHEMA_VERSION,
         "generatedAt": pp.utc_now(),
+        "backend": arguments.backend,
+        "endpoint": arguments.endpoint if arguments.backend == "http" else None,
         "model": client.model if arguments.backend == "packet" else arguments.model,
         "reasoningEffort": effort,
         "sources": {

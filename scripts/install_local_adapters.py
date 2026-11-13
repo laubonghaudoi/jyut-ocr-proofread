@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the canonical OCR skill and agent adapters recoverably.
+"""Install selected portable skill entrypoints and optional agent adapters.
 
 Skills and Claude agents use exact symlinks.  Codex custom-agent TOMLs use
 sealed regular-file projections because current Codex releases discover a
@@ -26,7 +26,7 @@ from typing import Any, Iterable, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INSTALLER_NAME = "jyut-ocr-proofread-local-adapters"
 
 AGENT_NAMES = (
@@ -41,10 +41,17 @@ LEGACY_SPEC_IDS_V2 = (
     "claude-segment-writer",
     "claude-visual-auditor",
 )
-SPEC_IDS = (
+LEGACY_SPEC_IDS_V3 = (
     *LEGACY_SPEC_IDS_V2,
     "gemini-skill",
 )
+
+
+SKILL_NAME = "jyut-ocr-proofread"
+LEGACY_SKILL_PATH = Path("plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread")
+PORTABLE_AGENTS = ("generic", "codex", "claude", "gemini", "antigravity")
+# Retained for callers inspecting the historical seven-target interface.
+SPEC_IDS = LEGACY_SPEC_IDS_V3
 
 
 class InstallError(RuntimeError):
@@ -68,15 +75,20 @@ def build_specs(
     *,
     repo_root: Path | None = None,
 ) -> list[dict[str, Any]]:
+    """Historical seven-target interface (including custom role adapters).
+
+    ``gemini_root`` retains its old Antigravity/config meaning for compatibility;
+    use ``build_portable_specs`` for correctly separated Gemini CLI targets.
+    """
     root = absolute_root(repo_root or REPO_ROOT)
     codex = absolute_root(codex_root)
     claude = absolute_root(claude_root)
     gemini = absolute_root(gemini_root or (Path.home() / ".gemini/config"))
-    skill = root / "plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread"
+    skill = root
     codex_adapters = root / "adapters/codex/agents"
     claude_adapters = root / "adapters/claude/agents"
 
-    return [
+    specs = [
         {
             "id": "codex-skill",
             "source": skill,
@@ -127,6 +139,73 @@ def build_specs(
             "install_mode": "symlink",
         },
     ]
+
+
+    for spec in specs:
+        spec["repo_root"] = root
+        if spec["source_type"] == "directory":
+            spec["legacy_source"] = root / LEGACY_SKILL_PATH
+    return specs
+
+
+def build_portable_specs(
+    *,
+    repo_root: Path | None = None,
+    agents: Sequence[str] = ("generic",),
+    skill_dir: Path | None = None,
+    with_agents: bool = False,
+    home: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Select skill entrypoints; optional role adapters never drive discovery.
+
+    ``skill_dir`` is a collection directory, not the final skill directory.
+    Generic and Codex share the standard ~/.agents/skills entrypoint.  The
+    historical ~/.codex/skills path remains available via ``build_specs`` or
+    an explicit collection directory.  Gemini CLI and Antigravity have
+    distinct directories and distinct manifest identities.
+    """
+    root = absolute_root(repo_root or REPO_ROOT)
+    user_home = absolute_root(home or Path.home())
+    requested = list(dict.fromkeys(agents))
+    if not requested:
+        requested = ["generic"]
+    unknown = set(requested) - set(PORTABLE_AGENTS)
+    if unknown:
+        raise InstallError(f"unsupported agents: {', '.join(sorted(unknown))}")
+    collections = {
+        "generic": user_home / ".agents/skills",
+        "codex": user_home / ".agents/skills",
+        "claude": user_home / ".claude/skills",
+        "gemini": user_home / ".gemini/skills",
+        "antigravity": user_home / ".gemini/config/skills",
+    }
+    specs: list[dict[str, Any]] = []
+    if skill_dir is not None:
+        specs.append({
+            "id": "custom-skill", "source": root,
+            "target": absolute_root(skill_dir) / SKILL_NAME,
+            "source_type": "directory", "install_mode": "symlink",
+            "repo_root": root,
+        })
+    else:
+        seen: set[Path] = set()
+        for agent in requested:
+            target = collections[agent] / SKILL_NAME
+            if target in seen:
+                continue
+            seen.add(target)
+            # Stable identity independent of generic/codex selection order.
+            identity = "generic" if agent == "codex" else agent
+            specs.append({
+                "id": f"{identity}-skill", "source": root, "target": target,
+                "source_type": "directory", "install_mode": "symlink",
+                "repo_root": root,
+            })
+    if with_agents:
+        legacy = build_specs(user_home / ".codex", user_home / ".claude", repo_root=root)
+        specs.extend(spec for spec in legacy if spec["source_type"] == "regular-file"
+                     and spec["id"].split("-", 1)[0] in requested)
+    return specs
 
 
 def lexists(path: Path) -> bool:
@@ -254,6 +333,24 @@ def mutation_location(path: Path) -> Path:
     return path.parent.resolve(strict=False) / path.name
 
 
+def checked_entry_target(entry: dict[str, Any]) -> Path:
+    """Bind mutations to the parent location sealed before installation.
+
+    Keep the final component unresolved: it is the symlink being installed or
+    removed.  Resolving the whole target would instead select its source.
+    """
+    target = Path(entry["target"])
+    sealed = entry.get("target_mutation_path")
+    if (
+        not isinstance(sealed, str)
+        or not Path(sealed).is_absolute()
+        or mutation_location(target) != Path(sealed)
+        or mutation_location(Path(sealed)) != Path(sealed)
+    ):
+        raise InstallError(f"{entry['id']}: target parent location changed or is unsealed: {target}")
+    return Path(sealed)
+
+
 def paths_overlap(first: Path, second: Path) -> bool:
     return (
         first == second
@@ -329,6 +426,8 @@ def validate_sources(specs: Iterable[dict[str, Any]]) -> None:
             errors.append(
                 f"{spec['id']}: source must be {expected}, got {actual}: {source}"
             )
+        elif expected == "directory" and not (source / "SKILL.md").is_file():
+            errors.append(f"{spec['id']}: source has no SKILL.md: {source}")
     if errors:
         raise InstallError("invalid canonical sources:\n  " + "\n  ".join(errors))
 
@@ -467,7 +566,7 @@ def create_sealed_copy(
 
 
 def create_installed_object(entry: dict[str, Any]) -> None:
-    target = Path(entry["target"])
+    target = checked_entry_target(entry)
     if entry["install_mode"] == "symlink":
         create_exact_symlink(Path(entry["installed_link_text"]), target)
         return
@@ -539,7 +638,11 @@ def rollback_install(
     for entry in reversed(entries):
         if entry["action"] != "installed":
             continue
-        target = Path(entry["target"])
+        try:
+            target = checked_entry_target(entry)
+        except InstallError as exc:
+            errors.append(str(exc))
+            continue
         backup_text = entry["backup_path"]
         backup = Path(backup_text) if backup_text else None
         original = entry["original"]
@@ -569,9 +672,9 @@ def rollback_install(
         if snapshot_path(target) != original:
             errors.append(f"rollback verification failed: {target}")
 
-    remove_created_parents(created_parents)
     if errors:
         raise InstallError("rollback failed:\n  " + "\n  ".join(errors))
+    remove_created_parents(created_parents)
     try:
         shutil.rmtree(backup_directory)
     except OSError as exc:
@@ -587,6 +690,7 @@ def manifest_entry(
 ) -> dict[str, Any]:
     target = spec["target"]
     source = spec["source"]
+    target_mutation_path = mutation_location(target)
     original = snapshot_path(target)
     unchanged = spec_installed_current(spec)
     backup: Path | None = None
@@ -605,9 +709,10 @@ def manifest_entry(
         installed_mode = stat.S_IMODE(metadata.st_mode)
         if not unchanged:
             projection = backup_directory / "projections" / spec["id"]
-    return {
+    entry = {
         "id": spec["id"],
         "target": str(target),
+        "target_mutation_path": str(target_mutation_path),
         "source": str(source),
         "install_mode": install_mode,
         "installed_link_text": installed_link_text,
@@ -618,6 +723,8 @@ def manifest_entry(
         "original": original,
         "backup_path": str(backup) if backup else None,
     }
+    checked_entry_target(entry)
+    return entry
 
 
 def prepare_projection(entry: dict[str, Any]) -> None:
@@ -638,10 +745,12 @@ def prepare_projection(entry: dict[str, Any]) -> None:
 def perform_install(
     specs: Sequence[dict[str, Any]], backup_root: Path
 ) -> Path | None:
+    if not specs:
+        raise InstallError("no install targets selected")
     validate_sources(specs)
     validate_layout(specs, backup_root=backup_root)
     if all(spec_installed_current(spec) for spec in specs):
-        print("ALREADY INSTALLED: all six targets match canonical sources")
+        print(f"ALREADY INSTALLED: all {len(specs)} targets match canonical sources")
         return None
 
     root = absolute_root(backup_root)
@@ -673,7 +782,7 @@ def perform_install(
             "installer": INSTALLER_NAME,
             "state": "installing",
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "repo_root": str(absolute_root(REPO_ROOT)),
+            "repo_root": str(absolute_root(specs[0].get("repo_root", REPO_ROOT))),
             "backup_directory": str(backup_directory),
             "created_parent_directories": [],
             "entries": entries,
@@ -698,7 +807,7 @@ def perform_install(
         for entry in entries:
             if entry["action"] == "unchanged":
                 continue
-            target = Path(entry["target"])
+            target = checked_entry_target(entry)
             source = Path(entry["source"])
             backup_text = entry["backup_path"]
             if backup_text:
@@ -707,6 +816,9 @@ def perform_install(
                 raise InstallError(f"new target changed after inventory: {target}")
             ensure_parent(target.parent, created_parents)
             create_installed_object(entry)
+
+        for entry in entries:
+            checked_entry_target(entry)
 
         for entry in entries:
             if entry["install_mode"] != "sealed-copy":
@@ -767,6 +879,9 @@ def load_manifest(
     manifest_path: Path,
     expected_specs: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
+    expected_ids = [spec["id"] for spec in expected_specs]
+    if not expected_ids or len(expected_ids) != len(set(expected_ids)):
+        raise InstallError("restore requires nonempty, unique target selection")
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -776,8 +891,10 @@ def load_manifest(
     schema_version = payload.get("schema_version")
     if schema_version == 2:
         required_ids = LEGACY_SPEC_IDS_V2
+    elif schema_version == 3:
+        required_ids = LEGACY_SPEC_IDS_V3
     elif schema_version == SCHEMA_VERSION:
-        required_ids = SPEC_IDS
+        required_ids = tuple(spec["id"] for spec in expected_specs)
     else:
         raise InstallError("unsupported restore manifest schema")
     if payload.get("installer") != INSTALLER_NAME:
@@ -793,6 +910,11 @@ def load_manifest(
     expected = {
         spec["id"]: spec for spec in expected_specs if spec["id"] in required_ids
     }
+    if set(expected) != set(required_ids):
+        raise InstallError("restore target selection does not match manifest schema")
+    requested_root = absolute_root(expected_specs[0].get("repo_root", REPO_ROOT))
+    if payload.get("repo_root") != str(requested_root):
+        raise InstallError("manifest repo root does not match requested source")
     seen_targets: set[str] = set()
     seen_ids: set[str] = set()
     backup_directory = manifest_path.resolve(strict=False).parent
@@ -809,10 +931,21 @@ def load_manifest(
         spec = expected[entry_id]
         target_text = entry.get("target")
         source_text = entry.get("source")
-        if target_text != str(spec["target"]) or source_text != str(spec["source"]):
+        allowed_sources = {str(spec["source"])}
+        if schema_version in {2, 3} and "legacy_source" in spec:
+            allowed_sources.add(str(spec["legacy_source"]))
+        if target_text != str(spec["target"]) or source_text not in allowed_sources:
             raise InstallError(f"{entry_id}: manifest paths do not match requested roots")
         if not Path(target_text).is_absolute() or not Path(source_text).is_absolute():
             raise InstallError(f"{entry_id}: target and source must be absolute")
+        if schema_version in {2, 3}:
+            # Historical manifests did not seal parent aliases.  Restore only
+            # when the literal recorded target is its present mutation path;
+            # do not guess which collection an old alias used to identify.
+            if mutation_location(Path(target_text)) != Path(target_text):
+                raise InstallError(f"{entry_id}: legacy target parent alias cannot be verified")
+            entry["target_mutation_path"] = target_text
+        checked_entry_target(entry)
         if target_text in seen_targets:
             raise InstallError(f"duplicate manifest target: {target_text}")
         seen_targets.add(target_text)
@@ -868,7 +1001,7 @@ def load_manifest(
         isinstance(value, str) and Path(value).is_absolute() for value in created
     ):
         raise InstallError("invalid created-parent directory inventory")
-    targets = [Path(entry["target"]) for entry in entries]
+    targets = [checked_entry_target(entry) for entry in entries]
     for directory_text in created:
         directory = Path(directory_text)
         if not any(directory in target.parents for target in targets):
@@ -881,7 +1014,11 @@ def preflight_restore(entries: Sequence[dict[str, Any]]) -> None:
     for entry in entries:
         if entry["action"] != "installed":
             continue
-        target = Path(entry["target"])
+        try:
+            target = checked_entry_target(entry)
+        except InstallError as exc:
+            errors.append(str(exc))
+            continue
         if not entry_installed_current(entry):
             errors.append(f"target no longer matches the installed object: {target}")
         projection_text = entry["projection_path"]
@@ -903,7 +1040,11 @@ def preflight_restore(entries: Sequence[dict[str, Any]]) -> None:
 def rollback_restore(entries: Sequence[dict[str, Any]]) -> None:
     errors: list[str] = []
     for entry in reversed(entries):
-        target = Path(entry["target"])
+        try:
+            target = checked_entry_target(entry)
+        except InstallError as exc:
+            errors.append(str(exc))
+            continue
         backup_text = entry["backup_path"]
         backup = Path(backup_text) if backup_text else None
         original = entry["original"]
@@ -940,6 +1081,11 @@ def perform_restore(
     expected_specs: Sequence[dict[str, Any]],
 ) -> None:
     manifest = load_manifest(manifest_path.resolve(strict=False), expected_specs)
+    manifest_ids = {entry["id"] for entry in manifest["entries"]}
+    validate_layout(
+        [spec for spec in expected_specs if spec["id"] in manifest_ids],
+        backup_directory=manifest_path.resolve(strict=False).parent,
+    )
     entries = [
         entry for entry in manifest["entries"] if entry["action"] == "installed"
     ]
@@ -948,7 +1094,7 @@ def perform_restore(
     applied: list[dict[str, Any]] = []
     try:
         for entry in entries:
-            target = Path(entry["target"])
+            target = checked_entry_target(entry)
             target.unlink()
             applied.append(entry)
             backup_text = entry["backup_path"]
@@ -965,6 +1111,8 @@ def perform_restore(
             raise
         raise InstallError(f"restore failed and was rolled back: {exc}") from exc
 
+    for entry in manifest["entries"]:
+        checked_entry_target(entry)
     created = [Path(value) for value in manifest["created_parent_directories"]]
     remove_created_parents(created)
     print(f"RESTORED {manifest_path.resolve(strict=False)}")
@@ -1037,7 +1185,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument(
-        "--check", action="store_true", help="verify all seven installed targets"
+        "--check", action="store_true", help="verify selected installed targets"
     )
     actions.add_argument(
         "--dry-run", action="store_true", help="show the install transaction"
@@ -1051,21 +1199,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--codex-root",
         type=Path,
-        default=Path.home() / ".codex",
-        help="Codex configuration root (default: ~/.codex)",
+        help="legacy seven-target mode: Codex configuration root (default: ~/.codex)",
     )
     parser.add_argument(
         "--claude-root",
         type=Path,
-        default=Path.home() / ".claude",
-        help="Claude configuration root (default: ~/.claude)",
+        help="legacy seven-target mode: Claude configuration root (default: ~/.claude)",
     )
     parser.add_argument(
         "--gemini-root",
         type=Path,
-        default=Path.home() / ".gemini/config",
-        help="Gemini / Antigravity configuration root (default: ~/.gemini/config)",
+        help="legacy seven-target mode: Antigravity root (default: ~/.gemini/config); historical flag name retained",
     )
+    parser.add_argument("--agent", action="append", choices=PORTABLE_AGENTS,
+                        help="select an agent (repeatable; default: generic)")
+    parser.add_argument("--skill-dir", type=Path,
+                        help="custom skill collection directory; appends jyut-ocr-proofread")
+    parser.add_argument("--with-agents", action="store_true",
+                        help="also install custom role adapters for selected Codex/Claude agents")
     parser.add_argument(
         "--backup-root",
         type=Path,
@@ -1077,10 +1228,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = parse_args(argv)
-    specs = build_specs(
-        arguments.codex_root, arguments.claude_root, arguments.gemini_root
-    )
     try:
+        legacy_roots = any(value is not None for value in (
+            arguments.codex_root, arguments.claude_root, arguments.gemini_root
+        ))
+        legacy_restore = False
+        if arguments.restore is not None and not (arguments.agent or arguments.skill_dir):
+            try:
+                header = json.loads(arguments.restore.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise InstallError(f"cannot read restore manifest: {exc}") from exc
+            legacy_restore = isinstance(header, dict) and header.get("schema_version") in {2, 3}
+        if legacy_roots or legacy_restore:
+            if arguments.agent or arguments.skill_dir or arguments.with_agents:
+                raise InstallError("legacy root options cannot be combined with portable selection options")
+            specs = build_specs(
+                arguments.codex_root or Path.home() / ".codex",
+                arguments.claude_root or Path.home() / ".claude",
+                arguments.gemini_root or Path.home() / ".gemini/config",
+            )
+        else:
+            specs = build_portable_specs(
+                agents=arguments.agent or ["generic"],
+                skill_dir=arguments.skill_dir, with_agents=arguments.with_agents,
+            )
         if arguments.check:
             return 0 if perform_check(specs) else 1
         if arguments.dry_run:
