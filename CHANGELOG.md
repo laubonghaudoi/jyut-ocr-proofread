@@ -3,6 +3,7 @@
 ## Unreleased — GPU 交接：模型本身停咗就唔郁；顯存唔夠就講邊個佔住
 
 - 停咗模型之後顯存仍然唔夠（exit 1，RESULT 行 `GPU FULL`）：照舊即刻開返模型，另外逐個列 GPU 上面嘅 compute 程序（pid、使用者、程序名、MiB、systemd unit）同釋放佢嘅命令（`systemctl --user stop UNIT`、`kill PID`）。技能乜都唔殺、唔停，由用戶決定。
+- 修正：call 開始嗰陣模型本身冇開（例如用戶 `systemctl --user stop` 咗），以前交接照樣行一次停模型，最尾仲會開返佢（`OCR_PHASE_SWAP=always`、GPU 俾其他程序佔住、或者讀唔到顯存都會中；安裝程式嘅 GPU 測試行同一條路）。而家先睇模型開咗未（health 網址答到、個 port 有嘢 listen 緊，或者 GPU 上面有佢嘅程序）：冇開就唔停、唔開、冇暫代服務、冇 watchdog，GPU 夠位就直接跑，唔夠位就 exit 1 `GPU FULL`，列出佔住嘅程序。`status.json` 寫 `left-down`，下一次 call 唔會當係交接留低而開返佢。RESULT 行尾 `[gpu: …]`、`status.json` 同 `timings.json` 嘅 `lastWindow` 記低模型本來開咗未、有冇停過同開返。冇 `OCR_PHASE_HEALTH_URL` 就分唔到，照舊。時間預算、exit 75 同 `--round` 照舊。
 
 ## Unreleased — 唯一通用技能：併入 qwen 版、雙引擎安裝、GPU 交接
 

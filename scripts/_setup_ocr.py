@@ -2002,6 +2002,9 @@ def handover_failure(code: int, config: Mapping[str, str]) -> SetupError:
             "window; the RESULT line above says whether the local model was stopped, and it is up again either way. "
             "Wait for that job to finish and rerun setup",
         3: "ran, but the local model was NOT restored (exit 3). Restore it now: " + str(config.get("OCR_PHASE_RESTORE_CMD")),
+        1: "failed (exit 1): if its RESULT line says GPU FULL, too little GPU memory is free and the lines above "
+           "name each process holding it with how to free it (nothing was stopped but the local model, which is "
+           "back if it was up); free it and rerun setup. Otherwise see the output above",
         2: "was refused by run_ocr_phase.py (exit 2, a configuration error: see its message above; a hand-over needs "
            "OCR_PHASE_MAX_SECONDS in env.sh)",
     }.get(code, f"failed (exit {code}); see the output above")
@@ -2067,8 +2070,9 @@ def handover_smokes(options: SetupOptions, config: dict[str, str], engines: Sequ
                 "is kept. If this repeats, the checks before the test outlast that limit: run setup from a shell "
                 "without it, or raise the limit and OCR_PHASE_MAX_SECONDS together.")
         wrapper[2:2] = ["--max-seconds", f"{left:.0f}"]
-    print(f"The GPU is held by the configured local model: running the setup tests through one hand-over "
-          f"(run_ocr_phase.py stops the model, runs {', '.join(engines)}, and restores it; budget "
+    print(f"The GPU is short of free memory and a local model is configured: running the setup tests through "
+          f"one hand-over (run_ocr_phase.py stops the model if it is up, runs {', '.join(engines)}, and starts "
+          f"it again only if it stopped it; nothing else on the GPU is touched; budget "
           f"{left:.0f} s{f' of {budget:.0f} s' if left != budget else ''}). Run this in the foreground.")
     code = run_status(wrapper, env=environment, timeout=(left + 300) if budget > 0 else None)
     if code:

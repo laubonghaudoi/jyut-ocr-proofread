@@ -33,7 +33,18 @@ One call is one hand-over WINDOW:
    11.5 GiB, Hunyuan from its slots x context (KV cache plus about 3.4 GiB),
    or OCR_PHASE_REQUIRED_MIB.  OCR_PHASE_SWAP=auto|always|never decides, on
    every platform: without nvidia-smi (macOS: vm_stat) an unknown amount
-   counts as too little.
+   counts as too little.  But only a model that is up before the call is
+   ever stopped, so only it is started again: its health URL answers, or
+   something listens on that URL's port (a model still loading), or one of
+   the GPU's compute processes is the model's (it listens there, descends
+   from what does, or gives the port as --port).  A model the person
+   stopped stays stopped: on an idle GPU the OCR runs directly, with no
+   release, stand-in, watchdog or restore, and status.json says
+   "left-down" (outside the states recover_left_down restores); with too
+   little free memory the call names what holds the GPU and how to free it
+   and exits 1 (GPU FULL), stopping nothing.  Without OCR_PHASE_HEALTH_URL
+   whether the model is up cannot be told, and the free memory decides as
+   before.
 3. Before the server is stopped, its other clients are looked for
    (scripts/_tenant_clients.py): a client with a request on the wire is waited
    for, but only while the window would still have the release and the
@@ -74,7 +85,8 @@ So this script:
   pages when the budget is spent, the server is restored, and the exit code is
   75 - "not finished, run the SAME command again".  Runners skip sealed pages,
   so repeated calls finish the book;
-- restores the server on success, on failure, and on SIGINT/SIGTERM/SIGHUP;
+- restores the server it stopped on success, on failure, and on
+  SIGINT/SIGTERM/SIGHUP, and never one it did not stop;
 - starts a detached watchdog, outside the process group, before releasing the
   server: if this process is killed before it has restored the server (a
   harness exit, a SIGKILL), the watchdog kills the window's OCR processes and
@@ -507,20 +519,21 @@ def how_to_free(entry: dict) -> str:
     return f"kill {pid} as its owner ({entry.get('user')}), or sudo kill {pid}"
 
 
-def name_occupants() -> str:
+def name_occupants() -> tuple[str, list[dict]]:
     """Say what holds the GPU's memory and how the person can free it, a line
-    per process; nothing is stopped.  The short form for the RESULT line."""
+    per process; nothing is stopped.  (The short form for the RESULT line,
+    the processes with their user, unit and command.)"""
     processes, how = compute_processes()
     if processes is None:
         say(f"[ocr-phase] what holds the GPU cannot be listed here ({how}): free it with the GPU's own "
             "tools, then run the same command again", error=True)
-        return f"what holds the GPU cannot be listed here ({how})"
+        return f"what holds the GPU cannot be listed here ({how})", []
     if not processes:
         say("[ocr-phase] no compute process is on the GPU: graphics (the desktop) or processes this user "
             "cannot see hold its memory, or the engines need more than the card has (lower "
             "OCR_HUNYUAN_SLOTS, or set OCR_PHASE_REQUIRED_MIB if the estimate is too high)", error=True)
-        return "no compute process is listed on the GPU"
-    shown = []
+        return "no compute process is listed on the GPU", []
+    shown, named = [], []
     for entry in processes:
         uid = owner_of(entry["pid"])
         unit = unit_of(entry["pid"])
@@ -532,8 +545,67 @@ def name_occupants() -> str:
         say(f"[ocr-phase] on the GPU: pid {entry['pid']}, user {entry['user']}, {entry['name'] or '?'}, "
             f"{mib} MiB{in_unit}; to free it: {command}", error=True)
         shown.append(f"{process_label(entry)}: {command}")
+        named.append(dict({key: entry[key] for key in ("pid", "user", "name", "mib", "unit")}, free=command))
     more = f" and {len(shown) - 2} more" if len(shown) > 2 else ""
-    return "held by " + "; ".join(shown[:2]) + more
+    return "held by " + "; ".join(shown[:2]) + more, named
+
+
+def answers(url: str, timeout: float) -> bool:
+    """One GET of URL: True when it answers 2xx within TIMEOUT seconds."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def model_state(health_url: str | None) -> tuple[bool | None, str]:
+    """Whether the configured model is up before this call, and how that was
+    seen: True when its health URL answers 2xx within HEALTH_PROBE_SECONDS,
+    something listens on the URL's host:port (a model still loading), or one
+    of the GPU's compute processes is the model's (it listens there, descends
+    from what does, or names the port as --port: a server that loads before
+    it listens); False when none of these; None without OCR_PHASE_HEALTH_URL,
+    which leaves nothing to tell it by."""
+    if not health_url:
+        return None, "no OCR_PHASE_HEALTH_URL, so whether it is up cannot be told"
+    parts = urllib.parse.urlsplit(health_url)
+    where = f"{parts.hostname}:{parts.port or (443 if parts.scheme == 'https' else 80)}"
+    if answers(health_url, HEALTH_PROBE_SECONDS):
+        return True, f"it answers at {health_url}"
+    module = tenant_clients()
+    if module is not None and hasattr(module, "listening"):
+        with contextlib.suppress(Exception):
+            if module.listening(health_url):
+                return True, f"something listens at {where}: a model still loading"
+    processes, _ = compute_processes()
+    if processes and module is not None and hasattr(module, "model_processes"):
+        with contextlib.suppress(Exception):
+            pids = module.model_processes(health_url, [entry["pid"] for entry in processes])
+            if pids:
+                named = ", ".join(process_label(entry) for entry in processes if entry["pid"] in pids)
+                return True, f"its process is on the GPU: {named}"
+    return False, f"nothing answers or listens at {where}"
+
+
+def decide_swap(swap_mode: str, need: int, free: int | None, source: str,
+                model_up: bool | None) -> tuple[bool, str]:
+    """(stop the model for this call, why).  A model that is not up is never
+    stopped, so never started again either; one that is up (or whose state
+    cannot be told) is stopped as before: under always, or when free memory
+    is short or cannot be read."""
+    if swap_mode == "never":
+        return False, "OCR_PHASE_SWAP=never"
+    if model_up is False:
+        room = "" if free is None else f"; free {free} MiB ({source})"
+        return False, f"the model is not up, so it is neither stopped nor started{room}"
+    if swap_mode == "always":
+        return True, "a swap was asked for"
+    if need <= 0:
+        return False, "the engines use no GPU memory"
+    if free is None:
+        return True, f"free memory cannot be read ({source}), so it counts as too little"
+    return free < need, f"free {free} MiB ({source})"
 
 
 def hunyuan_mib(slots: int, ctx: int) -> int:
@@ -925,9 +997,71 @@ def read_status(state: Path) -> dict:
 
 
 # status.json states that leave the server down, or may: a hand-over under
-# way, a restore that failed, a watchdog retrying or one that gave up.
+# way, a restore that failed, a watchdog retrying or one that gave up.  Only a
+# call that stopped the server writes one: a call that found it down writes
+# "left-down", and no later call starts a server the person stopped.
 DOWN_STATES = frozenset({"releasing", "ocr-running", "restoring", "restore-failed",
                          "watchdog-restoring", "gave-up"})
+
+
+# --- what a call did with the GPU (arguments.gpu) -----------------------------------
+
+def record_gpu(arguments: argparse.Namespace, **fields) -> None:
+    """Add FIELDS to the call's GPU record: modelUp (True, False, None: cannot
+    tell) and how it was seen, released (the call stopped the model),
+    restored (it started it again), heldBy (what held the GPU when too
+    little was free, with how to free it)."""
+    record = getattr(arguments, "gpu", None)
+    if record is None:
+        record = arguments.gpu = {}
+    record.update(fields)
+
+
+def gpu_fields(arguments: argparse.Namespace) -> dict:
+    """What status.json and timings.json keep of the call's GPU record."""
+    record = getattr(arguments, "gpu", None) or {}
+    return {key: record[key] for key in ("modelUp", "released", "restored", "heldBy") if key in record}
+
+
+def gpu_note(record: dict | None) -> str:
+    """The RESULT line's short account: was the model up, was it stopped and
+    started again."""
+    if not record:
+        return ""
+    if record.get("mode") == "no-tenant":
+        return "gpu: no local model configured; nothing stopped"
+    if record.get("mode") == "never":
+        return "gpu: OCR_PHASE_SWAP=never; nothing stopped"
+    if record.get("leftDownByEarlier"):
+        return "gpu: model left down by an earlier hand-over, NOT started again"
+    up = record.get("modelUp")
+    text = ("model up" if up else "model not up" if up is False
+            else "model state unknown (no OCR_PHASE_HEALTH_URL)")
+    if record.get("released"):
+        text += ", stopped and started again" if record.get("restored") else ", stopped and NOT started again"
+    elif up is False:
+        text += ", left as it was"
+    else:
+        text += ", not stopped"
+    return "gpu: " + text
+
+
+def record_window(state: Path, arguments: argparse.Namespace, code: int) -> None:
+    """After a window: timings.json keeps its GPU record (lastWindow), and a
+    window that found the model not up says so in status.json - "left-down",
+    outside DOWN_STATES."""
+    record = getattr(arguments, "gpu", None) or {}
+    if record.get("mode") not in ("auto", "always"):
+        return
+    fields = gpu_fields(arguments)
+    if record.get("modelUp") is False and not record.get("released"):
+        write_status(state, "left-down", "the model was not up before this hand-over; it was neither "
+                     "stopped nor started", exitCode=code, **fields)
+    timings = read_timings(state)
+    timings["lastWindow"] = dict(fields, exitCode=code, at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    with contextlib.suppress(OSError, PhaseError):
+        private_directory(state)
+        write_json(state / "timings.json", timings)
 
 
 def recover_left_down(arguments: argparse.Namespace, state: Path, clock: Clock) -> int | str | None:
@@ -1641,7 +1775,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "always", "never"),
         default=(os.environ.get("OCR_PHASE_SWAP") or "auto").strip().lower(),
         help="auto: stop the server when free memory is short or cannot be read; always; "
-             "never (env: OCR_PHASE_SWAP)",
+             "never. A server that is not up before the call is never stopped or started "
+             "(env: OCR_PHASE_SWAP)",
     )
     parser.add_argument(
         "--force-swap",
@@ -1795,7 +1930,10 @@ def main(argv: list[str] | None = None) -> int:
     # its round only (GH-13: identical calls in a row read as a loop).
     after = (f"; next call: {next_round(raw, arguments.runner, arguments.round)}"
              if code in (EXIT_INCOMPLETE, EXIT_GPU_BUSY) else "")
-    say(f"[ocr-phase] RESULT exit={code} {meaning}{f' ({note})' if note else ''}{after}")
+    # Whether the model was up, and whether this call stopped and restarted it.
+    gpu = gpu_note(getattr(arguments, "gpu", None))
+    say(f"[ocr-phase] RESULT exit={code} {meaning}{f' ({note})' if note else ''}{f' [{gpu}]' if gpu else ''}"
+        f"{after}")
     return code
 
 
@@ -1832,6 +1970,7 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
                 "set OCR_PHASE_RELEASE_CMD and OCR_PHASE_RESTORE_CMD", error=True)
             return 2
         # Nothing owns the GPU from outside the queue: run the runner as it is.
+        arguments.gpu = {"mode": "no-tenant"}
         say("[ocr-phase] no local model to hand over (OCR_PHASE_RELEASE_CMD unset); "
             "running the OCR runner directly")
         return run_plain(arguments, runner, env, clock)
@@ -1856,24 +1995,20 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
     else:
         need, need_note = engine_need(runner)
     free, source = free_memory_mib()
+    # A model that is not up before this call is never stopped, so never
+    # started again (never: not even looked at).
     if swap_mode == "never":
-        swap = False
-        reason = "OCR_PHASE_SWAP=never"
-    elif swap_mode == "always":
-        swap = True
-        reason = "a swap was asked for"
-    elif need <= 0:
-        swap = False
-        reason = "the engines use no GPU memory"
-    elif free is None:
-        swap = True
-        reason = f"free memory cannot be read ({source}), so it counts as too little"
+        arguments.gpu = {"mode": "never"}
+        model_up = None
     else:
-        swap = free < need
-        reason = f"free {free} MiB ({source})"
+        model_up, seen = model_state(arguments.health_url)
+        arguments.gpu = {"mode": swap_mode, "modelUp": model_up, "model": seen, "released": False,
+                         "restored": None}
+        say(f"[ocr-phase] model: {({True: 'up', False: 'not up', None: 'cannot tell'})[model_up]} ({seen})")
+    swap, reason = decide_swap(swap_mode, need, free, source, model_up)
     say(f"[ocr-phase] need {need} MiB ({need_note}); {reason} "
         f"-> {'swapping' if swap else 'no swap needed'}")
-    if swap_mode == "never" and free is not None and free < need:
+    if not swap and swap_mode == "never" and free is not None and free < need:
         say(f"[ocr-phase] WARNING only {free} MiB free; the OCR model may fail to load", error=True)
 
     reserve = reserve_seconds(arguments, state, swap)
@@ -1942,6 +2077,7 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
         raise
     if isinstance(recovered, int):
         window.close()
+        record_gpu(arguments, leftDownByEarlier=True, restored=False)
         return recovered
     if recovered == "restored" and not getattr(arguments, "recovered_once", False):
         # The swap was decided with the server down: decide it again.
@@ -1956,11 +2092,31 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
         if swap:
             code, restored = swap_and_run(arguments, runner, env, window, clock, hard_stop, reserve,
                                           need, state)
+        elif model_up is False and need > 0 and gpu_full_with_the_model_down(arguments, need):
+            code = 1
         else:
             code = run_in_window(arguments, runner, env, window, clock, hard_stop)
     finally:
         window.close(keep_files=not restored)
+    record_window(state, arguments, code)
     return code
+
+
+def gpu_full_with_the_model_down(arguments: argparse.Namespace, need: int) -> bool:
+    """The model is not up, so there is nothing to stop: with too little free
+    memory for the engines (read now, in the window), say what holds it and
+    how to free it, and end the call (GPU FULL) with nothing stopped or
+    started.  An idle GPU, or one whose free memory cannot be read, runs."""
+    free, _ = free_memory_mib()
+    if free is None or free >= need:
+        return False
+    say(f"ERROR only {free} MiB free, {need} MiB needed, and the local model is not up: something "
+        "else holds the GPU. Nothing was stopped; no OCR was run", error=True)
+    held, named = name_occupants()
+    record_gpu(arguments, heldBy=named)
+    arguments.result_note = f"{free} MiB free, {need} MiB needed; {held}"
+    arguments.result_meaning = GPU_FULL + "; the local model was not up and was not started"
+    return True
 
 
 def run_plain(arguments: argparse.Namespace, runner: list[str], env: dict[str, str],
@@ -2069,6 +2225,7 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
         left = clear_window(window.children, window.private_root, process.pid if process else None,
                             clock, arguments.window_grace)
         if left:
+            record_gpu(arguments, restored=False)
             close_stand_in(stand_in)
             stand_in = None
             tell_watchdog("ocr-resident")
@@ -2089,6 +2246,7 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
         ok, seconds = bring_back(arguments.restore_cmd, arguments.health_url,
                                  arguments.health_timeout, clock=clock,
                                  ready=getattr(arguments, "ready", None))
+        record_gpu(arguments, restored=ok)
         if not ok:
             tell_watchdog("restore-failed")  # no point waiting for it; retry at once
             left = clock.left()
@@ -2105,7 +2263,7 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
         status["restored"] = True
         tell_watchdog("restored")
         write_status(state, "restored", "the server is back after the OCR window",
-                     windowId=window.id, restoreSeconds=round(seconds, 2))
+                     windowId=window.id, restoreSeconds=round(seconds, 2), **gpu_fields(arguments))
         return True
 
     # A killed phase must not leave the agent's own backend down.  The handler
@@ -2145,9 +2303,13 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
             with signals_held():
                 for sig in HANDLED_SIGNALS:
                     previous[sig] = signal.signal(sig, on_signal)
+            # Only a model that was up comes here: the watchdog is armed for it,
+            # and the restore starts only what this call stopped.
             watchdog_fd = start_watchdog(arguments, window)
             tell_watchdog("releasing")
-            write_status(state, "releasing", "stopping the server for an OCR window", windowId=window.id)
+            record_gpu(arguments, released=True)
+            write_status(state, "releasing", "stopping the server for an OCR window", windowId=window.id,
+                         **gpu_fields(arguments))
             release_began = time.monotonic()
             run_command(arguments.release_cmd, label="release", timeout=clock.cap(COMMAND_TIMEOUT))
             tell_watchdog("released")
@@ -2164,13 +2326,14 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
                     "else was stopped",
                     error=True)
                 # Named with how to free it; the person decides, nothing is killed.
-                held = name_occupants()
+                held, named = name_occupants()
+                record_gpu(arguments, heldBy=named)
                 arguments.result_note = f"{released_free} MiB free after the release, {need} MiB needed; {held}"
                 too_full = True
                 runner_code = 1
             else:
                 write_status(state, "ocr-running", "the server is stopped for an OCR window",
-                             windowId=window.id, restoreCmd=arguments.restore_cmd)
+                             windowId=window.id, restoreCmd=arguments.restore_cmd, **gpu_fields(arguments))
                 open_stand_in(arguments, clock, keep_stand_in)
                 say(f"[ocr-phase] running: {shlex.join(runner)}")
                 runner_code = run_runner(runner, env, hard_stop, holder, runner_started, own_group=True,

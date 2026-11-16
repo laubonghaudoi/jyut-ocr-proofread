@@ -283,6 +283,37 @@ class ClientsTest(unittest.TestCase):
         self.assertEqual(tc.parse_client_ignore("nginx, uid:33 ,"), ["nginx", "uid:33"])
 
 
+@unittest.skipUnless(LINUX_PROC, "needs /proc")
+class ModelProcessesTest(unittest.TestCase):
+    """Which of the GPU's processes are the model server's (run_ocr_phase.py
+    asks whether the model is up)."""
+
+    def test_the_listener_its_descendants_and_a_named_port(self) -> None:
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        url = f"http://127.0.0.1:{port}/v1/models"
+        sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
+        named = subprocess.Popen(sleeper + ["--port", str(port)])
+        other = subprocess.Popen(sleeper + ["--port", str(port + 1)])
+        try:
+            self.assertTrue(tc.listening(url))
+            # This process listens on the port; its child descends from it.
+            found = tc.model_processes(url, [os.getpid(), named.pid, other.pid])
+            self.assertEqual(found, {os.getpid(), named.pid, other.pid})
+            server.close()
+            self.assertFalse(tc.listening(url))
+            # No listener: only the process that names the port as --port.
+            self.assertEqual(tc.model_processes(url, [named.pid, other.pid]), {named.pid})
+            self.assertEqual(tc.model_processes(url, []), set())
+        finally:
+            server.close()
+            for process in (named, other):
+                process.kill()
+                process.wait()
+
+
 class ParsingTest(unittest.TestCase):
     def test_endpoint(self) -> None:
         self.assertEqual(tc.endpoint("http://127.0.0.1:8090/v1/models"), ("127.0.0.1", 8090))

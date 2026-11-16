@@ -481,6 +481,172 @@ class GpuOccupancyTests(HandoverBase):
         self.assertIn('the local model was stopped for this call and is back up', line)
 
 
+    def status(self) -> dict:
+        path = self.state / 'status.json'
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def swaps(self) -> list[str]:
+        return [line for line in self.lines() if line == 'release' or line.startswith('restore')]
+
+    def test_a_model_that_is_not_up_on_an_idle_gpu_runs_the_ocr_directly(self):
+        # (a) The person stopped the model; nothing else is on the GPU, whose
+        # memory nvidia-smi cannot report (a unified-memory GPU): the OCR
+        # runs at once, with no release, no stand-in and no restore.
+        self.gpu([], memory='n/a')
+        marker = self.base / 'ran'
+        result = self.phase([PY, '-c', f'open({str(marker)!r}, "w")'], '--max-seconds', '60',
+                            '--restore-reserve', '15')
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertTrue(marker.exists())
+        self.assertEqual(self.swaps(), [])
+        self.assertNotIn('stand-in on port', output)
+        self.assertIn('[ocr-phase] model: not up (nothing answers or listens at 127.0.0.1:', output)
+        self.assertIn('[gpu: model not up, left as it was]', self.result_line(result))
+        self.assertIsNone(get(self.model_url)[0], 'the model was started')
+        self.assertEqual(self.status()['state'], 'left-down')
+        self.assertEqual((self.status()['modelUp'], self.status()['released']), (False, False))
+        self.assertEqual(json.loads((self.state / 'timings.json').read_text())['lastWindow']['modelUp'], False)
+        # The same with the memory read and plenty of it.
+        self.gpu([])
+        marker.unlink()
+        result = self.phase([PY, '-c', f'open({str(marker)!r}, "w")'], '--max-seconds', '60',
+                            '--restore-reserve', '15')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(marker.exists())
+        self.assertEqual(self.swaps(), [])
+
+    def test_always_never_starts_a_model_that_is_not_up(self):
+        # (b) OCR_PHASE_SWAP=always stopped and then STARTED a model the
+        # person had stopped (the release did nothing, the restore started it).
+        self.env['OCR_PHASE_SWAP'] = 'always'
+        marker = self.base / 'ran'
+        result = self.phase([PY, '-c', f'open({str(marker)!r}, "w")'], '--max-seconds', '60',
+                            '--restore-reserve', '15')
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertTrue(marker.exists())
+        self.assertEqual(self.swaps(), [])
+        self.assertIsNone(get(self.model_url)[0], 'the model was started')
+        self.assertIn('the model is not up, so it is neither stopped nor started', output)
+        # A model that is up is still stopped and started again under always.
+        self.start_model()
+        self.gpu([self.model_on_the_gpu()])
+        result = self.phase(['true'], '--max-seconds', '60', '--restore-reserve', '15')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.swaps(), ['release', 'restore alive=0'])
+        self.assertIn('[gpu: model up, stopped and started again]', self.result_line(result))
+        self.assertEqual(get(self.model_url)[0], 200)
+        self.assertEqual((self.status()['state'], self.status()['released'], self.status()['restored']),
+                         ('restored', True, True))
+
+    def test_another_process_on_the_gpu_is_named_not_killed_and_the_stopped_model_stays_down(self):
+        # (c) The model is stopped and another process of this user holds
+        # 20000 MiB: nothing to stop of ours, so the call names the process
+        # with how to free it and ends GPU FULL; the process is untouched and
+        # the model is not started.
+        other = self.other_process()
+        self.gpu([{'pid': other.pid, 'name': '/usr/bin/sleep', 'mib': 20000}])
+        marker = self.base / 'ran'
+        result = self.phase([PY, '-c', f'open({str(marker)!r}, "w")'], '--max-seconds', '60',
+                            '--restore-reserve', '15')
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, output)
+        self.assertFalse(marker.exists())
+        self.assertIsNone(other.poll(), 'the other process was killed')
+        self.assertEqual(self.swaps(), [])
+        self.assertIsNone(get(self.model_url)[0], 'the model was started')
+        self.assertIn('only 11500 MiB free, 12288 MiB needed, and the local model is not up', output)
+        how = self.how_to_free(other.pid)
+        self.assertIn(f'on the GPU: pid {other.pid}', output)
+        self.assertIn(f'to free it: {how}', output)
+        line = self.result_line(result)
+        self.assertIn('RESULT exit=1 GPU FULL', line)
+        self.assertIn('the local model was not up and was not started', line)
+        self.assertIn(f'held by pid {other.pid} (sleep, 20000 MiB): {how}', line)
+        status = self.status()
+        self.assertEqual((status['state'], status['exitCode']), ('left-down', 1))
+        self.assertEqual([(entry['pid'], entry['mib'], entry['free']) for entry in status['heldBy']],
+                         [(other.pid, 20000, how)])
+
+    def test_without_a_configured_model_nothing_changes(self):
+        # (g) No release/restore commands: the runner runs as it is, the GPU
+        # is not even looked at, and nothing on it is touched.
+        other = self.other_process()
+        self.gpu([{'pid': other.pid, 'name': 'sleep', 'mib': 20000}])
+        env = {key: value for key, value in self.env.items() if not key.startswith('OCR_PHASE_')}
+        result = self.phase([PY, '-c', 'import os; print("window", os.environ.get("OCR_PHASE_WINDOW"))'],
+                            env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('window None', result.stdout)
+        self.assertIsNone(other.poll())
+        self.assertFalse(self.smi_log.exists(), 'nvidia-smi was asked')
+        self.assertIn('[gpu: no local model configured; nothing stopped]', self.result_line(result))
+
+    def test_the_watchdog_is_not_armed_for_a_model_that_was_not_up(self):
+        # (h) The wrapper killed mid-window (a harness's group kill): with the
+        # model up its watchdog restores it; with the model not up there is
+        # nothing to restore, and nothing starts it.
+        from test_handover import SLEEP_RUNNER
+        self.env['OCR_PHASE_SWAP'] = 'always'
+        marker = self.base / 'runner'
+        command = [PY, str(SCRIPTS / 'run_ocr_phase.py'), '--max-seconds', '120', '--restore-reserve', '20',
+                   '--', PY, '-c', SLEEP_RUNNER, str(marker)]
+        wrapper = subprocess.Popen(command, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        self.processes.append(wrapper)
+        self.wait_for(marker.exists, 20, 'the runner did not start')
+        runner, child = (int(pid) for pid in marker.read_text().split())
+        self.addCleanup(lambda: [os.kill(pid, signal.SIGKILL) for pid in (runner, child) if alive(pid)])
+        os.killpg(wrapper.pid, signal.SIGKILL)
+        wrapper.wait(timeout=5)
+        time.sleep(4)
+        self.assertEqual(self.swaps(), [])
+        self.assertIsNone(get(self.model_url)[0], 'the model was started')
+        log = self.state / 'watchdog.log'
+        self.assertFalse(log.exists() and 'ended without restoring' in log.read_text())
+        import run_ocr_phase as phase
+        self.assertNotIn(self.status().get('state'), phase.DOWN_STATES)
+
+    def test_a_later_call_never_starts_a_model_the_person_stopped(self):
+        # (i) recover_left_down restores a model an earlier hand-over left
+        # down; a call that found the model down writes no such state, so no
+        # later call "recovers" it.
+        self.env.update(OCR_PHASE_SWAP='always',
+                        OCR_PHASE_RESTORE_CMD=f"echo restore-attempt >> '{self.events}'; false")
+        first = self.phase(['true'], '--max-seconds', '60', '--restore-reserve', '10', '--restore-horizon', '2')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.status()['state'], 'left-down')
+        import run_ocr_phase as phase
+        arguments = phase.build_parser().parse_args(['--restore-cmd', f"echo restore >> '{self.events}'",
+                                                     '--health-url', self.model_url, '--', 'true'])
+        with mock.patch.dict(os.environ, self.env):
+            self.assertIsNone(phase.recover_left_down(arguments, self.state, phase.Clock(None)))
+        self.assertEqual(self.lines(), [])
+        self.env.pop('OCR_PHASE_SWAP')
+        second = self.phase(['true'], '--max-seconds', '60', '--restore-reserve', '10')
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertEqual(self.lines(), [])
+        self.assertIsNone(get(self.model_url)[0], 'the model was started')
+        self.assertEqual(self.status()['state'], 'left-down')
+
+    def test_a_model_still_loading_counts_as_up(self):
+        # Something listens on the model's port but answers nothing yet (a
+        # server loading its model): it is up, so stopped and started again.
+        import socket
+        import run_ocr_phase as phase
+        self.assertEqual(phase.model_state(None)[0], None)
+        self.assertEqual(phase.model_state(self.model_url)[0], False)
+        with socket.socket() as loading:
+            loading.bind(('127.0.0.1', self.model_port))
+            loading.listen(8)
+            with mock.patch.object(phase, 'HEALTH_PROBE_SECONDS', 0.5):
+                up, seen = phase.model_state(self.model_url)
+        self.assertTrue(up, seen)
+        self.assertIn('a model still loading', seen)
+
+
 class OccupantTests(unittest.TestCase):
     """How a GPU process is named and how the person is told to free it."""
 
@@ -512,6 +678,20 @@ class OccupantTests(unittest.TestCase):
                          'as kim: systemctl --user stop x.service')
         self.assertEqual(how({'pid': 7, 'uid': me}), 'kill 7')
         self.assertEqual(how({'pid': 7, 'uid': me + 1, 'user': 'kim'}), 'kill 7 as its owner (kim), or sudo kill 7')
+
+    def test_the_swap_decision_never_stops_a_model_that_is_not_up(self):
+        decide = self.phase.decide_swap
+        for mode in ('auto', 'always'):
+            for free in (None, 1000, 30000):
+                self.assertFalse(decide(mode, 12288, free, 'nvidia-smi', False)[0], (mode, free))
+        # Up, or unknown (no health URL; WSL2 and macOS tell it by the URL alone): as before.
+        for up in (True, None):
+            self.assertTrue(decide('auto', 12288, 1000, 'nvidia-smi', up)[0])
+            self.assertTrue(decide('auto', 12288, None, 'no nvidia-smi answer', up)[0])
+            self.assertFalse(decide('auto', 12288, 30000, 'nvidia-smi', up)[0])
+            self.assertTrue(decide('always', 12288, 30000, 'nvidia-smi', up)[0])
+            self.assertFalse(decide('auto', 0, 1000, 'nvidia-smi', up)[0])
+            self.assertFalse(decide('never', 12288, 1000, 'nvidia-smi', up)[0])
 
     def test_the_compute_list_is_the_runners_gpu_only(self):
         apps = 'GPU-a, 11, python3, 2000\nGPU-b, 12, /opt/train, [N/A]\n'

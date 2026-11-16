@@ -66,10 +66,10 @@ Paddle 嘅裝置一定係明確嘅 `gpu:N` 或者 `cpu`（`OCR_PADDLE_DEVICE`／
 |---|---|
 | `OCR_PHASE_RELEASE_CMD` | 停本機模型嘅命令（例如 `systemctl --user stop 服務名`）。設咗即係「本機模型擁有 GPU」 |
 | `OCR_PHASE_RESTORE_CMD` | 開返模型嘅命令，要可以重複執行 |
-| `OCR_PHASE_HEALTH_URL` | 開返之後輪詢嘅網址；佢嘅 host:port 亦係搵其他 client 同開暫代服務嘅位置 |
+| `OCR_PHASE_HEALTH_URL` | 開返之後輪詢嘅網址；佢嘅 host:port 亦係搵其他 client 同開暫代服務嘅位置，同埋判斷 call 開始嗰陣模型開咗未（見下面「窗口點運作」）。冇呢個設定就分唔到，照舊按顯存決定 |
 | `OCR_PHASE_READY_PROBE` | 預設冇。有啲服務 health 網址答咗、模型其實未載入完，未答得請求：設 `1` 就喺 health 之後再問 `PROOFREAD_ENDPOINT` 一個 1 token 嘅 chat completion（有 `PROOFREAD_MODEL` 就用佢），答到 2xx 先當開返；亦可以直接寫 chat completions 網址。同 health 共用 `--health-timeout`，時間計入預算；時限內都答唔到就當開唔返（exit 3，watchdog 照樣問）。預留俾還原嘅時間只計同一個設定下量到嘅還原（`timings.json` 嘅 `restoreProbe` 記住係邊個網址；冇就係淨係 health）：開咗、閂咗或者改咗呢個設定，之前量到嘅唔再用，由預設 60 秒重新量，唔使自己刪 `timings.json`。值唔啱（唔係 `0`／`1`／http(s) 網址，或者設 `1` 但冇 `PROOFREAD_ENDPOINT`）就 exit 2，乜都唔停 |
 | `OCR_PHASE_MAX_SECONDS` | 一次 call 嘅總時間，連還原計埋；要低過 agent 嘅 shell 上限（Qwen Code 最多 600 秒，建議 540） |
-| `OCR_PHASE_SWAP` | `auto`（預設：顯存唔夠或者讀唔到先停）、`always`、`never`（永遠唔停，runner 亦唔會因為本機模型而延後） |
+| `OCR_PHASE_SWAP` | `auto`（預設：顯存唔夠或者讀唔到先停）、`always`、`never`（永遠唔停，runner 亦唔會因為本機模型而延後）。`auto` 同 `always` 都淨係停 call 開始嗰陣開緊嘅模型：用戶自己停咗嘅唔停、唔開 |
 | `OCR_PHASE_REQUIRED_MIB` | 覆寫 OCR 需要嘅顯存；唔設就按今次 call 嘅引擎計 |
 | `OCR_PHASE_TENANT_MIB` | 本機模型開返需要嘅空閒顯存；設咗就等夠先還原 |
 | `OCR_PHASE_CLIENT_MATCH` | 逗號分隔，用嚟認模型其他 client 嘅命令行片段（例如 Qwen Code 嘅 `cli.js`） |
@@ -108,12 +108,13 @@ Agent 跑交接嘅規矩：
 窗口點運作：
 
 - 開窗口要先攞到全機交接鎖同共用 GPU 隊列，兩樣都係唔等、即試；攞唔到就 exit 76，唔停模型。
-- 需要幾多顯存：今次 call 嘅引擎取最大嗰個（佢哋輪住跑，唔係加埋）。Paddle 約 12 GiB；Hunyuan 按 slots × 每 slot context 計 KV cache（每 token 約 96 KiB），再加約 3.4 GiB，例如 16 slots × 16384 約 27.4 GiB。Hunyuan 用 CPU 或外部 endpoint、Paddle 用 CPU（`OCR_PADDLE_DEVICE=cpu`／`--device cpu`）就唔計（Linux）。macOS 冇 nvidia-smi，用 `vm_stat` 睇共用記憶體；Linux 讀唔到（冇 nvidia-smi 或者佢答唔到）就當唔夠，照停。
+- 需要幾多顯存：今次 call 嘅引擎取最大嗰個（佢哋輪住跑，唔係加埋）。Paddle 約 12 GiB；Hunyuan 按 slots × 每 slot context 計 KV cache（每 token 約 96 KiB），再加約 3.4 GiB，例如 16 slots × 16384 約 27.4 GiB。Hunyuan 用 CPU 或外部 endpoint、Paddle 用 CPU（`OCR_PADDLE_DEVICE=cpu`／`--device cpu`）就唔計（Linux）。macOS 冇 nvidia-smi，用 `vm_stat` 睇共用記憶體；Linux 讀唔到（冇 nvidia-smi 或者佢答唔到）就當唔夠，照停（模型開緊先停）。
+- 模型開咗未：call 開始嗰陣先睇。`OCR_PHASE_HEALTH_URL` 喺 2 秒內答 2xx、個 host:port 有嘢 listen 緊（例如模型仲載緊），或者 GPU 上面有佢嘅程序（listen 緊嗰個 port 嘅程序、佢嘅子程序，或者命令行寫明 `--port` 係嗰個 port），都當開緊，照上面計使唔使停；停咗就一定開返。冇開（用戶自己停咗）就唔停、唔開、冇暫代服務、冇 watchdog：GPU 夠位就直接跑；唔夠位就 exit 1（`GPU FULL`），照下面退出碼 `1` 列出佔住 GPU 嘅程序同釋放佢嘅命令，乜都唔停。`status.json` 寫 `left-down`，唔係「交接留低冇開」，所以下一次 call 唔會開返佢。冇 `OCR_PHASE_HEALTH_URL` 就分唔到，照舊按顯存決定，停咗都照開返。WSL2（nvidia-smi 列唔到程序）同 macOS（冇 nvidia-smi）淨係靠 health 網址同 port 判斷。每次 call 嘅結果寫喺 RESULT 行尾 `[gpu: …]`（例如 `model up, stopped and started again`、`model not up, left as it was`），同 `status.json` 同 `timings.json` 嘅 `lastWindow`：`modelUp`、`released`、`restored`，`GPU FULL` 嘅話仲有 `heldBy`。
 - 停模型之前先搵模型嘅其他 client（`scripts/_tenant_clients.py`）：有請求喺線上嘅，等佢做完先停；預算唔夠等就 exit 76。最多等到淨低嘅時間仲夠一個窗口：停模型（同等顯存放返出嚟）嘅時間，加今次 call 引擎之中最慢嗰個嘅「載入模型加最長一頁」（`BOOK/reports/ocr-times.json`，未量度用預設值），最少 60 秒；等完唔夠就 exit 76，乜都唔停，因為咁短嘅窗口載唔切模型、一頁都封唔到。預算本身已經唔夠呢個數，就照舊最少留 60 秒。閒置嘅 session 唔使等：停咗模型之後，同一個 port 有暫代服務答 503 加 `Retry-After`（大約窗口長度嘅六分一），叫佢遲啲再試，開返模型之前先關。停模型嘅命令返咗而個 port 仲未放（例如淨係發咗停止訊號），暫代服務最多再試 5 秒先放棄。冇 `OCR_PHASE_HEALTH_URL` 就唔搵 client、冇暫代服務。
 - runner 喺自己嘅 process group 跑，用窗口私有嘅 GPU 隊列（`OCR_GPU_QUEUE_DIR`）同 `OCR_PHASE_WINDOW`：唔會排喺交接自己嘅 lease 後面塞死，其他 session 照排隊等。runner 命令唔好自己加 `--gpu-queue-dir`。
 - 窗口以外：設咗 `OCR_PHASE_RELEASE_CMD`，直接跑 runner（或者其他 session 嘅 runner）唔會將模型載入塞滿咗嘅 GPU，而係 exit 75，寫明「GPU belongs to the local model; run through run_ocr_phase.py」，摘要尾多一行 `NOT RUN: …, not the same command again`。呢個 75 唔係「時間到」：直接再跑同一條命令只會再延後。`ocr_book.py` 嘅 RESULT 行會寫明要經 `run_ocr_phase.py` 跑，連成條命令列埋；`wait_for_run.py` 讀到亦係咁講。Linux 上 Paddle 用 CPU 唔使模型嘅顯存，唔受呢條限制，照排自己嘅 `local-cpu` 隊。
 - 開返模型之前，要等窗口嘅 OCR 程序全部走晒：runner 成個 process group、runner 報告嘅 Hunyuan broker 同 server（`OCR_PHASE_CHILDREN`），同私有隊列入面每一個 lease。GPU 子程序會繼承 lease，所以 WSL2 列唔到 GPU 程序都照用得。等一陣仲喺度就殺；殺完仲喺度就唔開返模型（exit 3），交俾 watchdog。OCR 模型仲喺 GPU 嗰陣，一定唔開返模型。
-- watchdog：wrapper 被殺（包括 SIGKILL）都會接手：殺窗口嘅程序樹，等 OCR 模型走，再開返模型；開唔到就 backoff 重試半個鐘，寫 `status.json`，有 `OCR_PHASE_NOTIFY_CMD` 就通知人。watchdog 放棄咗或者開返失敗之後，下一次 call 一開窗口就睇 `status.json`：模型 health 答返就當已經開返；唔係就先跑 `OCR_PHASE_RESTORE_CMD` 開返模型，再重新計使唔使停模型；開唔返就 exit 3，一頁 OCR 都唔跑，RESULT 行寫明手動開返嘅命令。唔會因為模型冇開、顯存好多，就當「唔使停模型」照跑，報 DONE。watchdog 仲試緊（佔住 GPU 隊列）嘅話就 exit 76，ERROR 行會講。狀態、watchdog log 同量度（`timings.json`）喺 `${XDG_STATE_HOME:-$HOME/.local/state}/jyut-ocr/handover/`（私有，0700）。
+- watchdog：淨係今次 call 停咗模型先開。wrapper 被殺（包括 SIGKILL）都會接手：殺窗口嘅程序樹，等 OCR 模型走，再開返模型；開唔到就 backoff 重試半個鐘，寫 `status.json`，有 `OCR_PHASE_NOTIFY_CMD` 就通知人。watchdog 放棄咗或者開返失敗之後，下一次 call 一開窗口就睇 `status.json`：模型 health 答返就當已經開返；唔係就先跑 `OCR_PHASE_RESTORE_CMD` 開返模型，再重新計使唔使停模型；開唔返就 exit 3，一頁 OCR 都唔跑，RESULT 行寫明手動開返嘅命令。唔會因為模型冇開、顯存好多，就當「唔使停模型」照跑，報 DONE（講緊交接留低冇開嘅模型；用戶自己停咗嘅，`status.json` 係 `left-down`，唔會開返）。watchdog 仲試緊（佔住 GPU 隊列）嘅話就 exit 76，ERROR 行會講。狀態、watchdog log 同量度（`timings.json`）喺 `${XDG_STATE_HOME:-$HOME/.local/state}/jyut-ocr/handover/`（私有，0700）。
 - 時間：所有等待（runner 收尾、kill grace、等 OCR 模型離開、開返模型、health check）都計入預算，一次 call 唔會超過 `OCR_PHASE_MAX_SECONDS`。預留俾收尾嘅時間按呢部機量度到嘅還原時間調整，未量度就預 60 秒；量到嘅估計最多 300 秒，亦唔超過預算嘅一半，所以還原慢過頭都唔會令之後每次 call 都 exit 2；冇預算嘅 call 量到嘅還原時間只會拉低、唔會拉高呢個估計（慢過估計嘅另外記喺 `unbudgetedRestoreSeconds`）；還原未完、call 嘅時間就用晒（exit 3），佢用咗幾耐都照記入 `restoreSeconds`，當係最少要咁耐，下一次 call 就預多啲，唔會次次都喺同一度斷；停模型嘅時間亦會量度（`timings.json` 嘅 `releaseSeconds`），未量度就預 30 秒。
 - `--max-seconds 0`（冇預算）只限 shell 冇時間上限，而且要 `OCR_PHASE_UNLIMITED_SHELL=1` 講明；否則要停模型就會拒絕。
 

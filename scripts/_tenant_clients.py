@@ -49,6 +49,14 @@ wait_until_idle(health_url, exclude_pids=..., match=..., poll_s=..., timeout_s=.
     and a request that starts between the check and the release is cut off
     when the server stops.
 
+listening(health_url), model_processes(health_url, candidates)
+    For run_ocr_phase.py's question whether the model is up: whether
+    anything accepts connections at the URL's host and port (a server still
+    loading its model counts), and which of the candidate pids (the GPU's
+    compute processes) are the model's: they listen on that port (Linux:
+    /proc/net/tcp{,6} in state LISTEN), descend from one that does, or give
+    it as --port on their own or a parent's command line.
+
 StandIn(host, port, retry_after_s=30)
     A context manager.  Entering it binds host:port and answers every request
     (any method, any path) with 503, `Retry-After: N` and the JSON body
@@ -497,6 +505,75 @@ def wait_until_idle(health_url: str, *, exclude_pids: set[int], match: list[str]
         if on_wait is not None:
             on_wait(busy)
         time.sleep(min(poll_s, remaining))
+
+
+def listening(health_url: str) -> bool:
+    """Whether something accepts TCP connections at the health URL's host and
+    port: a model server that is up, or still loading its model."""
+    host, port = endpoint(health_url)
+    return _listening(host, port)
+
+
+TCP_LISTEN = "0A"
+
+
+def _listener_inodes(port: int) -> set[int]:
+    """Inodes of the listening TCP sockets on PORT (any local address), from /proc/net/tcp{,6}."""
+    found: set[int] = set()
+    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(name, encoding="ascii", errors="replace") as handle:
+                lines = handle.read().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != TCP_LISTEN:
+                continue
+            try:
+                if int(fields[1].rsplit(":", 1)[1], 16) == port and int(fields[9]):
+                    found.add(int(fields[9]))
+            except (IndexError, ValueError):
+                continue
+    return found
+
+
+def _names_port(command: str, port: int) -> bool:
+    """Whether a command line gives PORT as its --port (--port N, --port=N)."""
+    words = command.split()
+    for index, word in enumerate(words):
+        if word == "--port" and index + 1 < len(words) and words[index + 1] == str(port):
+            return True
+        if word == f"--port={port}":
+            return True
+    return False
+
+
+def model_processes(health_url: str, candidates: Iterable[int]) -> set[int]:
+    """Which of CANDIDATES (pids, the GPU's compute processes) are the model
+    server at the health URL: a process that listens on its port, a
+    descendant of one (an engine process its API server started), or one
+    whose command line, or a parent's, gives that port as its --port (a
+    server that loads its model before it listens).  Linux only (/proc);
+    elsewhere none."""
+    candidates = {int(pid) for pid in candidates}
+    if not candidates or not os.path.isdir("/proc/self/fd"):
+        return set()
+    _host, port = endpoint(health_url)
+    table = _process_table()
+    owners = _proc_inode_owners(_listener_inodes(port))
+    servers = {pid for pids in owners.values() for pid in pids}
+    found: set[int] = set()
+    for pid in candidates:
+        seen: set[int] = set()
+        current = pid
+        while current in table and current not in seen and current > 1:
+            seen.add(current)
+            if current in servers or _names_port(table[current][2], port):
+                found.add(pid)
+                break
+            current = table[current][0]
+    return found
 
 
 def _listening(host: str, port: int) -> bool:
