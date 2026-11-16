@@ -15,8 +15,6 @@ from typing import Sequence
 
 from _ocr_markdown import (
     apply_boundary_contract_with_break_lines,
-    assembly_receipt_problems,
-    assembly_receipt_verified_break_lines,
     boundary_contract_problems,
     classify_all_boundaries,
     FENCE_RE,
@@ -115,7 +113,6 @@ NOTATION_ALLOWED_MEANINGS = {
 }
 OPTIONAL_GATE_ROLES = (
     "annotated_source",
-    "assembly_receipt",
     "boundary_manifest",
     "notation_policy",
     "page_manifest",
@@ -1396,7 +1393,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SPEC",
         help=(
             "annotated-mode pages intentionally without markers, for example "
-            "17 or 2,5-7; release manifests must also seal marker_expected=false"
+            "17 or 2,5-7; a page manifest must also record marker_expected=false"
         ),
     )
     parser.add_argument(
@@ -1409,7 +1406,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "structured-profile annotated source used with --boundary-manifest "
-            "to reconstruct and verify a final target without a release receipt"
+            "to reconstruct and verify a final target"
         ),
     )
     parser.add_argument(
@@ -1436,21 +1433,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--assembly-receipt",
-        type=Path,
-        help=(
-            "SHA-256 receipt emitted by finalize_page_markers.py; fail if the "
-            "final output or any recorded input changed"
-        ),
-    )
-    parser.add_argument(
         "--page-manifest",
         type=Path,
         help=(
             "page/render provenance manifest; use together with --source-pdf to "
             "rehash the selected PDF and every declared render; annotated mode "
             "immediately verifies marker_expected coverage, while final mode "
-            "uses a receipt to verify sealed annotated coverage"
+            "verifies the coverage of --annotated-source"
         ),
     )
     parser.add_argument(
@@ -1506,10 +1495,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--page-manifest and --source-pdf must be used together")
     if args.annotated_source is not None and args.boundary_manifest is None:
         parser.error("--annotated-source requires --boundary-manifest")
-    if args.annotated_source is not None and args.assembly_receipt is not None:
-        parser.error(
-            "--annotated-source and --assembly-receipt are alternative proof paths"
-        )
     if args.annotated_source is not None and paths_refer_to_same_file(
         args.annotated_source, args.target
     ):
@@ -1526,7 +1511,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         role: path
         for role, path in (
             ("annotated_source", args.annotated_source),
-            ("assembly_receipt", args.assembly_receipt),
             ("boundary_manifest", args.boundary_manifest),
             ("notation_policy", args.notation_policy),
             ("page_manifest", args.page_manifest),
@@ -1575,17 +1559,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         text = _read_utf8(args.target)
         preview_markers, preview_malformed = find_page_markers(split_lines(text))
-        receipt_target_is_final = args.mode == "final" or (
+        target_is_final = args.mode == "final" or (
             args.mode == "auto" and not preview_markers and not preview_malformed
         )
-        verified_break_lines = set(
-            assembly_receipt_verified_break_lines(args.assembly_receipt)
-            if args.assembly_receipt is not None and receipt_target_is_final
-            else frozenset()
-        )
+        verified_break_lines: set[int] = set()
         structured_proof_issues: list[Issue] = []
         if structured_annotated_text is not None:
-            if not receipt_target_is_final:
+            if not target_is_final:
                 structured_proof_issues.append(
                     Issue(
                         "error",
@@ -1629,9 +1609,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             allowed_loose_list_break_lines=frozenset(verified_break_lines),
             relocate_footnotes=args.relocate_footnotes,
         )
-        release_issues: list[Issue] = list(structured_proof_issues)
+        gate_issues: list[Issue] = list(structured_proof_issues)
         if args.page_manifest is not None:
-            release_issues.extend(
+            gate_issues.extend(
                 Issue("error", code, None, message)
                 for code, message in page_manifest_problems(
                     args.page_manifest,
@@ -1639,7 +1619,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             if result.mode == "annotated":
-                release_issues.extend(
+                gate_issues.extend(
                     Issue("error", code, None, message)
                     for code, message in page_manifest_marker_coverage_problems(
                         args.page_manifest,
@@ -1648,47 +1628,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             elif structured_annotated_text is not None:
                 assert args.annotated_source is not None
-                release_issues.extend(
+                gate_issues.extend(
                     Issue("error", code, None, message)
                     for code, message in page_manifest_marker_coverage_problems(
                         args.page_manifest,
                         annotated_path=args.annotated_source,
                     )
                 )
-        if args.assembly_receipt is not None:
-            if result.mode != "final":
-                release_issues.append(
-                    Issue(
-                        "error",
-                        "assembly-receipt-requires-final",
-                        None,
-                        "assembly receipts can only be verified in final mode",
-                    )
-                )
-            else:
-                release_issues.extend(
-                    Issue("error", code, None, message)
-                    for code, message in assembly_receipt_problems(
-                        args.assembly_receipt,
-                        expected_output_path=args.target,
-                        required_input_paths=tuple(
-                            path
-                            for path in (
-                                args.notation_policy,
-                                args.source_exceptions,
-                                args.page_manifest,
-                            )
-                            if path is not None
-                        ),
-                        page_manifest_path=args.page_manifest,
-                    )
-                )
-        if release_issues:
+        if gate_issues:
             result = AuditResult(
                 mode=result.mode,
                 marker_count=result.marker_count,
                 boundaries=result.boundaries,
-                issues=(*result.issues, *release_issues),
+                issues=(*result.issues, *gate_issues),
             )
     except (OSError, UnicodeError, ValueError) as error:
         parser.error(str(error))

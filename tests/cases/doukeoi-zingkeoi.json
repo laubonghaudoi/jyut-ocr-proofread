@@ -1,0 +1,448 @@
+{
+ "book": "在「盜區」與「政區」之間──明代閩粵贛湘交界的秩序變動與地方行政演化",
+ "bookId": "doukeoi-zingkeoi",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/liksi/文獻/在「盜區」與「政區」之間──明代閩粵贛湘交界的秩序變動與地方行政演化_唐立宗.pdf",
+  "sha256": "4f4a890175185f2b59db6aa7865dd1f873fefe3d5cf0b1d180d6c5c87ff5e2fd",
+  "pages": 609,
+  "titleFrom": "the PDF's file name and the running head printed on scan 583 (在「盜區」與「政區」之間)",
+  "renderSha256": {
+   "7": "2adf188f0e171fc1471f7bba3271c0796293189eadf638ead41442abef0ba603",
+   "14": "d63fd10a2b605ae8b5f5bf9fecfc3ca1a22b1c117cd14ed9247aa39487f85f52",
+   "77": "2fffc4cddbbf0c5fc603531d8d95e896fd807c8d72a54b86213ef33834db3ae5",
+   "316": "dd33c2fcb04ae1d7c86439e45dc299945e7dd2707de2ddf534a91e704e05ef8e",
+   "327": "7b10375f1719fa0976e1e387321ff8fdbb3b24687a7f0d88b0f8ec81ed16776f",
+   "583": "31d43b482878e716455c17cb17a7fcb41c99867eca343fe86ebe858f763fcb57",
+   "594": "5ff916a763b8c35ae02e8d028dfb09c2d0722c6dde5f0e4f0a2d32b0dd948aad",
+   "58": "d6dc428d6df63ee548f62115566124740cec96727273c5799bbdfb4aa4db137a",
+   "64": "1c72929be9bd5f9ab1aed411f6212649c34956e9bf4e19b98ef1adff75920512",
+   "86": "cd2ee58f9299dcf60caf71dbdd6685f1ad415cef437fcb8beb443fe89a7b5659",
+   "89": "f92bad733c760bf167119e1e52130a7bdabca83d9fb9e13b7fc772c8242d77d5",
+   "92": "69998ddaa629dab9cf5ec5e8fe5aef7f4967345a65f11d41b59b1625ec021ad5",
+   "103": "0d6cbfb48a4cb5d8a823c63ad6950ac772a1d90b54098e5f9f524ee83af2f7f3",
+   "149": "ea68700b809da518a1faae449535dcb3fb6ca5ac31f59a4439e260d921134719",
+   "151": "00ae634394d717966585073c0528c71ec166a43d3e74141461e375a89ed54cf0",
+   "165": "5c80d236065271d76737d8c8462fc8a48b3df51466f65f1fb2f6a3b8f6d56783",
+   "173": "9d9425a3ba18e42bfc16bbbc0a22f6a0595def0f9414537a6d39288c3a6c4050",
+   "215": "330e24ef41601ba4614581dbbb4db35c917bc41a3136487357eb5cd20036a74b",
+   "258": "6043d277ad7d9e98db619d46c04a727edc7b1beab2bdd5df0ce870d6f2329ccc",
+   "290": "854fa3bed0a08d7117ca92ffa7e4b71f36cdd939b39bd9f94e2652b61047fe9e",
+   "340": "be0324145697d395458af06eecd7ae8ad83f7f6243a35566f2748e45b31bce47",
+   "344": "6ddd957a279bf870786896630efbf3cac143d9314671c9352ebdd48e6ad35e96",
+   "349": "42e4014fcd1cd17eea0a9ebd541a59d0b21e9dfcc2410873eced4c398a3cb377",
+   "354": "8f3b9c85d8c71ee27be78eee8a3cf175cadb457d3df966e7509c0f336ca38ee7",
+   "404": "9e28ad8bc0e3e4e32a1c2b52cb3df2ecb9ce6a094bae0dc8db60df92c7a60621",
+   "411": "3ea075a41c8e70304dc3bc5957969b3b7586e1fef1f7e6077a24fb3321de84c7",
+   "432": "c8520742ac4f060d4dd03cdf5198f0e90d05e7ee813d4ff8c4e88dac39fc3f2b",
+   "450": "ea426f03484b24117ba43ca21fc80324807e6c90dc62396c079ba35286e92996",
+   "75": "5cf9fd8e28e6cf2ce05f560dd0d7191261238f808354ada9345a7d0f3d607dfe",
+   "608": "b2ad89325ad30c2912a07f58825d08b8da4341d8e8640e0c01736228ceffbd19"
+  },
+  "renderSha256From": "page-manifest.json of liksi/doukeoi-zingkeoi (survey_pdf.py, 300 dpi, 2026-09-30)"
+ },
+ "traits": [
+  "horizontal-ltr",
+  "traditional-han",
+  "modern-book",
+  "footnotes",
+  "western-citations",
+  "arabic-figures",
+  "italic-titles",
+  "kana",
+  "tables",
+  "merged-cells",
+  "table-continued-across-pages",
+  "table-of-contents",
+  "bibliography",
+  "circled-note-markers-above-20"
+ ],
+ "notCovered": [
+  "vertical layout",
+  "circle marks (圈點)",
+  "charts",
+  "running-head stems (read as not text only)"
+ ],
+ "assertions": [
+  {
+   "id": "golden-7-h1",
+   "page": 7,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0007.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. A contents page continuing from scan 6 (no title on this page): one entry per line, title …… page number (one …… for each printed leader), enumerators （一）–（五） and 第N節／第N章 with a full-width space as printed. Accepted unchanged. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 100.0,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 0,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-14-h2",
+   "page": 14,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0014.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. ## 緒論, three body paragraphs (the third continues on the next page) and footnotes 1-2, the second a Western citation; 'Conten-tious' at a line end is joined. Engine B left both footnotes out until the second look. The user marked the italic title in note 2. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 98.7,
+     "minMarkPrecision": 99.0,
+     "maxStructureErrors": 1,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-77-h3",
+   "page": 77,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0077.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. Body (the first paragraph a block quotation continued from scan 76, marked > by the user) and notes 72-74; note 73 ends 頁 13b-14a and note 74 is wholly English (Sow-Theng Leong, …, pp. 31-36): both were missing from the delivery of 2026-10-03 with no doubt (HANDOFF C.1). 'Peng-'/'min' at a line end is joined (Pengmin, as the bibliography on scan 583 prints it). Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 2,
+     "minMarkRecall": 97.8,
+     "minMarkPrecision": 99.6,
+     "maxStructureErrors": 2,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-316-h4",
+   "page": 316,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0316.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. The continuation of a salt-administration table from scan 315 (its header row is on p.315, so the first data row stands in the Markdown header position), with note references 199-201 in the amount cells, then notes 197-198 (their references are on scan 315). Accepted unchanged. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 1,
+     "minMarkRecall": 98.1,
+     "minMarkPrecision": 91.5,
+     "maxStructureErrors": 1,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "table-316-h5",
+   "page": 316,
+   "type": "golden_table",
+   "value": "doukeoi-zingkeoi/page-0316.md",
+   "provenance": "human",
+   "note": "the table of golden-316-h4: every figure, mark and source reference of the cells as printed; engine A's and engine B's grids agree here (vouched_grid).",
+   "ratchets": {
+    "repaired": {
+     "minCellsExact": 41,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-327-h6",
+   "page": 327,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0327.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. Body text, the table title 表 4-6 and the troop-pay table as HTML (a garrison name spans its rows), then note 240. Phase 3 refuses engine A's grid for its merged cells (tablesRejected) and the delivery lacks figures here (HANDOFF C.3). Accepted unchanged. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 1,
+     "minMarkRecall": 63.4,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 2,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "table-327-h7",
+   "page": 327,
+   "type": "golden_table",
+   "value": "doukeoi-zingkeoi/page-0327.md",
+   "provenance": "human",
+   "note": "the table of golden-327-h6, with its rowspan/colspan as printed.",
+   "ratchets": {
+    "repaired": {
+     "minCellsExact": 35,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-583-h8",
+   "page": 583,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0583.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. Bibliography: the last Chinese entries, ### 外文專書：, ten Western entries (titles italic as printed: read on the render 2026-10-04) and three Japanese entries. 176 runs both engines read here were missing from the delivery (HANDOFF C.2). Accepted unchanged. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 4,
+     "minMarkRecall": 90.6,
+     "minMarkPrecision": 99.1,
+     "maxStructureErrors": 0,
+     "ratchetFrom": "runs/figures-12/rep/new: model-off repair of runs/fixes-1016/base seals with main 2026-10-20 (#12: one-engine runs written where the other engine is not aligned); 2026-10-20"
+    }
+   }
+  },
+  {
+   "id": "golden-594-h9",
+   "page": 594,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0594.md",
+   "provenance": "human",
+   "note": "user golden (canvas '盜區政區 Golden' (artifact WMP4J3FUEeamK8CEY4WzMF), 2026-10-04): drafted from the render by one agent, corrected by a second, checked by the user. Bibliography of Japanese articles with kana, page ranges and ～. Accepted unchanged. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number (asked after the canvas, 2026-10-04: circled numbers above 50 have no Unicode character); italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・; a line break a narrow table column forces is joined, an author's break is <br>. Running head and folio are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 94.0,
+     "minMarkPrecision": 97.0,
+     "maxStructureErrors": 14,
+     "ratchetFrom": "runs/figures-12/rep/new: model-off repair of runs/fixes-1016/base seals with main 2026-10-20 (#12: one-engine runs written where the other engine is not aligned); 2026-10-20"
+    }
+   }
+  },
+  {
+   "id": "consistent-151-1",
+   "page": 151,
+   "type": "contains",
+   "value": "虔臺志卷",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 虔臺志卷 (note 163 天啟《重修虔臺志》，卷9); the delivered output writes 慶臺志卷 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-151-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-340-2",
+   "page": 340,
+   "type": "contains",
+   "value": "虔臺志卷事紀六",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 虔臺志卷事紀六 (note 28 天啟《重修虔臺志》，卷9〈事紀六〉; seven characters, as notes 27 and 28 differ only in figures and 事紀八/六); the delivered output writes 啟臺志卷事紀六 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-340-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-344-3",
+   "page": 344,
+   "type": "contains",
+   "value": "頁天啟重修虔",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 頁天啟重修虔 (note 46 天啟《重修虔臺志》，卷8〈事紀五〉，頁1b-2a; notes 45 and 46 are the same characters but for figures, so the context runs back over note 45's 頁 12b。); the delivered output writes 頁天啟重修啟 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-344-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-404-4",
+   "page": 404,
+   "type": "contains",
+   "value": "重修虔臺志",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 重修虔臺志 (note 273 天啟《重修虔臺志》，卷11); the delivered output writes 重修慶臺志 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-404-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-411-5",
+   "page": 411,
+   "type": "contains",
+   "value": "重修虔臺志",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 重修虔臺志 (note 34 ……；天啟《重修虔臺志》，卷7); the delivered output writes 重修年臺志 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-411-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-432-6",
+   "page": 432,
+   "type": "absent",
+   "value": "虐臺續志",
+   "provenance": "machine",
+   "note": "cross-page consistency: the print has no 虐臺續志 here, only one 嘉靖《虔臺續志》 (note 46, written right today); engine A read that line twice, once garbled inside note 45's block (喜靖《虐臺續志》，卷4〈事紀二〉，百23b-24a), and the output keeps the garbled copy as an extra line at the end of note 45; the delivered output writes 喜靖虐臺續志 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-432-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-450-7",
+   "page": 450,
+   "type": "contains",
+   "value": "虔臺志卷",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 虔臺志卷 (note 121 天啟《重修虔臺志》，卷7); the delivered output writes 度臺志卷 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-450-qiantai.png; #26"
+  },
+  {
+   "id": "consistent-58-8",
+   "page": 58,
+   "type": "contains",
+   "value": "利瑪竇金尼閣",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 利瑪竇金尼閣 (note 11 利瑪竇、金尼閣著; the 96-ppi glyph is dense, but its top is 穴 (as in the body's 利瑪竇 on this page, dzk-058-limadou-body.png), not the 宀+王缶 of 寶 (ref-dzk-016-bao.png, ref-dzk-090-bao.png); engine A reads 竇 at every site, engine B 寶); the delivered output writes 利瑪寶金尼閣 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-058-limadou-1.png; #26"
+  },
+  {
+   "id": "consistent-58-9",
+   "page": 58,
+   "type": "contains",
+   "value": "利瑪竇中國",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 利瑪竇中國 (note 11 《利瑪竇中國札記》; same glyph as the body's 利瑪竇); the delivered output writes 利瑪寶中國 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-058-limadou-2.png; #26"
+  },
+  {
+   "id": "consistent-64-10",
+   "page": 64,
+   "type": "contains",
+   "value": "利瑪竇也有",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 利瑪竇也有 (利瑪竇也有類似的記載); the delivered output writes 利瑪寶也有 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-064-limadou-1.png; #26"
+  },
+  {
+   "id": "consistent-64-11",
+   "page": 64,
+   "type": "contains",
+   "value": "利瑪竇在途",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 利瑪竇在途 (但利瑪竇在途中); the delivered output writes 利瑪寶在途 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-064-limadou-2.png; #26"
+  },
+  {
+   "id": "consistent-64-12",
+   "page": 64,
+   "type": "contains",
+   "value": "參見利瑪竇",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 參見利瑪竇 (參見利瑪竇、金尼閣著); the delivered output writes 參見利瑪寶 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-064-limadou-3.png; #26"
+  },
+  {
+   "id": "consistent-92-13",
+   "page": 92,
+   "type": "contains",
+   "value": "在利瑪竇的",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 在利瑪竇的 (在利瑪竇的觀察裡); the delivered output writes 在利瑪寶的 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-092-limadou.png; #26"
+  },
+  {
+   "id": "consistent-89-14",
+   "page": 89,
+   "type": "contains",
+   "value": "例如姚鏌",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 例如姚鏌 (例如姚鏌（1465-1538）; the output also drops the years); the delivered output writes 例如姚鎮 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-089-yaomo.png; #26"
+  },
+  {
+   "id": "consistent-149-15",
+   "page": 149,
+   "type": "contains",
+   "value": "總督姚鏌",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 總督姚鏌 (兩廣總督姚鏌（1465-1538）說); the delivered output writes 總督姚鎭 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-149-yaomo.png; #26"
+  },
+  {
+   "id": "consistent-165-16",
+   "page": 165,
+   "type": "contains",
+   "value": "姚鏌訪得",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 姚鏌訪得 (兩廣總督姚 / 鏌訪得 across a line break); the delivered output writes 姚鎭訪得 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-165-yaomo.png; #26"
+  },
+  {
+   "id": "consistent-173-17",
+   "page": 173,
+   "type": "contains",
+   "value": "姚鏌東泉",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 姚鏌東泉 (〔明〕姚鏌，《東泉文集》); the delivered output writes 姚鎮東泉 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-173-yaomo.png; #26"
+  },
+  {
+   "id": "consistent-215-18",
+   "page": 215,
+   "type": "contains",
+   "value": "姚鏌希冀",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 姚鏌希冀 (兩廣總督姚鏌希冀); the delivered output writes 姚鎮希冀 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-215-yaomo.png; #26"
+  },
+  {
+   "id": "consistent-258-19",
+   "page": 258,
+   "type": "contains",
+   "value": "今祛除之易",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 今祛除之易 (祛 with 礻 (one dot right of the stroke, as 祇 on p.290, ref-dzk-290-zhi.png), not 衤 (two, as 初, ref-dzk-290-chu.png); engine B reads 祛, engine A 袪); the delivered output writes 今袪除之易 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-258-quchu-z.png; #26"
+  },
+  {
+   "id": "consistent-290-20",
+   "page": 290,
+   "type": "contains",
+   "value": "重欠祛除",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 重欠祛除 (祛 with 礻, as on p.258); the delivered output writes 重欠袪除 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-290-quchu-z.png; #26"
+  },
+  {
+   "id": "consistent-103-21",
+   "page": 103,
+   "type": "contains",
+   "value": "甓餘雜集",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 甓餘雜集 (〔明〕朱紈，《甓餘雜集》 (the output also writes 〈〉 for 《》)); the delivered output writes 璧餘雜集 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-103-piyu.png; #26"
+  },
+  {
+   "id": "consistent-354-22",
+   "page": 354,
+   "type": "contains",
+   "value": "浰頭捷音",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 浰頭捷音 (〈別錄三・浰頭捷音疏〉); the delivered output writes 王頭捷音 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-354-litou.png; #26"
+  },
+  {
+   "id": "consistent-349-23",
+   "page": 349,
+   "type": "contains",
+   "value": "為佛郎",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 為佛郎 (inside the woodblock figure 圖5-1, first column: 範錫為佛郎機銃 (calligraphic 郎: the top dot of 良, 阝 written 卩-like; the caption and note 66 print 佛郎機); figure overview dzk-349-folang-fig.png); the delivered output writes 為佛即 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-349-folang-1.png; #26"
+  },
+  {
+   "id": "consistent-349-24",
+   "page": 349,
+   "type": "contains",
+   "value": "為書佛郎",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 為書佛郎 (inside the woodblock figure 圖5-1, sixth column: 節愈厲為書佛郎機遺事 (note 66 cites 〈書佛郎機遺事〉)); the delivered output writes 為書佛即 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-349-folang-2.png; #26"
+  },
+  {
+   "id": "consistent-86-25",
+   "page": 86,
+   "type": "contains",
+   "value": "薯蕷之類",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 薯蕷之類 (「所產旱穀薯蕷之類」 (traditional 蕷; the same page later has 薯蕷 written right)); the delivered output writes 薯蓣之類 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/dzk-086-shuyu.png; #26"
+  },
+  {
+   "id": "golden-75-m1",
+   "page": 75,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0075.md",
+   "provenance": "human",
+   "note": "user-confirmed golden (canvas '金標準覆核' (artifact KxfwDZovev5fVf5iLbiffK), answers/g-dzk-75: verdict ok, 2026-10-13T23:44:37Z): the user confirmed this file as the canvas showed it, byte for byte; the canvas's writing questions for this page (q-coek, q-note69) were left unanswered, so the draft's choices stand. The machine draft's note follows. machine draft golden (goldgate, 2026-10-13), read line by line from 2-8x crops of the render, to be confirmed by the user: body text with a block quotation (the kai-type 楊載鳴 passage, marked > as on scan 77) and notes 64-68. The first line is the tail of a sentence begun on scan 74 (…蛋民以), and the page ends mid-sentence (…[^69]蛋民, continued 生計維艱 on scan 76); note 69 itself is printed on scan 76, so [^69] has no definition here. The body after the quotation is printed flush left (the paragraph goes on), but Markdown needs a blank line after a quotation. Printed forms kept: 測目, 流徒, 鄉道, 侶, 鱉, 讎, 姦, 踉蹡, 侷限, 蹤跡, 蜑, 拏, 浚削, 弼; the quotation prints 則已趠入巢穴 (走 + 卓, U+8DA0), which both engines and the delivery read 趕; note 64 prints 〈輿圖紀・惠州府〉 (engine A: 興). The delivery of 2026-10-12 drops markers 64, 65, 68 and 69, writes 66 and 67 as ⑥⑥ ⑥⑦, writes the notes as '- ' items with the numbers lost, drops 卷 1 in note 64, turns 〔明〕 into （明） in note 68 and 《百越源流與文化》 into 〈…〉 in note 67, and sets no space between CJK and figures in the notes. Conventions the user chose on the canvas: note markers as Markdown footnotes, [^N] at the reference and '[^N]: ' opening the note, N the printed number; italic Western titles and words as *...*; one half-width space between a CJK character and a Latin letter or digit, as the print sets it; the centred dot as U+30FB ・. Running head and folio (62 在「盜區」與「政區」之間) are not text.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 1,
+     "minMarkRecall": 89.9,
+     "minMarkPrecision": 93.9,
+     "maxStructureErrors": 5,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-608-m1",
+   "page": 608,
+   "type": "golden_page",
+   "value": "doukeoi-zingkeoi/page-0608.md",
+   "provenance": "human",
+   "note": "user-confirmed golden (canvas '金標準覆核' (artifact KxfwDZovev5fVf5iLbiffK), answers/g-dzk-608: verdict ok, 2026-10-13T23:45:22Z): the user confirmed this file as the canvas showed it, byte for byte; the canvas's writing questions for this page (q-stacked, q-608title) were left unanswered, so the draft's choices stand. The machine draft's note follows. machine draft (goldgate 2026-10-13), not yet confirmed by the user: drafted from zoomed crops of the render, then checked against both engines and the delivery at every difference (jyut-ocr-corpus/runs/goldgate/goldens/doukeoi-zingkeoi/page-0608.notes.md). The colophon (版權頁), the last text page: the boxed 版權所有 / 不准翻印 as two lines, the edition line, 文史叢刊之一一八： (two separate strokes, series no. 118 as scan 607's list), title and subtitle (——, 盜 with 氵 as printed) as plain lines, not headings, then the colophon one entry per line, label + the printed ： + value. A label printed once beside two stacked lines (出版者, 主編者, 印刷者) is written once with the two lines in reading order joined by one space (主編者：高明士 葉國良; 出版者：國立臺灣大學出版委員會 臺北市羅斯福路 4 段 1 號), as caangung-4 p.2 joins a two-line label and golden-71-h13 joins stacked sub-lines; letter-spacing is not written; ISSN 1682-8461. Delivery of 2026-10-12 (repaired = final.md): 15 errors and 13 of 32 marks missed - the stacked names read across columns (高葉明國士良, also engine A), the labels 著作者 and 發行者 replaced by 立宗者 and 學院者 by adjudication with the 發行者 value scrambled (國立學院行者臺灣大學發, 文 lost), the ISSN line dropped, the title made a # heading; final.md glues 版權所有 to scan 607's last line. Engine A 4 errors (the names only), engine B 28. Conventions the user chose on the canvas: as golden-7-h1. Nothing on this page is running head, folio or seal.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 15,
+     "minMarkRecall": 59.4,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 1,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  }
+ ]
+}

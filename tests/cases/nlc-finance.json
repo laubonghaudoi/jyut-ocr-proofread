@@ -1,0 +1,78 @@
+{
+ "book": "廣東財政紀實",
+ "bookId": "nlc-finance",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/nlc-finance/finance-nlc.pdf",
+  "sha256": "9c6ea12d08c1086138d0e7ec37f8de0324e6f592ce45805714716f440051cb79",
+  "pages": 850,
+  "titleFrom": "running head printed on scan p.24 (廣東財政紀實 第四編 會計 第三章 預算); the scan is the National Library of China copy",
+  "renderSha256": {
+   "24": "d8610b970817f68f50be6b367090c961aa676bbfe4c470c518af3a4373f47243",
+   "25": "e31b5bfbb8697a199bf7307486318f0079e574f91429d40276805698780a7035",
+   "26": "affba381c11c5db711a8d78f57e85078765a2f3a7f884fa3309f8bce5e746084",
+   "27": "5828c90ed5efe964dfd3c798b7b1d143da426a565a2554350eefdf407ae701e3",
+   "28": "a9047d9f0835d5199e89da6d850b7ec9bea8d4d341c20abe76331c381f07d8ed",
+   "29": "9048d84cbf8c5476a1637747ea8a4d5fabaa00602cd00d7f47e6d461b55f7810"
+  },
+  "renderSha256From": "provenance.renderSha256 of this book's sealed pages in jyut-ocr-corpus and ~/ocr-runs, measured 2026-09-24: each page the assertions name has one hash across its 19 sealed output(s); an all-cases run skips this case when every recorded page of the output has another hash (another book's page); pp.25-29 added 2026-09-25 as sha256 of jyut-ocr-corpus/nlc-finance/renders/page-00NN.png (the same method reproduces the recorded p.24 hash)"
+ },
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "ruled-tables",
+  "numeral-tables",
+  "printed-orientation-columns-are-records",
+  "cross-page-tables",
+  "right-to-left-cell-labels",
+  "empty-record-column",
+  "running-head",
+  "library-seal",
+  "government-report",
+  "two-tables-on-one-page",
+  "source-arithmetic-error",
+  "missing-record-years"
+ ],
+ "notCovered": [
+  "horizontal layout",
+  "simplified han",
+  "prose pages",
+  "punctuation",
+  "merged cells",
+  "diagonal corner cells",
+  "footnotes"
+ ],
+ "assertions": [
+  {
+   "id": "golden-24-29-h3",
+   "page": 24,
+   "pages": [
+    24,
+    29
+   ],
+   "type": "golden_table",
+   "value": "nlc-finance/pages-0024-0029.md",
+   "provenance": "human",
+   "note": "user golden 2026-09-25 (canvas 'Merged Tables', artifact USiJ9F3Q2KKwYU16kjxKpM, accepted without changes): the 歲入預算 table printed across pp.24-29 is ONE table and the output must write it merged (user 2026-09-25: 'We are testing this exact ability of recognizing a cross-page big table'). Oriented like golden-24-h1 before it: one record per year as rows, 年度 + 17 categories + 合計 as columns (the transpose of the printed grid, where years are columns); rows 元年度 and 二年度 are page-0024.md verbatim. 16 year rows: 元-十 and 十六-二十一 (十一-十五 are not printed; p.27 goes 九, 十, 十六). Row labels print only on p.24; later pages line up by position. p.29 holds two tables: only its right half (二十, 二十一年度) belongs here; its left half starts the 歲出預算 table (continued on p.30), which is not part of this golden. 十八年度's figures sum to 60,760,883 but its printed 合計 is 六〇、七六〇、七〇三: a misprint in the source, kept as printed. Prefill: blind per-page transcription by subagents, checked against both engines and every year's sum, then an adversarial row-placement check (jyut-ocr-corpus/runs/merged-table). Replaces golden-24-h1 (page-0024.md, p.24 alone), which would fail a correctly merged output.",
+   "ratchets": {
+    "phase3": {
+     "minCellsExact": 322,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "note-24-h2",
+   "page": 24,
+   "type": "note",
+   "provenance": "human",
+   "value": "user (as relayed 2026-09-24): transposition (a printed column is a record and becomes a row) is common but not universal. The orientation of each table must come from evidence on the page - totals that reconcile, where the labels stand - not from a rule that vertical books always transpose."
+  },
+  {
+   "id": "note-29-h4",
+   "page": 29,
+   "type": "note",
+   "provenance": "human",
+   "value": "p.29 starts a second table (（乙）民國元年度至二十一年度廣東財政歲出預算, title and row labels on its left half); it continues on p.30 and is outside this case. Its presence on p.29 must not be merged into the 歲入 table."
+  }
+ ]
+}

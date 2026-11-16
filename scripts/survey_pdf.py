@@ -543,7 +543,8 @@ def renders_only(
         raise SurveyError(
             f"{len(differ)} render(s) differ from the manifest {differ[:10]}, {len(missing)} missing "
             f"{missing[:10]}: another pdftoppm or dpi than the survey's? (pdftoppm now: "
-            f"{pdftoppm_version()}; at the survey: {surveyed})"
+            f"{pdftoppm_version()}; at the survey: {surveyed}; the sealed pages' renderSha256 would "
+            "not match them either, so the book cannot be repaired in place until they do)"
         )
     return 0
 

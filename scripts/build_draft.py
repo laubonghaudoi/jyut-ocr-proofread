@@ -5,11 +5,12 @@ The user no longer waits for the end of phase 3 to see the book.  They get it
 three times (references/long-book-workflow.md, 三次交付同本書目錄):
 
 1. draft.md, this script, as soon as engine B is done and before engine A runs
-   (SKILL.md, step 3 of its run sheet): engine B's text, page after page, no
+   (scripts/ocr_book.py runs it in SKILL.md's step 2, the OCR step, and the
+   agent once more after that step): engine B's text, page after page, no
    model asked.  Seconds, not hours.
 2. proofreading.md, scripts/build_progress.py, rebuilt while phase 3 runs:
    the pages sealed so far as proofread, every other page as in the draft.
-3. final.md and doubts.md, scripts/finish_book.py (SKILL.md, step 8), once
+3. final.md and doubts.md, scripts/finish_book.py (SKILL.md, step 5), once
    phase 3 has sealed the book: assembled, repaired and finalized.
 
 Why engine B's text and not engine A's: engine A reads the columns of a
@@ -82,24 +83,13 @@ PAGE_FILE = re.compile(r"page-(\d{4,})\.(?:txt|png)")
 # --- engine B's loops ----------------------------------------------------------
 #
 # Engine B sometimes does not stop: from some point on a page it writes one
-# stretch back to back until its tokens run out.  Measured on engine B's
-# drafts of the calibration corpus (1,279 distinct page files, eight books):
-# 18 pages hold a stretch of LOOP_MIN_COPIES or more copies of a unit of at
-# most LOOP_PERIOD_MAX characters that holds text, LOOP_MIN_CHARS characters
-# or more in all - each 3,958 to 12,517 characters, the unit one character (a
-# page of 口) up to a table row of 150, every one running to the file's end,
-# its last copy cut short - and the longest such repetition under
-# LOOP_MIN_CHARS is 120 characters: one table cell printed ten times over,
-# which is text.  Copied, a loop is thousands of characters of noise the user
-# scrolls through; cut, the unit stays once (the engine read it) and a gap
-# line says what was not copied.  A unit of markup alone (empty table cells:
-# 90 characters at most in engine B's drafts) holds no text to lose and may
-# be a table's printed shape: kept.
-LOOP_PERIOD_MAX = 200
-LOOP_MIN_COPIES = 5
-LOOP_MIN_CHARS = 1000
-LOOP = re.compile(r"(.{1,%d}?)\1{%d,}" % (LOOP_PERIOD_MAX, LOOP_MIN_COPIES - 1), re.DOTALL)
-MARKUP = re.compile(r"<[^<>]*>")
+# stretch back to back until its tokens run out.  Copied, a loop is thousands
+# of characters of noise the user scrolls through; cut, the unit stays once
+# (the engine read it) and a gap line says what was not copied.  What a loop
+# is, and how it was measured, is proofread_pages.find_loops': phase 3 cuts
+# engine B's cut-off reading at the same loops before it merges it.
+MARKUP = pp.LOOP_MARKUP
+find_loops, from_tag = pp.find_loops, pp.loop_unit_from_tag
 # How much of the unit the gap line quotes.
 LOOP_SHOWN = 12
 
@@ -205,53 +195,6 @@ def engine_b_lines(ocr: Path, page: int) -> list[str] | None:
     while lines and not lines[-1].strip():
         lines.pop()
     return lines
-
-
-def find_loops(text: str) -> list[tuple[int, int, str]]:
-    """(start, end, unit) of each loop in TEXT: a unit of at most
-    LOOP_PERIOD_MAX characters, holding text outside markup, back to back
-    LOOP_MIN_COPIES times or more and LOOP_MIN_CHARS characters or more in
-    all.  A last copy cut short is part of the loop only where nothing but
-    blank follows it (the engine's tokens ran out in the middle of it); text
-    after it is the page's."""
-    if len(text) < LOOP_MIN_CHARS:
-        return []
-    found = []
-    at = 0
-    while True:
-        match = LOOP.search(text, at)
-        if match is None:
-            return found
-        start, end, unit = match.start(), match.end(), match.group(1)
-        if not holds_text(unit):
-            at = end                  # markup alone: no stretch of it holds text
-            continue
-        if end - start < LOOP_MIN_CHARS:
-            # The shortest unit repeating here may not be the loop's: a loop
-            # can start with a run of one character.  Look again one on.
-            at = start + 1
-            continue
-        tail = 0
-        while tail < len(unit) - 1 and end + tail < len(text) and text[end + tail] == unit[tail]:
-            tail += 1
-        if tail and not text[end + tail:].strip():
-            end += tail
-        found.append((start, end, unit))
-        at = end
-
-
-def from_tag(unit: str) -> str:
-    """A loop's UNIT read from its first < on, where a tag starts.  A unit
-    is any rotation of the stretch that repeats - it starts where the loop
-    does, taking in a tag's closing > of the text before it - and read from
-    a tag's start its tags are whole."""
-    at = unit.find("<")
-    return unit[at:] + unit[:at] if at > 0 else unit
-
-
-def holds_text(unit: str) -> bool:
-    """Whether a loop's UNIT holds anything but markup."""
-    return bool(MARKUP.sub("", from_tag(unit)).strip())
 
 
 def loop_line(page: int, loop: Loop) -> str:

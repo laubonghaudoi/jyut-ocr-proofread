@@ -1,5 +1,22 @@
 # 更新摘要
 
+## Unreleased — 唯一通用技能：併入 qwen 版、雙引擎安裝、GPU 交接
+
+- 併入 jyut-ocr-qwen：搬入佢嘅回歸測試（54 個 check）同 `run_ocr_phase.py`、`wait_for_run.py` 等工具，`tests/run_all.py` 一個入口跑晒 unit test 同 check。qwen 版封好嘅頁同舊底稿照收，唔使重新校對。
+- 安裝程式預設裝兩個引擎：HunyuanOCR 用 llama.cpp b10969 官方 CUDA 版，PaddleOCR-VL 用鎖定嘅 wheel 同權重；有 GPU 就用 GPU，冇先轉 CPU；Python 3.12 由 uv 提供。改 `env.sh` 嘅值會將舊行留做註解，唔改檔案權限。唔支援原生 Windows，用 WSL2。
+- agent 本身係本地模型時做 GPU 交接：等用緊模型嘅 client 做完先停模型；停咗期間由暫代服務回 503 叫 client 等；任何退出都還原模型（watchdog、lease）；GPU 忙或者時間唔夠就用 exit 75／76 叫 agent 遲啲再跑。
+- 校對預設由當前 agent 答，亦可以經 HTTP 交本地模型（`--backend http`）。完整性 v2 改做開關，預設關。封頁照記 script hash，但唔用嚟判封頁失效。
+- 刪走五個 release 工具。
+- 按 jyut-ocr-bench 嘅標準答案修 phase 3：截斷咗嘅 Hunyuan 讀數切走重複迴圈之後照合併；結構步自己寫嘅直排表按引擎 B 嘅閱讀次序轉向，每次轉都出疑點；被拒格網嗰張表入面兩個引擎都讀到嘅標點，唔再畀標點鎖拒絕；黏住括號嘅圈碼註號唔再整唔見；表格格仔入面用 LaTeX 包住嘅註號寫返淨註號。
+- 驗證：全套測試（35 個 unit test 檔共 658 個測試，加 54 個 check）通過。jyut-ocr-bench 28 案（評分器 samples-4.0.0）：本地 qwen3.8-27b 實測上一版，CER 寬容異體字計標點 15.98%，qwen 版 18.25%；本版用同一批模型答案重放係 14.42%。
+
+## Unreleased — 完整性 v2 與可靠 packet 續跑
+
+- 統一全頁區域與保留 features 契約；家具留喺區域證據，表格支援完整標籤或原圖格網與候選格位映射。疑點按 ID 逐項覆核，原圖、inventory、候選同契約版本共同綁定；v1 僅供歷史讀取。
+- inventory／review 各最多一次格式修正，附原回答雜湊、錯誤代碼及欄位。未解視覺疑點維持未完成；被拒表格保留候選與原因，唔以純文字回退冒充成品。
+- packet wave 不可改寫、答案原子套用、相同答案可重播、衝突拒絕；用量按請求／回覆身份去重，未知值保留 null。並行預設上限 8，使用者可指定 16，受平台容量約束。
+- 程式與合成頁驗收同真實識別準確率分開；今次修復唔宣稱 CER 改善。
+
 ## Unreleased — 通用技能與跨平台安裝
 
 - 將唯一技能來源移到 repo 根目錄，保留 `SKILL.md`、`scripts/`、`references/` 同可選 metadata；移除 Codex plugin／marketplace 包裝。更新現行文件、相對引用、安裝入口及測試，保留既有內容完整性修正。

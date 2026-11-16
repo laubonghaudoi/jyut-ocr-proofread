@@ -2,6 +2,8 @@
 
 核心 `SKILL.md` 同 `references/subagent-orchestration.md` 只描述讀圖、檔案、腳本能力，以及 writer、packet worker、independent auditor 嘅職責。平台工具名稱、custom-agent 註冊、模型繼承及權限語法放喺呢一層。冇 adapters 時，用普通 worker 接受完整 assignment，或者由主 agent 順序寫稿／回答 packets。
 
+呢啲角色淨係 A 套（當前 agent 校對）同人手分段轉錄用。B 套（本機模型校對，包括 agent 本身就係本機模型）唔派 writer 或者 packet worker：題目由腳本經 http 問模型，agent 同佢嘅 subagent 都唔讀頁圖（`SKILL.md` 第一節）。
+
 目前提供 Codex TOML 同 Claude Code Markdown writer／auditor 角色。透過 `./install.sh --agent codex --with-agents` 或 `--agent claude --with-agents` 安裝；唔加 `--with-agents` 就只裝技能。`agents/openai.yaml` 只係可選展示 metadata，唔係其他 agent 執行技能嘅前提。
 
 Codex adapters 省略 `model`／`model_reasoning_effort`，沿用平台有效解析結果；Claude adapters 用 `model: inherit`。使用者或平台嘅更高優先權 override 仍然有效，主 agent 要如實交代，唔假稱必然同模型。技能唔鎖固定 model ID。

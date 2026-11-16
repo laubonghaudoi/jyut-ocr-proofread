@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -19,7 +20,10 @@ IMAGE = b"synthetic image bytes: no external OCR or service"
 
 
 def inventory(*, kind="body", features=None, state="content"):
-    obj = {"schema_version": 1, "page_state": state, "evidence": "whole original page inspected",
+    obj = {"schema_version": 2, "contract_version": fidelity.CONTRACT_VERSION,
+           "source_image_sha256": __import__("hashlib").sha256(IMAGE).hexdigest(),
+           "issues": [{"id": "i1", "region_id": "r1", "kind": "reading", "evidence": "synthetic unresolved ink"}] if state == "uncertain" else [],
+           "page_state": state, "evidence": "whole original page inspected",
            "regions": [] if state == "blank" else [
                {"id": "r1", "kind": kind, "box": [0.1, 0.1, 0.9, 0.9], "evidence": "central printed region"}],
            "features": features or []}
@@ -27,11 +31,16 @@ def inventory(*, kind="body", features=None, state="content"):
 
 
 def feature(text="12-3/2=10.5", before="甲", after="乙", **extra):
+    if "cell" in extra:
+        extra["cell"].setdefault("kind", "labels")
     return {"id": "f1", "region_id": "r1", "text": text, "before": before, "after": after, **extra}
 
 
-def review(candidate, *, edits=None, verdict="complete", status="covered"):
-    return json.dumps({"schema_version": 1, "candidate_sha256": fidelity.text_sha256(candidate),
+def review(candidate, *, edits=None, verdict="complete", status="covered", inv=None):
+    inv = inv if inv is not None else inventory()
+    return json.dumps({"schema_version": 2, "contract_version": fidelity.CONTRACT_VERSION,
+                       "source_image_sha256": inv["source_image_sha256"], "inventory_sha256": inv["inventory_sha256"],
+                       "resolutions": [], "table_mappings": [], "candidate_sha256": fidelity.text_sha256(candidate),
                        "verdict": verdict, "regions": [{"id": "r1", "status": status,
                                                           "evidence": "all source print checked at this region"}],
                        "edits": edits or []})
@@ -62,20 +71,20 @@ class ContentFidelityTests(unittest.TestCase):
 
     def test_image_confirmed_formula_insertion_requires_current_unique_locator(self):
         inv = inventory(features=[feature()])
-        output, evidence = fidelity.apply_review(review("甲乙", edits=[edit("", "12-3/2=10.5", "甲", "乙")]), "甲乙", inv)
+        output, evidence = fidelity.apply_review(review("甲乙", inv=inv, edits=[edit("", "12-3/2=10.5", "甲", "乙")]), "甲乙", inv)
         self.assertEqual(output, "甲12-3/2=10.5乙")
         self.assertTrue(evidence["complete"])
         self.assertEqual(evidence["result_sha256"], fidelity.text_sha256(output))
         with self.assertRaisesRegex(fidelity.FidelityError, "stale"):
-            fidelity.apply_review(review("甲乙"), "甲丙乙", inv)
+            fidelity.apply_review(review("甲乙", inv=inv), "甲丙乙", inv)
         with self.assertRaisesRegex(fidelity.FidelityError, "exactly once"):
-            fidelity.apply_review(review("甲乙甲乙", edits=[edit("", "12", "甲", "乙")]), "甲乙甲乙", inv)
+            fidelity.apply_review(review("甲乙甲乙", inv=inv, edits=[edit("", "12", "甲", "乙")]), "甲乙甲乙", inv)
 
     def test_feature_moved_with_same_counts_or_shortened_is_not_complete(self):
         inv = inventory(features=[feature(text="12")])
         for text in ("甲乙12", "甲1乙", "乙12甲"):
-            self.assertFalse(fidelity.apply_review(review(text), text, inv)[1]["complete"])
-        self.assertTrue(fidelity.apply_review(review("甲12乙"), "甲12乙", inv)[1]["complete"])
+            self.assertFalse(fidelity.apply_review(review(text, inv=inv), text, inv)[1]["complete"])
+        self.assertTrue(fidelity.apply_review(review("甲12乙", inv=inv), "甲12乙", inv)[1]["complete"])
 
     def test_distinct_printed_occurrences_need_distinct_output_occurrences(self):
         inv = inventory(features=[feature("12", "", ""), {**feature("12", "", ""), "id": "f2"}])
@@ -153,11 +162,11 @@ class ContentFidelityTests(unittest.TestCase):
     def test_only_inventory_furniture_can_be_excluded_and_uncertainty_never_clean(self):
         with self.assertRaisesRegex(fidelity.FidelityError, "cannot be excluded"):
             fidelity.apply_review(review("甲", status="excluded"), "甲", inventory())
-        output, record = fidelity.apply_review(review("甲", status="excluded", edits=[edit("甲", "")]), "甲", inventory(kind="furniture"))
+        output, record = fidelity.apply_review(review("甲", inv=inventory(kind="furniture"), status="excluded", edits=[edit("甲", "")]), "甲", inventory(kind="furniture"))
         self.assertEqual(output, "")
         self.assertTrue(record["complete"])
         self.assertFalse(fidelity.apply_review(review("甲", verdict="uncertain"), "甲", inventory())[1]["complete"])
-        self.assertFalse(fidelity.apply_review(review("甲"), "甲", inventory(state="uncertain"))[1]["complete"])
+        self.assertFalse(fidelity.apply_review(review("甲", inv=inventory(state="uncertain")), "甲", inventory(state="uncertain"))[1]["complete"])
         for empty in ("", "# ", "<p></p>", "---", "- "):
             _, deleted = fidelity.apply_review(review("甲", edits=[edit("甲", empty)]), "甲", inventory())
             self.assertFalse(deleted["complete"], empty)
@@ -170,7 +179,7 @@ class ContentFidelityTests(unittest.TestCase):
             with self.assertRaises(packets.PacketPending):
                 fidelity.review_page(client, IMAGE, "甲12乙", inv, 1024, stage="coverage-review")
             request = client.pending_items()[0]
-            client.answers[request.request_id] = {"answer": review("甲12乙")}
+            client.answers[request.request_id] = {"request_id": request.request_id, "answer": review("甲12乙", inv=inv)}
             self.assertTrue(fidelity.review_page(client, IMAGE, "甲12乙", inv, 1024, stage="coverage-review")[1]["complete"])
             with self.assertRaises(packets.PacketPending):
                 fidelity.review_page(client, IMAGE, "甲1乙", inv, 1024, stage="coverage-review")
@@ -190,7 +199,7 @@ class SparsePageIntegrationTests(unittest.TestCase):
                 data = json.loads(prompt)
                 candidate = data["candidate"]
                 changes = [edit(candidate, recovered)] if kind == "content-recovery" and recovered is not None and candidate != recovered else []
-                return review(candidate, edits=changes, verdict="uncertain" if uncertain and kind == "coverage-review" else "complete"), {}
+                return review(candidate, inv=inv, edits=changes, verdict="uncertain" if uncertain and kind == "coverage-review" else "complete"), {}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             render, a, b = root / "page.png", root / "a.txt", root / "b.txt"
@@ -199,7 +208,7 @@ class SparsePageIntegrationTests(unittest.TestCase):
             b.write_text(draft)
             job = pp.PageJob(1, render, a, None, b, root / "page.json", root / "page.md")
             client = Client()
-            record = pp.proofread_page(job, client, SimpleNamespace(max_tokens=4096))
+            record = pp.proofread_page(job, client, SimpleNamespace(max_tokens=4096, content_fidelity="on"))
             return record, job.out_md.read_text(), client.calls
 
     def test_both_cjk_empty_formula_page_is_not_blank(self):
@@ -227,9 +236,16 @@ class SparsePageIntegrationTests(unittest.TestCase):
         self.assertEqual(record["contentRecovery"]["double_circle_normalizations"], 1)
         self.assertEqual(record["contentRecovery"]["source_equivalent_transforms"][0]["after_sha256"], fidelity.text_sha256(text))
 
-    def test_uncertain_sparse_page_fails_instead_of_sealing_complete(self):
-        with self.assertRaisesRegex(pp.ProofreadError, "coverage unresolved"):
-            self.run_page("12", inventory(features=[feature("12", "", "")]), uncertain=True)
+    def test_uncertain_sparse_page_seals_a_doubt_instead_of_complete(self):
+        # Changed 2026-11-14 (user decision 4): unresolved coverage is a
+        # doubt on the sealed page, no longer a failed page.
+        record, text, calls = self.run_page("12", inventory(features=[feature("12", "", "")]), uncertain=True)
+        self.assertEqual(text, "12")
+        self.assertEqual(calls, ["page-inventory", "content-recovery", "coverage-review"])
+        self.assertEqual(record["contentFidelityStatus"], "doubt")
+        self.assertFalse(record["coverageReview"]["complete"])
+        self.assertTrue(any(d["kind"] == fidelity.DOUBT_KIND for d in record["doubts"]))
+        fidelity.validate_completed_record(record, text, hashlib.sha256(IMAGE).hexdigest())
 
 
 class FormatterFallbackIntegrationTests(unittest.TestCase):
@@ -258,14 +274,14 @@ class FormatterFallbackIntegrationTests(unittest.TestCase):
                             changes = [edit("", "12-3/2", "甲", "乙")] if kind == "content-recovery" else []
                             if kind == "coverage-review":
                                 self_checked.assertEqual(candidate, "甲12-3/2乙")
-                            return review(candidate, edits=changes), {}
+                            return review(candidate, inv=inv, edits=changes), {}
                         if kind in {"format", "format-retry"}:
                             return "甲乙", {}
                         if kind == "census":
                             return "符號：0\n雙圈：0\n形狀：無", {}
                         raise AssertionError(f"unexpected call {kind}")
                 self_checked = self
-                args = pp.build_parser().parse_args([str(root), str(root), str(root)])
+                args = pp.build_parser().parse_args([str(root), str(root), str(root), "--content-fidelity", "on"])
                 args.prefer_engine, args.furniture, args.profile_data = "", frozenset(), {}
                 job = pp.PageJob(1, render, a, block_file if with_layout else None, b,
                                  root / "out.json", root / "out.md")

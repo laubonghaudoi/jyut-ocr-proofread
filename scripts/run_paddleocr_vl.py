@@ -12,6 +12,15 @@ Unlike the Apple Vision runner there is no bounded pool: PaddleOCR-VL is a GPU
 model, and on a single card extra workers contend for VRAM with each other and
 with any local LLM server.  One persistent worker loads the pipeline once and
 processes pages in sequence.
+
+The device is explicit (--device / OCR_PADDLE_DEVICE: gpu:N or cpu; unset, gpu:0
+when this Paddle build sees a CUDA device, else cpu), and a GPU run never falls
+back to the CPU silently.  A CPU run takes the CPU queue resource, not the GPU
+one, and the worker sees no GPU.  The weights come from local folders
+(--vl-model-dir / PADDLE_VL_MODEL_DIR and --layout-model-dir /
+PADDLE_LAYOUT_MODEL_DIR, or PaddleX's own cache); the runner never lets PaddleX
+download them on first use.  The worker's stderr is kept in a log beside the
+run report.
 """
 
 from __future__ import annotations
@@ -38,8 +47,8 @@ REPORT_SCHEMA_VERSION = 1
 ENGINE = "PaddleOCR-VL"
 TEXT_AUTHORITY = "draft-only-not-text-authority"
 
-# Any change here invalidates existing completion records, exactly like the
-# Apple Vision profile hash does.  Keep it in sync with the worker's settings.
+# Any change here invalidates existing completion records (draft_identity).
+# Keep it in sync with the worker's settings.
 OCR_PROFILE: dict[str, Any] = {
     "engine": ENGINE,
     "pipelineVersion": "v1.6",
@@ -54,6 +63,30 @@ PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 
 WORKER_READY_TIMEOUT_SECONDS = 600.0
 PAGE_TIMEOUT_SECONDS = 900.0
+
+DEVICE_PATTERN = re.compile(r"(?:gpu(?::(?P<index>[0-9]+))?|cpu)\Z")
+# The queue resource a CPU run takes, so it never holds the GPU's queue.
+DEFAULT_CPU_RESOURCE = "local-cpu"
+# What each pipeline version loads: (model name, the folder names PaddleX's own
+# cache gives it under official_models/) for the VL recogniser, then for the
+# layout detector.
+PIPELINE_MODELS: dict[str, tuple[tuple[str, tuple[str, ...]], tuple[str, tuple[str, ...]]]] = {
+    "v1": (("PaddleOCR-VL-0.9B", ("PaddleOCR-VL/PaddleOCR-VL-0.9B", "PaddleOCR-VL")),
+           ("PP-DocLayoutV2", ("PP-DocLayoutV2",))),
+    "v1.5": (("PaddleOCR-VL-1.5-0.9B", ("PaddleOCR-VL-1.5",)),
+             ("PP-DocLayoutV3", ("PP-DocLayoutV3",))),
+    "v1.6": (("PaddleOCR-VL-1.6-0.9B", ("PaddleOCR-VL-1.6",)),
+             ("PP-DocLayoutV3", ("PP-DocLayoutV3",))),
+}
+WEIGHT_PATTERNS = ("*.safetensors", "*.pdiparams")
+WORKER_LOG_TAIL_LINES = 20
+INSTALLER_HINT = (
+    "This runner never lets PaddleX download weights on first use: the download "
+    "would run while the run holds the GPU queue and inside the worker's start-up "
+    "time limit. Run the skill's installer (./install.sh), which downloads and "
+    "checks the pinned PaddleOCR-VL and layout weights and writes "
+    "PADDLE_VL_MODEL_DIR and PADDLE_LAYOUT_MODEL_DIR to env.sh; then load env.sh "
+    "and run this command again.")
 
 
 class ConfigurationError(ValueError):
@@ -93,6 +126,7 @@ class ResumeCheck:
     reason: str
     json_sha256: str | None = None
     text_sha256: str | None = None
+    legacy: str | None = None
 
 
 def utc_now() -> str:
@@ -127,7 +161,28 @@ def profile_sha256(profile: Mapping[str, Any]) -> str:
     return sha256_bytes(canonical_json_bytes(profile))
 
 
+def draft_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """What decides whether a finished page is still current: the pipeline
+    version and declared model revision, and the fixed OCR_PROFILE settings.
+
+    The runner and worker code, helper modules, interpreter path, package
+    versions and the render's absolute path are recorded (toolSha256,
+    ocrProfile) but not part of this identity.
+    """
+    settings = {key: profile.get(key) for key in OCR_PROFILE}
+    return {"engine": ENGINE, "model": {"pipelineVersion": profile.get("pipelineVersion"),
+                                        "modelRevision": profile.get("modelRevision")},
+            "settings": settings}
+
+
+def legacy_profile_hash(profile: Mapping[str, Any]) -> str:
+    """The whole-profile hash an older runner wrote for PROFILE's settings: its
+    profile was OCR_PROFILE alone, without package versions or model revision."""
+    return profile_sha256({key: profile.get(key) for key in OCR_PROFILE})
+
+
 def build_tool_identity(worker_file: Path, interpreter: str) -> ToolIdentity:
+    """Code and interpreter hashes, recorded in each draft; not compared."""
     runner_file = Path(__file__).resolve()
     worker_file = worker_file.resolve()
     if not worker_file.is_file():
@@ -275,11 +330,12 @@ def _validate_line_fields(record: Mapping[str, Any]) -> str | None:
 
 
 def _validate_record_fields(
-    record: Mapping[str, Any], page: PageInput, profile: Mapping[str, Any]
+    record: Mapping[str, Any], page: PageInput, profile: Mapping[str, Any],
+    *, require_raw: bool = True,
 ) -> str | None:
+    # renderFile is recorded, not compared: a book folder can move.
     expected = {
         "scanPage": page.scan_page,
-        "renderFile": str(page.render_file),
         "engine": profile["engine"],
         "pipelineVersion": profile["pipelineVersion"],
         "recognitionLanguages": profile["recognitionLanguages"],
@@ -291,7 +347,7 @@ def _validate_record_fields(
             return f"{key} does not match the current input/profile"
     if not isinstance(record.get("generatedAt"), str) or not record["generatedAt"]:
         return "generatedAt is missing"
-    if not isinstance(record.get("rawResult"), dict):
+    if require_raw and not isinstance(record.get("rawResult"), dict):
         return "rawResult is missing"
     return _validate_line_fields(record)
 
@@ -304,15 +360,20 @@ def build_completion_record(
     profile: Mapping[str, Any],
 ) -> dict[str, Any]:
     record = dict(raw_record)
+    identity = draft_identity(profile)
     record.update(
         {
             "schemaVersion": SCHEMA_VERSION,
             "status": "complete",
             "textAuthority": TEXT_AUTHORITY,
+            "draftIdentity": identity,
+            # Recorded for audit; only draftIdentity decides currency.
+            "ocrProfile": dict(profile),
             "provenance": {
                 "renderSha256": page.render_sha256,
                 "toolSha256": tool.combined_sha256,
                 "ocrProfileSha256": profile_sha256(profile),
+                "draftIdentitySha256": profile_sha256(identity),
                 "textSha256": sha256_bytes(text_bytes),
             },
         }
@@ -323,8 +384,17 @@ def build_completion_record(
 
 
 def validate_completion(
-    page: PageInput, tool: ToolIdentity, profile: Mapping[str, Any]
+    page: PageInput, tool: ToolIdentity | None, profile: Mapping[str, Any]
 ) -> ResumeCheck:
+    """Whether PAGE's existing pair is a sealed draft of its current render with
+    PROFILE's pipeline, model revision and settings (draft_identity).  TOOL is
+    recorded in each draft but no longer compared.
+
+    Drafts written before draftIdentity was recorded are matched by their whole
+    profile hash: the current profile exactly, or an older runner's profile for
+    the same settings (legacy_profile_hash).  Those are reported as legacy and
+    may lack rawResult.
+    """
     json_exists = page.json_output.is_file()
     text_exists = page.text_output.is_file()
     if not json_exists and not text_exists:
@@ -347,23 +417,33 @@ def validate_completion(
         return ResumeCheck(False, "completion status is not complete")
     if record.get("textAuthority") != TEXT_AUTHORITY:
         return ResumeCheck(False, "text authority marker does not match")
-    field_error = _validate_record_fields(record, page, profile)
+    provenance = record.get("provenance")
+    if not isinstance(provenance, dict):
+        return ResumeCheck(False, "provenance is missing")
+    has_identity = "draftIdentitySha256" in provenance
+    field_error = _validate_record_fields(record, page, profile, require_raw=has_identity)
     if field_error:
         return ResumeCheck(False, field_error)
     if text_from_lines(record["lines"]) != text_bytes:
         return ResumeCheck(False, "TXT bytes do not match JSON lines")
-    provenance = record.get("provenance")
-    if not isinstance(provenance, dict):
-        return ResumeCheck(False, "provenance is missing")
     expected_provenance = {
         "renderSha256": page.render_sha256,
-        "toolSha256": tool.combined_sha256,
-        "ocrProfileSha256": profile_sha256(profile),
         "textSha256": sha256_bytes(text_bytes),
     }
     for key, expected_value in expected_provenance.items():
         if provenance.get(key) != expected_value:
             return ResumeCheck(False, f"provenance {key} does not match")
+    legacy = None
+    if has_identity:
+        if provenance["draftIdentitySha256"] != profile_sha256(draft_identity(profile)):
+            return ResumeCheck(False, "draft identity (pipeline, model revision or settings) does not match")
+    elif provenance.get("ocrProfileSha256") == profile_sha256(profile):
+        legacy = "written before draft identity was recorded; same profile"
+    elif provenance.get("ocrProfileSha256") == legacy_profile_hash(profile):
+        legacy = "older runner's draft; same pipeline and settings"
+    else:
+        return ResumeCheck(False, "provenance ocrProfileSha256 does not match (a draft "
+                                  "without draftIdentity is matched by its whole profile)")
     sealed_digest = provenance.get("jsonPayloadSha256")
     if not isinstance(sealed_digest, str):
         return ResumeCheck(False, "JSON payload seal is missing")
@@ -376,6 +456,7 @@ def validate_completion(
         "current completion record",
         json_sha256=sha256_bytes(json_bytes),
         text_sha256=sha256_bytes(text_bytes),
+        legacy=legacy,
     )
 
 
@@ -388,34 +469,76 @@ def atomic_promote(
 
 
 class BudgetExpired(Exception):
-    """The phase's time budget ran out while a page was being read."""
+    """The phase's time budget ran out while a page was being read, or while
+    the model was still loading."""
+
+
+def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, Any]] | None) -> dict[str, str]:
+    """The worker's device and weight settings (paddleocr_vl_worker.main).
+
+    A GPU run turns PaddleX's silent CPU fallback into an error.  A CPU run hides
+    every card, because it does not hold the GPU queue.  Local weight folders
+    also skip PaddleX's model-host connectivity check.
+    """
+    environment: dict[str, str] = {}
+    if device:
+        environment["JYUT_PADDLE_DEVICE"] = device
+        if device.startswith("gpu"):
+            environment["PADDLE_PDX_DISABLE_DEVICE_FALLBACK"] = "True"
+        else:
+            environment["CUDA_VISIBLE_DEVICES"] = ""
+    if weights:
+        environment["JYUT_PADDLE_VL_MODEL_DIR"] = str(weights["vl"]["directory"])
+        environment["JYUT_PADDLE_LAYOUT_MODEL_DIR"] = str(weights["layout"]["directory"])
+        environment["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+    return environment
 
 
 class PaddleWorker:
     """One persistent PaddleOCR-VL process speaking the JSONL page protocol."""
 
     def __init__(self, interpreter: str, worker_file: Path, pipeline_version: str = "v1.6",
-                 lease_fds: tuple[int, ...] = ()):
+                 lease_fds: tuple[int, ...] = (), *, device: str | None = None,
+                 weights: Mapping[str, Mapping[str, Any]] | None = None,
+                 log_path: Path | None = None,
+                 ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS, ready_capped: bool = False):
         worker_env = dict(os.environ, JYUT_PADDLE_PIPELINE_VERSION=pipeline_version)
-        # The worker holds the model on the GPU; it must not outlive this runner.
-        self.process_handle = subprocess.Popen(
-            [interpreter, str(worker_file)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            preexec_fn=die_with_parent(),
-            pass_fds=lease_fds,
-            env=worker_env,
-        )
-        self.page_in_flight = False
-        self.response_buffer = b""
+        for name in ("JYUT_PADDLE_DEVICE", "JYUT_PADDLE_VL_MODEL_DIR", "JYUT_PADDLE_LAYOUT_MODEL_DIR"):
+            worker_env.pop(name, None)
+        worker_env.update(worker_environment(device, weights))
+        # The worker's stderr (PaddleX's log, CUDA and out-of-memory messages)
+        # goes to this run's log; only the JSON responses come back on stdout.
+        log_handle = log_path.open("wb") if log_path is not None else None
         try:
-            ready = self._read_response(WORKER_READY_TIMEOUT_SECONDS)
+            # The worker holds the model on the GPU; it must not outlive this runner.
+            self.process_handle = subprocess.Popen(
+                [interpreter, str(worker_file)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=log_handle if log_handle is not None else subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                preexec_fn=die_with_parent(),
+                pass_fds=lease_fds,
+                env=worker_env,
+            )
+        finally:
+            if log_handle is not None:
+                log_handle.close()
+        self.page_in_flight = False
+        self.loading = True
+        self.response_buffer = b""
+        self.execution: dict[str, Any] = {}
+        try:
+            # READY_CAPPED: the phase's budget set READY_TIMEOUT; running past it
+            # raises BudgetExpired, so a late start ends with the budget.
+            ready = self._read_response(ready_timeout, ready_capped)
             if not ready.get("ok") or not ready.get("ready"):
                 raise WorkerUnavailable(str(ready.get("error") or "worker did not report ready"))
+            if isinstance(ready.get("execution"), dict):
+                self.execution = ready["execution"]
+            self.loading = False
         except BaseException:
             self.close()
             raise
@@ -475,9 +598,9 @@ class PaddleWorker:
     def close(self) -> None:
         handle = self.process_handle
         if handle.poll() is None:
-            if self.page_in_flight:
-                # Stopped mid-page (budget, signal): the page is lost anyway, and
-                # waiting for it would retain GPU memory unnecessarily.
+            if self.page_in_flight or self.loading:
+                # Stopped mid-page or mid-load (budget, signal): the page is lost
+                # anyway, and waiting would retain GPU memory unnecessarily.
                 handle.kill()
                 handle.wait(timeout=30)
                 return
@@ -507,19 +630,35 @@ def resolve_interpreter(explicit: str | None) -> str:
     return sys.executable
 
 
-def verify_paddleocr_available(interpreter: str) -> dict[str, Any]:
-    probe = (
-        "import json, importlib.metadata as m, paddleocr\n"
-        "def v(name):\n"
-        "    try: return m.version(name)\n"
-        "    except Exception: return None\n"
-        "print(json.dumps({'paddleocr': getattr(paddleocr, '__version__', None),\n"
-        "                  'paddlepaddle-gpu': v('paddlepaddle-gpu'),\n"
-        "                  'paddlex': v('paddlex')}))\n"
-    )
-    result = subprocess.run(
-        [interpreter, "-c", probe], text=True, capture_output=True, check=False, timeout=60
-    )
+# packageVersions keeps the keys older drafts recorded (their whole profile
+# matches a legacy draft); the Paddle package actually installed, CPU or GPU,
+# is recorded apart in paddlePackages.  With "cuda" the probe also asks Paddle
+# what PaddleX's default device test asks (utils/device.get_default_device).
+PROBE = (
+    "import json, sys, importlib.metadata as m, paddleocr\n"
+    "def v(name):\n"
+    "    try: return m.version(name)\n"
+    "    except Exception: return None\n"
+    "out = {'versions': {'paddleocr': getattr(paddleocr, '__version__', None),\n"
+    "                    'paddlepaddle-gpu': v('paddlepaddle-gpu'),\n"
+    "                    'paddlex': v('paddlex')},\n"
+    "       'paddlePackages': {n: v(n) for n in ('paddlepaddle-gpu', 'paddlepaddle')}}\n"
+    "if 'cuda' in sys.argv[1:]:\n"
+    "    try:\n"
+    "        import paddle\n"
+    "        built = bool(paddle.device.is_compiled_with_cuda())\n"
+    "        out['cuda'] = {'compiled': built,\n"
+    "                       'deviceCount': int(paddle.device.cuda.device_count()) if built else 0}\n"
+    "    except Exception as error:\n"
+    "        out['cuda'] = {'error': type(error).__name__ + ': ' + str(error)}\n"
+    "print(json.dumps(out))\n"
+)
+
+
+def verify_paddleocr_available(interpreter: str, *, probe_cuda: bool = False) -> dict[str, Any]:
+    """{"versions": ..., "paddlePackages": ..., "cuda": ...} from INTERPRETER."""
+    command = [interpreter, "-c", PROBE] + (["cuda"] if probe_cuda else [])
+    result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=60)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         raise ConfigurationError(
@@ -527,9 +666,162 @@ def verify_paddleocr_available(interpreter: str) -> dict[str, Any]:
             f"{interpreter}: {detail[-1] if detail else 'unknown error'}"
         )
     try:
-        return json.loads(result.stdout.strip().splitlines()[-1])
+        probe = json.loads(result.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
-        return {}
+        probe = {}
+    return probe if isinstance(probe, dict) else {}
+
+
+def paddle_package(probe: Mapping[str, Any]) -> dict[str, str] | None:
+    """The Paddle distribution installed: paddlepaddle-gpu or paddlepaddle."""
+    packages = probe.get("paddlePackages") or {}
+    for name in ("paddlepaddle-gpu", "paddlepaddle"):
+        if packages.get(name):
+            return {"name": name, "version": str(packages[name])}
+    return None
+
+
+def parse_device(value: str | None) -> str | None:
+    """``gpu:N`` or ``cpu`` (``gpu`` alone is gpu:0); None, '' or ``auto``: detect."""
+    if value is None or value.strip().lower() in ("", "auto"):
+        return None
+    text = value.strip().lower()
+    match = DEVICE_PATTERN.match(text)
+    if match is None:
+        raise ConfigurationError(f"device must be gpu:N or cpu, not {value!r}")
+    return f"gpu:{int(match.group('index') or 0)}" if text.startswith("gpu") else "cpu"
+
+
+def resolve_device(requested: str | None, probe: Mapping[str, Any]) -> tuple[str, str | None]:
+    """The device to run on, and why a GPU request cannot be met (or None).
+
+    Unset, PaddleX's own default: gpu:0 when this Paddle build has CUDA and sees
+    a device, else cpu.  A GPU that was asked for is checked the same way, since
+    PaddleX would otherwise move the run to the CPU with only a warning.
+    """
+    cuda = probe.get("cuda") or {}
+    if requested is None:
+        return ("gpu:0" if cuda.get("compiled") and cuda.get("deviceCount", 0) > 0 else "cpu"), None
+    if requested == "cpu":
+        return requested, None
+    index = int(requested.partition(":")[2])
+    package = paddle_package(probe)
+    installed = f"{package['name']} {package['version']}" if package else "no Paddle package found"
+    if "error" in cuda:
+        problem = f"Paddle does not import ({cuda['error']})"
+    elif not cuda.get("compiled"):
+        problem = f"this Paddle build has no CUDA ({installed})"
+    elif cuda.get("deviceCount", 0) <= index:
+        problem = f"Paddle sees {cuda.get('deviceCount', 0)} CUDA device(s) ({installed})"
+    else:
+        return requested, None
+    return requested, (
+        f"{requested} is configured (--device / OCR_PADDLE_DEVICE), but {problem}; PaddleX "
+        "would run on the CPU instead. Run the installer again to set up Paddle for this "
+        "GPU, or set OCR_PADDLE_DEVICE=cpu to run on the CPU on purpose.")
+
+
+def paddlex_cache_root() -> Path:
+    """PaddleX's own model cache (paddlex/utils/cache.py, official_models)."""
+    return Path(os.environ.get("PADDLE_PDX_CACHE_HOME") or Path.home() / ".paddlex") / "official_models"
+
+
+def model_dir_problem(path: Path, model_name: str) -> str | None:
+    """Why PATH is not a usable local copy of MODEL_NAME, or None.
+
+    The checks PaddleX makes before it loads (inference.yml names the model),
+    plus a nonempty weights file; the installer has checked the hashes.
+    """
+    if not path.is_dir():
+        return "is not a folder"
+    try:
+        config = (path / "inference.yml").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return "has no readable inference.yml"
+    names = re.findall(r"^\s*model_name:\s*['\"]?([^'\"\s#]+)", config, re.M)
+    if model_name not in names:
+        return f"holds {names[0] if names else 'an unnamed model'}, not {model_name}"
+    if not any(weight.is_file() and weight.stat().st_size > 0
+               for pattern in WEIGHT_PATTERNS for weight in path.glob(pattern)):
+        return "has no weights file (*.safetensors or *.pdiparams)"
+    return None
+
+
+def resolve_weights(pipeline_version: str, vl_dir: Path | None,
+                    layout_dir: Path | None) -> dict[str, dict[str, str]]:
+    """The local folders of the two models PIPELINE_VERSION loads.
+
+    A configured folder must hold its model; unconfigured, PaddleX's cache is
+    used when it already holds it.  Never a download: a missing model is a
+    configuration error that points to the installer.
+    """
+    models = PIPELINE_MODELS.get(pipeline_version)
+    if models is None:
+        raise ConfigurationError(f"unknown pipeline version {pipeline_version!r}; "
+                                 f"known: {', '.join(PIPELINE_MODELS)}")
+    weights: dict[str, dict[str, str]] = {}
+    for role, configured, (model_name, cache_names), variable, option in (
+            ("vl", vl_dir, models[0], "PADDLE_VL_MODEL_DIR", "--vl-model-dir"),
+            ("layout", layout_dir, models[1], "PADDLE_LAYOUT_MODEL_DIR", "--layout-model-dir")):
+        if configured is not None:
+            path = configured.expanduser().resolve()
+            problem = model_dir_problem(path, model_name)
+            if problem:
+                raise ConfigurationError(f"{variable} ({option}) {path} {problem}. {INSTALLER_HINT}")
+            weights[role] = {"model": model_name, "directory": str(path), "source": "configured"}
+            continue
+        for name in cache_names:
+            path = paddlex_cache_root() / name
+            if model_dir_problem(path, model_name) is None:
+                weights[role] = {"model": model_name, "directory": str(path), "source": "paddlex-cache"}
+                break
+        else:
+            raise ConfigurationError(
+                f"the {model_name} weights are not installed: {variable} ({option}) is not set "
+                f"and PaddleX's cache {paddlex_cache_root()} has no copy. {INSTALLER_HINT}")
+    return weights
+
+
+def execution_problem(device: str, loaded: Mapping[str, Any]) -> str | None:
+    """Whether the worker loaded a model somewhere other than DEVICE."""
+    for key, label in (("vlDevice", "VL recogniser"), ("layoutDevice", "layout detector")):
+        value = loaded.get(key)
+        if not isinstance(value, str) or not value:
+            continue  # this PaddleX does not say; the fallback switch still holds
+        kind, _, index = value.partition(":")
+        wanted_kind, _, wanted_index = device.partition(":")
+        if kind != wanted_kind or (index and wanted_index and index != wanted_index):
+            return (f"Paddle loaded the {label} on {value}, not {device}; refusing a "
+                    "silent device fallback")
+    return None
+
+
+def worker_log_path(report_path: Path) -> Path:
+    """This run's worker log, beside its report (paddleocr-vl-run.worker.log)."""
+    return report_path.with_name(report_path.stem + ".worker.log")
+
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def log_tail(path: Path, lines: int = WORKER_LOG_TAIL_LINES) -> list[str]:
+    """The last LINES nonblank lines of PATH, without PaddleX's colour codes."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 64 * 1024))
+            data = handle.read()
+    except OSError:
+        return []
+    text = ANSI_ESCAPE.sub("", data.decode("utf-8", "replace")).replace("\r", "\n")
+    return [line for line in text.splitlines() if line.strip()][-lines:]
+
+
+def cpu_resource_name(value: str) -> str:
+    # The same rule as the GPU queue's resource names (_gpu_queue).
+    if not value.strip() or len(value) > 128 or any(ord(c) < 32 for c in value):
+        raise argparse.ArgumentTypeError("CPU resource must be a nonempty short name")
+    return value
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -560,6 +852,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pipeline-version", default="v1.6")
     parser.add_argument("--model-revision", default=os.environ.get("PADDLEOCR_MODEL_REVISION", "unversioned-cache"),
                         help="caller-declared cache revision; change after replacing cached model files")
+    parser.add_argument("--device",
+                        help="gpu:N or cpu (default OCR_PADDLE_DEVICE; unset, gpu:0 when this "
+                             "Paddle build sees a CUDA device, else cpu); a GPU run never "
+                             "falls back to the CPU")
+    parser.add_argument("--vl-model-dir", type=Path,
+                        default=os.environ.get("PADDLE_VL_MODEL_DIR") or None,
+                        help="local PaddleOCR-VL weights folder (or PADDLE_VL_MODEL_DIR; "
+                             "unset, PaddleX's cache); never downloaded here")
+    parser.add_argument("--layout-model-dir", type=Path,
+                        default=os.environ.get("PADDLE_LAYOUT_MODEL_DIR") or None,
+                        help="local layout detector weights folder (or PADDLE_LAYOUT_MODEL_DIR)")
+    parser.add_argument("--cpu-resource", type=cpu_resource_name,
+                        default=os.environ.get("OCR_CPU_RESOURCE", DEFAULT_CPU_RESOURCE),
+                        help=f"queue resource of a CPU run, apart from the GPU's (default "
+                             f"OCR_CPU_RESOURCE or {DEFAULT_CPU_RESOURCE})")
     parser.add_argument("--timeout", type=float, default=PAGE_TIMEOUT_SECONDS)
     parser.add_argument(
         "--worker-source",
@@ -571,7 +878,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, add_queue_arguments
+from _gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
+                        add_queue_arguments)
 
 from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
     EXIT_INCOMPLETE, Budget, die_with_parent, exit_on_sigterm)
@@ -606,14 +914,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ConfigurationError("run report must be outside the render directory")
         if report_path in [Path(__file__).resolve(), arguments.worker_source.resolve()]:
             raise ConfigurationError("run report must not overwrite a tool")
+        worker_log = worker_log_path(report_path)
+        if worker_log in [Path(__file__).resolve(), arguments.worker_source.resolve(), report_path]:
+            raise ConfigurationError("the worker log must not overwrite a tool or the report")
         if arguments.timeout <= 0 or not arguments.pipeline_version or not arguments.model_revision:
             raise ConfigurationError("timeout, pipeline-version and model-revision must be valid")
+        if arguments.device is not None:
+            requested_device, device_source = parse_device(arguments.device), "cli"
+        else:
+            requested_device, device_source = parse_device(os.environ.get("OCR_PADDLE_DEVICE")), "config"
+        if requested_device is None:
+            device_source = "detected"
         interpreter = resolve_interpreter(arguments.interpreter)
-        versions = verify_paddleocr_available(interpreter)
+        probe = verify_paddleocr_available(interpreter, probe_cuda=requested_device != "cpu")
+        versions = probe.get("versions") if isinstance(probe.get("versions"), dict) else {}
+        device, device_problem = resolve_device(requested_device, probe)
         tool = build_tool_identity(arguments.worker_source, interpreter)
+        # Device, dtype, the Paddle package and the weight folders are recorded
+        # in each draft (ocrProfile.execution) and the report, never compared;
+        # this profile, which resume checks use, keeps the keys it always had.
         current_profile = dict(OCR_PROFILE, pipelineVersion=arguments.pipeline_version,
                                packageVersions=versions, modelRevision=arguments.model_revision,
                                modelIdentityAssurance="package-versions-and-caller-declared-cache-revision-not-weight-attestation")
+        execution: dict[str, Any] = {
+            "device": device, "deviceSource": device_source,
+            "paddlePackage": paddle_package(probe),
+            # What Paddle said about CUDA before the run (None: not asked, cpu).
+            "cudaProbe": probe.get("cuda"),
+            "deviceFallback": "refused" if device.startswith("gpu") else "no-gpu-visible",
+            "queueResource": arguments.gpu_resource if device.startswith("gpu") else arguments.cpu_resource,
+        }
     except (ConfigurationError, OSError, subprocess.TimeoutExpired) as error:
         print(f"ERROR {error}", file=sys.stderr)
         return 2
@@ -621,6 +951,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     page_results: list[dict[str, Any]] = []
     pending: list[PageInput] = []
     skipped_pages: list[int] = []
+    legacy_pages: list[int] = []
     blocked_pages: list[int] = []
     failed_pages: list[int] = []
 
@@ -652,16 +983,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_exists = os.path.lexists(json_output) or os.path.lexists(text_output)
         if resume.valid and not arguments.overwrite:
             skipped_pages.append(scan_page)
-            page_results.append(
-                {
-                    "scanPage": scan_page,
-                    "status": "skipped-current",
-                    "renderFile": str(render_file),
-                    "renderSha256": page.render_sha256,
-                    "jsonSha256": resume.json_sha256,
-                    "textSha256": resume.text_sha256,
-                }
-            )
+            entry: dict[str, Any] = {
+                "scanPage": scan_page,
+                "status": "skipped-current",
+                "renderFile": str(render_file),
+                "renderSha256": page.render_sha256,
+                "jsonSha256": resume.json_sha256,
+                "textSha256": resume.text_sha256,
+            }
+            if resume.legacy:
+                legacy_pages.append(scan_page)
+                entry["legacy"] = resume.legacy
+            page_results.append(entry)
             continue
         if output_exists and not arguments.overwrite:
             blocked_pages.append(scan_page)
@@ -677,31 +1010,80 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         pending.append(page)
 
+    # Checked before the queue: a GPU that Paddle cannot use and weights that
+    # are not on disk fail now, never inside the lease or the ready timeout.
+    if pending:
+        try:
+            if device_problem:
+                raise ConfigurationError(device_problem)
+            execution["weights"] = resolve_weights(
+                arguments.pipeline_version, arguments.vl_model_dir, arguments.layout_model_dir)
+        except ConfigurationError as error:
+            print(f"ERROR {error}", file=sys.stderr)
+            return 2
+
     worker: PaddleWorker | None = None
     lease: GPUQueue | None = None
-    queue_deferred = False
+    queue_deferred = local_model_deferred = False
+    worker_trouble = False
+    log_used = False
     completed_pages: list[int] = []
     deferred_pages: list[int] = []
     budget = Budget()
+    # When the worker said it was ready, its models loaded (time.time()): the
+    # model-ready signal ocr_book.py measures the engine's load by.
+    model_ready_at: float | None = None
 
     try:
         if pending:
             try:
                 if not budget.allows_next_page():
                     raise GPUQueueTimeout("phase deadline reached before model loading")
-                lease = GPUQueue(arguments.gpu_queue_dir, arguments.gpu_resource)
-                lease.acquire(timeout=arguments.gpu_queue_timeout, phase_deadline=budget.deadline)
+                # A CPU run takes its own resource: it must not hold the GPU's
+                # queue for hours and keep GPU work waiting behind it.
+                lease = GPUQueue(arguments.gpu_queue_dir, execution["queueResource"])
+                # A local model that owns the GPU (OCR_PHASE_RELEASE_CMD) defers
+                # only runs that need its memory: not a CPU run on Linux, which
+                # run_ocr_phase.py counts as needing none (macOS memory is shared).
+                lease.acquire(timeout=arguments.gpu_queue_timeout, phase_deadline=budget.deadline,
+                              local_model_guard=device.startswith("gpu") or sys.platform == "darwin")
+                log_used = True
+                # The load never runs past the phase's deadline (OCR_PHASE_DEADLINE).
+                ready_limit, ready_capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
                 worker = PaddleWorker(interpreter, tool.worker_file, arguments.pipeline_version,
-                                      lease_fds=lease.pass_fds)
+                                      lease_fds=lease.pass_fds, device=device,
+                                      weights=execution["weights"], log_path=worker_log,
+                                      ready_timeout=ready_limit, ready_capped=ready_capped)
+                model_ready_at = time.time()
+                execution.update({key: worker.execution.get(key)
+                                  for key in ("vlDevice", "layoutDevice", "dtype")})
+                problem = execution_problem(device, worker.execution)
+                if problem:
+                    raise WorkerUnavailable(problem)
+                print(f"  PaddleOCR-VL on {device} ({execution['dtype'] or 'dtype not reported'}), "
+                      f"queue {execution['queueResource']}", flush=True)
             except GPUQueueTimeout as error:
                 queue_deferred = True
+                local_model_deferred = isinstance(error, LocalModelOwnsGPU)
                 deferred_pages.extend(page.scan_page for page in pending)
                 page_results.extend({"scanPage": page.scan_page, "status": "deferred",
                                      "renderFile": str(page.render_file), "reason": str(error)}
                                     for page in pending)
                 print(f"[gpu-queue] {error}; {len(pending)} page(s) deferred", flush=True)
                 pending = []
+            except BudgetExpired:
+                # Out of time while the model loaded: the pages are not done
+                # yet, not failed (the summary's ERROR says the budget ran out).
+                deferred_pages.extend(page.scan_page for page in pending)
+                page_results.extend({"scanPage": page.scan_page, "status": "deferred",
+                                     "renderFile": str(page.render_file),
+                                     "reason": "time budget ran out while the model was loading"}
+                                    for page in pending)
+                print(f"  time budget reached while PaddleOCR-VL was loading: {len(pending)} page(s) "
+                      "left for the next call", flush=True)
+                pending = []
             except (WorkerUnavailable, GPUQueueError, OSError) as error:
+                worker_trouble = worker_trouble or not isinstance(error, GPUQueueError)
                 print(f"ERROR worker unavailable: {error}", file=sys.stderr)
                 for page in pending:
                     failed_pages.append(page.scan_page)
@@ -764,7 +1146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise PageOCRFailure(f"invalid worker output: {field_error}")
                 text_bytes = text_from_lines(lines)
                 record = build_completion_record(
-                    raw_record, page, text_bytes, tool, current_profile
+                    raw_record, page, text_bytes, tool, dict(current_profile, execution=execution)
                 )
                 json_bytes = canonical_json_bytes(record, pretty=True)
 
@@ -817,6 +1199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 break
             except (PageOCRFailure, TypeError, ValueError) as error:
+                worker_trouble = True
                 failed_pages.append(page.scan_page)
                 page_results.append(
                     {
@@ -828,6 +1211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 print(f"  page {page.scan_page:04d}: FAILED {error}", file=sys.stderr)
             except (WorkerUnavailable, OSError) as error:
+                worker_trouble = True
                 # The pipeline is gone; every remaining page fails with it.
                 remaining = pending[pending.index(page) :]
                 for lost in remaining:
@@ -849,6 +1233,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         finally:
             if lease is not None:
                 lease.close()
+    if worker_trouble and log_used:
+        tail = log_tail(worker_log)
+        print(f"  worker log {worker_log}" + (f", last {len(tail)} line(s):" if tail else ": empty"),
+              file=sys.stderr)
+        for line in tail:
+            # Quoted, so a log line is never read as this runner's own ERROR line.
+            print(f"    | {line}", file=sys.stderr)
 
     page_results.sort(key=lambda entry: entry["scanPage"])
     report = {
@@ -872,6 +1263,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
         "ocrProfile": current_profile,
         "ocrProfileSha256": profile_sha256(current_profile),
+        "execution": execution,
+        "workerLog": str(worker_log) if log_used else None,
         "counts": {
             "requested": len(pages),
             "completed": len(completed_pages),
@@ -879,9 +1272,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             "blocked": len(blocked_pages),
             "failed": len(failed_pages),
             "deferred": len(deferred_pages),
+            "legacy": len(legacy_pages),
         },
+        "draftIdentity": draft_identity(current_profile),
+        "draftIdentitySha256": profile_sha256(draft_identity(current_profile)),
         "pages": page_results,
     }
+    if model_ready_at is not None:
+        report["modelReadyAt"] = round(model_ready_at, 3)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_bytes(canonical_json_bytes(report, pretty=True))
 
@@ -891,7 +1289,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"failed {len(failed_pages)} | deferred {len(deferred_pages)}",
         flush=True,
     )
+    if legacy_pages:
+        print(f"  {len(legacy_pages)} skipped page(s) are legacy drafts (no draftIdentity); "
+              "see the report", flush=True)
     print(f"  report: {report_path}", flush=True)
+    if local_model_deferred:
+        print(LOCAL_MODEL_SUMMARY, flush=True)
 
     # Pages left over after progress: call again (failed pages are retried then
     # too).  Pages left over with no progress: calling again would do exactly

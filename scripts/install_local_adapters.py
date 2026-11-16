@@ -49,7 +49,7 @@ LEGACY_SPEC_IDS_V3 = (
 
 SKILL_NAME = "jyut-ocr-proofread"
 LEGACY_SKILL_PATH = Path("plugins/jyut-ocr-proofread/skills/jyut-ocr-proofread")
-PORTABLE_AGENTS = ("generic", "codex", "claude", "gemini", "antigravity")
+PORTABLE_AGENTS = ("generic", "codex", "claude", "gemini", "antigravity", "qwen")
 # Retained for callers inspecting the historical seven-target interface.
 SPEC_IDS = LEGACY_SPEC_IDS_V3
 
@@ -178,6 +178,7 @@ def build_portable_specs(
         "claude": user_home / ".claude/skills",
         "gemini": user_home / ".gemini/skills",
         "antigravity": user_home / ".gemini/config/skills",
+        "qwen": user_home / ".qwen/skills",
     }
     specs: list[dict[str, Any]] = []
     if skill_dir is not None:

@@ -15,6 +15,15 @@ Response : {"ok": true, "lines": [...], "regions": [...], "width": W, "height": 
            {"ok": false, "error": "<message>"}
 
 ``regions`` are the layout regions that hold no text (normalise_page).
+
+The parent chooses the device and the weights through the environment:
+JYUT_PADDLE_DEVICE (``gpu:N`` or ``cpu``), JYUT_PADDLE_VL_MODEL_DIR and
+JYUT_PADDLE_LAYOUT_MODEL_DIR.  For a GPU the worker first checks that this
+Paddle build can see that card (PaddleX would otherwise run on the CPU and only
+log a warning), and the parent sets PADDLE_PDX_DISABLE_DEVICE_FALLBACK so that
+PaddleX raises instead of falling back.  The ready line reports what was
+actually loaded: {"ok": true, "ready": true, "execution": {...}}
+(loaded_execution).
 """
 
 from __future__ import annotations
@@ -208,24 +217,106 @@ def normalise_bbox(bbox: Any, width: int, height: int) -> list[float]:
     ]
 
 
-def main() -> int:
+def gpu_unavailable(device: str) -> str | None:
+    """Why this Paddle build cannot run on DEVICE (``gpu:N``), or None.
+
+    The same test PaddleX applies before it silently switches to the CPU
+    (is_compiled_with_cuda and cuda.device_count), made before any weights load.
+    """
+    import paddle
+
+    index = int(device.partition(":")[2] or 0)
+    if not paddle.device.is_compiled_with_cuda():
+        return (f"{device} is configured, but this Paddle build has no CUDA (a CPU "
+                "package); Paddle would run on the CPU instead")
+    count = int(paddle.device.cuda.device_count())
+    if count <= index:
+        return (f"{device} is configured, but Paddle sees {count} CUDA device(s); "
+                "Paddle would run on the CPU instead")
+    return None
+
+
+def _attribute(value: Any, *names: str) -> Any:
+    for name in names:
+        try:
+            value = getattr(value, name)
+        except Exception:  # noqa: BLE001 - PaddleX internals vary by version
+            return None
+    return value
+
+
+def loaded_execution(pipeline: Any, device: str | None) -> dict[str, Any]:
+    """The device and dtype PaddleX actually loaded the two models with.
+
+    Read from PaddleX's predictors (the VL recogniser's ``device``/``dtype``,
+    the layout detector's static-runner config); None where this PaddleX
+    version does not expose them.
+    """
+    inner = _attribute(pipeline, "paddlex_pipeline")
+    recogniser = _attribute(inner, "vl_rec_model")
+    vl_device = _attribute(recogniser, "device")
+    dtype = _attribute(recogniser, "dtype")
+    config = _attribute(inner, "layout_det_model", "runner", "_config")
+    layout_device = None
+    if isinstance(config, dict) and config.get("device_type"):
+        layout_device = str(config["device_type"])
+        if config.get("device_id") is not None:
+            layout_device += f":{config['device_id']}"
+    return {
+        "requestedDevice": device,
+        "vlDevice": str(vl_device) if vl_device is not None else None,
+        "layoutDevice": layout_device,
+        "dtype": str(dtype) if dtype is not None else None,
+    }
+
+
+USAGE = "usage: paddleocr_vl_worker.py [--help]"
+
+
+def main(argv: list[str] | None = None) -> int:
+    # --help before anything is loaded: it needs neither paddleocr nor a GPU.
+    argv = sys.argv[1:] if argv is None else argv
+    if argv in (["--help"], ["-h"]):
+        print(f"{USAGE}\n\nStarted by run_paddleocr_vl.py, which talks to it on stdin and stdout; "
+              "it takes no other argument.\n\n" + (__doc__ or "").strip())
+        return 0
+    if argv:
+        print(f"{USAGE}\npaddleocr_vl_worker.py: no arguments are taken (got {' '.join(argv)}); "
+              "run_paddleocr_vl.py starts it", file=sys.stderr)
+        return 2
     # Take the real stdout away from every library that might print to it.
     response_fd = os.dup(sys.stdout.fileno())
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     responses = os.fdopen(response_fd, "w", encoding="utf-8")
 
     os.environ.setdefault("FLAGS_use_cuda_managed_memory", "false")
+    device = os.environ.get("JYUT_PADDLE_DEVICE") or None
+    options: dict[str, Any] = {}
+    if device:
+        options["device"] = device
+    for option, variable in (("vl_rec_model_dir", "JYUT_PADDLE_VL_MODEL_DIR"),
+                             ("layout_detection_model_dir", "JYUT_PADDLE_LAYOUT_MODEL_DIR")):
+        if os.environ.get(variable):
+            options[option] = os.environ[variable]
 
     try:
         with contextlib.redirect_stdout(sys.stderr):
+            if device and device.startswith("gpu"):
+                reason = gpu_unavailable(device)
+                if reason:
+                    emit(responses, {"ok": False, "error": f"pipeline load refused: {reason}"})
+                    return 3
             from paddleocr import PaddleOCRVL
 
-            pipeline = PaddleOCRVL(pipeline_version=os.environ.get("JYUT_PADDLE_PIPELINE_VERSION", "v1.6"))
+            pipeline = PaddleOCRVL(
+                pipeline_version=os.environ.get("JYUT_PADDLE_PIPELINE_VERSION", "v1.6"),
+                **options)
+            execution = loaded_execution(pipeline, device)
     except Exception as error:  # noqa: BLE001 - reported to the parent verbatim
         emit(responses, {"ok": False, "error": f"pipeline load failed: {error}"})
         return 3
 
-    emit(responses, {"ok": True, "ready": True})
+    emit(responses, {"ok": True, "ready": True, "execution": execution})
 
     for raw in sys.stdin:
         raw = raw.strip()

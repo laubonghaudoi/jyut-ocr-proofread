@@ -311,7 +311,12 @@ where the engines read a gap slightly apart):
   the characters either side of the gap (the year closing the Chinese
   entry before, a Western entry that goes on with a Chinese note on the
   next character's line) is woven with the page's text on that side of its
-  break, each side on its own.  A bracket the page holds there that is one
+  break, each side on its own; where the page holds those runs on that
+  side already, as both engines read them there (the punctuator wrote them
+  from the crop), its text there stays as it is and the lines still go in
+  (_sides_held; until 2026-11-15 such a run was "another run" and the lines
+  a doubt: a bench page kept 頁13b-14a。 and lost the Western note after
+  it, 106 characters).  A bracket the page holds there that is one
   of the lines' own goes.  A page sealed empty where both engines read
   such text alike: every line of it.  In a gap that holds note markers (a
   Western footnote between two others, each line opening with its number)
@@ -552,6 +557,58 @@ def _marker_value(text: str) -> str:
     return "".join(c for c in folded if c.isdigit()) or folded.strip()
 
 
+# What a wrapper holds when it is a note marker, once its commands, braces
+# and carets are taken out: one to three figures, bracketed or not, or a
+# star (engine A's `$ 12 $`, `$^{(1)}$`, `$^{*}$`); or circled,
+# parenthesised or superscript figures (MARKER_RE) with figures, brackets
+# and spaces about them (engine B's `$ ^{⑼} $`).
+WRAPPED_MARKER_RE = re.compile(r"[(\uff08]?[0-9]{1,3}[)\uff09]?|[*\u2217]")
+WRAPPED_BESIDE_RE = re.compile(r"[\s0-9()\uff08\uff09]*")
+# A LaTeX command that makes a wrapper a formula: any but \textcircled.
+FORMULA_COMMAND_RE = re.compile(r"\\(?!textcircled(?![A-Za-z]))[A-Za-z]+")
+
+
+def _formula_beside(text: str, start: int, end: int) -> bool:
+    """Whether the marker at TEXT[START:END] is a formula's exponent rather
+    than a note call (math_context): beside an operator, or after a letter
+    that is not Han (x², π²).  Two places are no formula's, whose repairs
+    were lost when they were taken for one: a figure before the marker (a
+    year or a page with its call, 甲乙1990①), and the start of a line, where
+    the marker is a note's own number whatever follows it (⑦- Lin…)."""
+    if not text[:start].rsplit("\n", 1)[-1].strip():
+        return False
+    return math_context(text, start, end, figure_base=False)
+
+
+def _wrapped(text: str, start: int, end: int, inner: str, latex: bool = False) -> tuple[str, str, int, int, str]:
+    """The token for the wrapper TEXT[START:END] (LaTeX, ^{...}, <sup> or
+    <sub>), INNER its content: (kind, raw, start, end, value).
+
+    A complete numeric wrapper (marker_key) is a note marker; so is one whose
+    content is a marker's shape (WRAPPED_MARKER_RE, or MARKER_RE figures with
+    figures and brackets beside them), as the stage read them before the
+    numeric parser: engine A's other LaTeX that holds a figure is a note
+    marker (360 on the 609-page modern book).  Either is a formula's
+    exponent where _formula_beside says so.  LaTeX that holds nothing once
+    its commands are out is markup (`$ \\Box\\Box $` on the page, `$\\quad$`);
+    anything else, a formula or a command other than \\textcircled among
+    them, is unknown markup."""
+    raw = text[start:end]
+    value = marker_key(raw)
+    if not value:
+        bare = COMMAND_RE.sub("", inner).replace("^", "").strip()
+        if latex and not bare:
+            return MARKUP, raw, start, end, ""
+        shaped = bool(WRAPPED_MARKER_RE.fullmatch(bare)) or bool(
+            MARKER_RE.search(bare) and WRAPPED_BESIDE_RE.fullmatch(MARKER_RE.sub("", bare)))
+        if not shaped or FORMULA_COMMAND_RE.search(inner):
+            return OTHER, raw, start, end, "latex"
+        value = _marker_value(bare)
+    if _formula_beside(text, start, end):
+        return OTHER, raw, start, end, "latex"
+    return MARKER, raw, start, end, value
+
+
 def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
     """TEXT as tokens; SIDE is "page", "a" or "b" (the engine's markup is
     read as such, the page's Markdown as structure).  LINE_START: TEXT opens
@@ -613,17 +670,13 @@ def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
         if side != "page" or c == "$":
             m = LATEX_RE.match(text, at)
             if m:
-                value = marker_key(m.group())
-                if value and not math_context(text, at, m.end()):
-                    out.append(Token(MARKER, m.group(), at, m.end(), value))
-                else:
-                    out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
+                out.append(Token(*_wrapped(text, at, m.end(), m.group()[1:-1], latex=True)))
                 at = m.end()
                 continue
         m = NUMERIC_NOTE_RE.match(text, at)
         if m and marker_key(m.group()):
             value = marker_key(m.group())
-            if math_context(text, at, m.end()):
+            if _formula_beside(text, at, m.end()):
                 out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
             else:
                 out.append(Token(MARKER, m.group(), at, m.end(), value))
@@ -631,8 +684,9 @@ def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
             continue
         m = SUPERSCRIPT_RE.match(text, at)
         if m:
-            # Unbalanced or nonnumeric wrappers are not numeric note evidence.
-            out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
+            # Its braces' content: ^{...}, or \textcircled{...} however its
+            # backslash-t was written.
+            out.append(Token(*_wrapped(text, at, m.end(), m.group()[m.group().index("{") + 1:-1])))
             at = m.end()
             continue
         if c == "\\" or c in "{}":
@@ -645,8 +699,7 @@ def tokens(text: str, side: str, line_start: bool = False) -> list[Token]:
         if c == "<":
             m = SUP_RE.match(text, at)
             if m:
-                # Unsupported HTML superscripts/subscripts remain unresolved.
-                out.append(Token(OTHER, m.group(), at, m.end(), "latex"))
+                out.append(Token(*_wrapped(text, at, m.end(), m.group(2))))
                 at = m.end()
                 continue
             m = HTML_ROW_RE.match(text, at)
@@ -3077,10 +3130,48 @@ def _lines_own(p_toks: Sequence[Token], rest: Sequence[Token], lines: Sequence[S
     return gone
 
 
+def _sides_held(gap: Gap, trailing: bool) -> bool:
+    """Whether every run the page holds in GAP (N2's) stands on the line of
+    a character beside it - before the page's first break, or after its
+    last; at the page's trailing edge (TRAILING) with no break, all of it -
+    and is what both engines read on that line: their text before their
+    first break, or after their last (none at the trailing edge, where the
+    whole lines end the gap).  The punctuator wrote those runs from the
+    crop, so they are not "another run": the whole lines go beside them and
+    the page's text there stays as it is.  (A page range closing the
+    Chinese note before a Western one: the page held 頁13b-14a。 and lost
+    the Western note after it, where phase 3 kept the page range.)"""
+    if gap.a is None or gap.b is None:
+        return False
+    p_toks = gap.page
+    breaks = [n for n, t in enumerate(p_toks) if t.kind == BREAK]
+    if breaks:
+        p_head, p_mid, p_tail = p_toks[:breaks[0]], p_toks[breaks[0]:breaks[-1]], p_toks[breaks[-1] + 1:]
+    elif trailing:
+        p_head, p_mid, p_tail = list(p_toks), [], []
+    else:
+        return False
+    a_lines, b_lines = _lines_of(gap.a), _lines_of(gap.b)
+    if len(a_lines) < 2 or len(b_lines) < 2 or runs_of(p_mid):
+        return False
+    sides = ((p_head, a_lines[0], b_lines[0]),
+             (p_tail, [] if trailing else a_lines[-1], [] if trailing else b_lines[-1]))
+    for p_side, a_side, b_side in sides:
+        p_runs, a_runs = runs_of(p_side), runs_of(a_side)
+        if not p_runs:
+            continue
+        if [t.key for t in p_runs] != [t.key for t in a_runs] and fused(p_runs) != fused(a_runs):
+            return False
+        if [t.key for t in runs_of(b_side)] != [t.key for t in a_runs]:
+            return False
+    return True
+
+
 def _whole_lines(page: PageRuns, gap: Gap, lines: Sequence[Sequence[Token]], plan: rr.Plan, found: list[re_.Edit],
                  marker: Gap | None = None) -> str | None:
     """N2 on one gap: the whole lines of engine A's gap, when engine B
-    reads them alike and the page holds no run in the gap; the edit goes to
+    reads them alike and the page holds no run in the gap (but the runs of
+    the lines either side, as the engines read them: _sides_held); the edit goes to
     FOUND, the runs woven beside the lines named in its evidence with them.
     MARKER (the gap as read, holding note markers): GAP is marker_lines'
     (the engines' tokens without the markers that open their lines, which
@@ -3094,7 +3185,7 @@ def _whole_lines(page: PageRuns, gap: Gap, lines: Sequence[Sequence[Token]], pla
     if not lines:
         return None
     texts = [line_text(seg) for seg in lines]
-    if runs_of(gap.page):
+    if runs_of(gap.page) and not _sides_held(gap, marker is not None and gap.edge == "end"):
         if fused(gap.page) != fused(gap.a) and gap.b is not None and agree(gap.a, gap.b):
             plan.doubts.append(("run-no-place", scan, _gap_detail(page, gap, "the page holds another run"), {"lines": texts}))
         return "the page holds another run"
@@ -3207,6 +3298,10 @@ def _whole_lines(page: PageRuns, gap: Gap, lines: Sequence[Sequence[Token]], pla
                 (p_toks[:breaks[0]], gap.a[:a_cut[0]], gap.b[:b_cut[0]] if b_cut else gap.b, gap.k == 0, "start"),
                 (p_toks[breaks[-1] + 1:], gap.a[a_cut[-1]:], gap.b[b_cut[-1]:] if b_cut else gap.b, True, "end")):
             p_text = "".join(t.raw for t in p_part)
+            if runs_of(p_part):
+                # The page holds that line's runs already (_sides_held).
+                woven.append(p_text)
+                continue
             side, how, _names = weave(Gap(gap.k, gap.start, gap.start + len(p_text), tokens(p_text, "page", line_start),
                                           a_part, b_part, "".join(t.raw for t in a_part), "".join(t.raw for t in b_part),
                                           gap.a_index, edge=gap.edge if gap.edge == edge else ""))
@@ -3278,7 +3373,9 @@ def _beside_markers(page: PageRuns, gap: Gap, marked: Gap, lines: Sequence[Seque
         return None, why, []
     tier = "lines beside note markers" + (", the page's marks of theirs dropped" if gone else "")
     names: list[str] = []
-    if runs_of(a_head):
+    if runs_of(a_head) and not runs_of(p_toks[:cut]):
+        # (Where the page's part holds runs, they are engine A's first
+        # line's, _sides_held: it stays as the page has it.)
         b_head = _lines_of(gap.b or [])[0]
         woven, how, names = weave(Gap(gap.k, gap.start, gap.start + len(head), tokens(head, "page", gap.k == 0), a_head,
                                       b_head, "".join(t.raw for t in a_head), "".join(t.raw for t in b_head),

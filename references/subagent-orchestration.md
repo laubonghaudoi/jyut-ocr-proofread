@@ -1,229 +1,113 @@
-# Subagent orchestration contract
+# Subagent 分工同 packet 答題契約
 
-Use this contract when splitting one historical Chinese PDF into assignments,
-answering packet bundles, or requesting independent review. It supplements the
-normal proofreading rules; the PDF image remains the text authority. Custom
-agent registrations are optional. Logical roles can use generic workers with
-complete assignments, and writer/packet tasks can run sequentially in the main
-session when no child-agent facility is available.
+A 套（當前 agent 校對）答 packet bundle、分工畀 subagent，或者人手分段轉錄要獨立覆核嗰陣讀呢份。佢補充 `SKILL.md`；文字依據始終係 PDF 原圖。Custom agent 註冊係可選：邏輯角色可以交畀接收完整 assignment 嘅普通 worker；平台冇子 agent 功能，就由主 session 順序做晒 writer 同 packet 工作。
 
-The invoking session's agent model performs intelligent proofreading and final
-content review. Writers and auditors follow that session's effective model
-policy, subject to explicit user/platform overrides; the skill pins no model ID.
-Choosing a local OCR draft backend never selects a separate proofreading model
-or requires a local Qwen/NInfer service.
+B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機模型，agent 唔睇圖，亦唔叫 subagent 代做（`SKILL.md` 第一節）。
 
-## Capability routing
+調用技能嗰個 session 嘅模型負責 A 套嘅校對同最後內容判斷。Writer 同 auditor 跟住 session 實際生效嘅模型設定，除非用戶或者平台明確 override；技能唔鎖 model ID。揀 OCR 引擎唔會揀另一個校對模型。
 
-The current model must be able to inspect the supplied original page images and
-crops. A text-only worker must return the work as pending rather than infer a
-visual decision from OCR. File access, script execution and any required audit
-capabilities must likewise be checked before claiming completion.
+## 目錄
 
-Parallelism is optional. A single writer may finish all scan ranges or packet
-bundles in sequence, retaining the same ownership, coverage and sealing rules.
-A second pass by that writer is self-review, not independent review. If the
-selected profile or project requires independence, pass the sealed candidate to
-a distinct reviewer in another read-only session or to an independent human
-with read-only candidate access. Until that review is available, preserve the
-candidate and an explicit pending audit; do not silently reduce the requirement.
-Platform role names, invocation tools and sandbox syntax belong in the optional
-`adapters/` documentation, not in the logical role contract.
+- [能力檢查](#能力檢查)
+- [兩種並行](#兩種並行)
+- [Packet bundle 點答](#packet-bundle-點答)
+- [Assignment 要交代乜](#assignment-要交代乜)
+- [分段 writer 嘅流程](#分段-writer-嘅流程)
+- [獨立覆核嘅流程](#獨立覆核嘅流程)
+- [主 agent 收尾](#主-agent-收尾)
 
-## Two separate kinds of parallelism
+## 能力檢查
 
-- LLM subagents transcribe, proofread, or audit bounded scan ranges. Only the
-  main agent may create and coordinate them. A child agent must not create
-  another agent.
-- Apple Vision OCR uses a separate bounded local process pool, not LLM agents. It
-  has no model or reasoning setting, and its draft output never becomes text
-  authority. Do not spend LLM-agent slots merely to wrap identical Vision
-  processes.
-- The main agent runs the configured HunyuanOCR or Apple Vision backend, and
-  optionally PaddleOCR-VL for selected scans. Hunyuan can use CPU, CUDA or Metal;
-  its runs use the configured resource queue and one persistent server/worker
-  for a given backend identity. Do not apply
-  the Vision process-pool limit to them, and do not let children start OCR
-  backends or stop shared inference services. See `local-ocr.md`.
-- Keep concurrently active LLM children at or below
-  `min(runtime child slots, 8)`. A smaller runtime limit always wins. Do not
-  queue overlapping writers merely to fill the available slots.
+答題嘅模型要睇得到 bundle 指定嘅原頁圖同裁圖。淨係讀到文字嘅 worker 要將題目原封退返，唔可以由 OCR 文字估一個睇圖嘅判斷。檔案存取、執行腳本同需要嘅 audit 能力，都要先確認，先可以話完成。
 
-## Assignment contract
+並行係可選。一個 writer 可以順序做晒所有頁段或者 bundle，擁有權、coverage 同封存規則照舊。同一個 writer 讀多次係自我覆核，唔係獨立覆核。Profile 或者項目要求獨立覆核，就將封好嘅 candidate 交畀另一個唯讀 session 嘅 reviewer，或者有唯讀權限嘅獨立人員；未有之前保留 candidate 同明確 pending 嘅 audit，唔靜靜降低要求。平台嘅角色名、調用工具同 sandbox 語法放喺可選嘅 `adapters/`，唔放喺邏輯角色契約。
 
-The main agent owns range partitioning and final assembly. Before a child
-starts, give it one complete assignment containing:
+## 兩種並行
 
-1. a unique assignment ID and exactly one logical role: segment writer,
-   packet worker, or independent visual auditor; no registered platform role
-   name is required;
-2. the exact source PDF path, its SHA-256, and the in-scope PDF scan count;
-3. an inclusive owned scan range or explicit scan set, plus the adjacent
-   boundary-context scans that may be read but not written;
-4. an exact mapping from every assigned scan to its individual
-   original/full-resolution render, current render SHA-256, temporary page
-   marker, and printed-page label when one exists;
-5. the writer's single segment output path, or for an auditor, the candidate
-   path and sealed candidate SHA-256 to inspect;
-6. the selected `basic`, `structured`, or `release` profile; local repo rules;
-   notation policy; known corrections; and risk flags such as tables, rotated
-   spreads, duplicates, missing pages, faint text, footnotes, running furniture,
-   or uncertain boundaries; and
-7. the required report fields and any project-local manifests or evidence paths
-   the child must read.
+- **LLM subagent**：答 bundle、分段轉錄或者覆核有範圍嘅頁。只有主 agent 可以開同協調；子 agent 唔准再開子 agent。
+- **OCR 程序**：主 agent 跑 `ocr_book.py`（HunyuanOCR、PaddleOCR-VL、補讀）。Apple Vision 用獨立嘅 bounded 本機 process pool，唔係 LLM agent。OCR 程序冇推理設定，底稿永遠唔係文字依據。唔好用 LLM slot 去包相同嘅 OCR 程序；子 agent 唔准自己開 OCR 或者停共用推理服務（見 `local-ocr.md`）。
+- 同時運行嘅 LLM 子 agent 預設最多 8 個，用戶明確要求可以去到 16 個，但永遠唔超過平台實際有嘅 slot。由 2 個開始；限流就減少並行、按服務要求冷卻，最少 60 秒冇再限流先逐步加返。唔好為咗填滿 slot 排重疊嘅 writer。
 
-Do not start an assignment with a missing field, a source/render hash mismatch,
-an output path owned by another writer, or an owned scan that overlaps another
-active writer. Report the conflict to the main agent instead.
+## Packet bundle 點答
 
-## Segment writer lifecycle
+兩條路線都出 packet：兩份真實底稿就先跑 `book_profile.py`，再將 profile 同兩個底稿目錄交畀 `proofread_pages.py`；淨係一份真實底稿就 `proofread_pages.py --single-engine`，唔使 profile。唔可以將一份底稿複製成假嘅第二引擎證據。題目寫成 `packets/wave-NN/bundle-XX.json`，裁圖喺 `packets/crops/`，腳本 exit `10`（`proofread_pages.py` 同時有頁 failed／blocked 就 exit `11`）。
 
-The writer owns only its assigned segment and scan range.
+1. **分工**：主 agent 最多開上面講嘅上限咁多個普通 packet worker，或者自己順序做。每個 assignment 擁有一個輸入 `bundle-XX.json`（連佢嘅 SHA-256）同一個輸出：bundle 嘅 `expected_answers_file`（`packets/wave-NN/answers-XX.json`）。一個 wave 分成最多 `--max-bundles` 個 bundle（預設 8）；一個 bundle 最多 `--max-items-per-bundle` 條題（`proofread_pages.py`，預設 20，env `PROOFREAD_MAX_ITEMS_PER_BUNDLE`），題多過呢個數就多開 bundle，唔會將幾百張頁圖塞落同一個 bundle。
+2. **答題**：每條題睇佢 `image_path` 指嘅 PNG（裁圖，或者整頁 render），照佢自己嘅 `system` 同 `user_text` 寫答案，`answer` 係原原本本嘅答案文字。常見嘅題：
+   - `adjudicate`（裁決）：直接睇裁圖上標住嘅字位，照 prompt 嘅格式答（`字: ...`）；兩個候選都唔係就照實答，睇唔清就照 prompt 講。
+   - `census+punctuate`、`census`、`punctuate`（及其 `-retry`、`-shape`）：喺放大嘅 block 圖數印咗嘅標點（census），再將嗰啲符號加入鎖定嘅字串（唔准加、刪、換任何字）。
+   - `table-rebuild`（及 `-retry`）、`html`、`cell`、`record-order`：由裁圖重建表；用晒 `required` 嘅字，`allowed` 以外嘅字淨係真係印咗先寫。
+   - `orient`、`cell-direction`、`notation`：照圖同現有格網答結構或者符號問題。讀向要有精確行／欄位置同圖像證據；讀得通嘅詞或者對得上嘅合計唔准作倒轉嘅理由。
+   - `format`（及 `-retry`）：加 Markdown 結構（標題、段落、列表、表格），刪書邊嘅書眉同頁碼，每個鎖定嘅字、標點、原圖證實嘅數字／算式／項號同 `⟦Tn⟧` 表格記號都要原封保留；原印項號加 bullet 之後仍然係內容。
+   - `writer`：淨係得一份底稿或者引擎讀唔到嘅頁：對住整頁原圖轉錄，底稿只係提示。
+   - `coverage-read`：盲讀一張裁圖，用嚟證實裁決答「無」嘅位係咪真係冇字。
+   - `page-inventory`、`content-recovery`、`coverage-review`（淨係 `--content-fidelity on`）：睇完整原頁，照 JSON 契約答；兩份底稿一致唔係完整嘅證據；唔可以由註文或者連號推斷漏咗嘅註號。見 `content-fidelity.md`。
+   - 任何 `-correction` 題：腳本話上一個答案唔合契約（欄位、hash 抄錯），照佢講嘅改一次。
+3. **寫答案**：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次。`usage`、`response_id` 淨係寫量度到嘅；冇就唔寫（記做未知，唔當零）。可以寫 `answered_by`（答題 model 嘅確實 ID）。Worker 淨係寫自己嗰份 answers、計佢嘅 SHA-256、報答咗幾多個 `request_id`，然後即刻**停寫**（STOP-WRITE）；唔准掂 `packets/answers.jsonl`、`page-NNNN.md`、`page-NNNN.json`。
+4. **交答案**：答晒成個 wave，主 agent 跑 `[packets] PENDING` 行（或者 wave 嘅 `manifest.json`）列出嘅 `apply_packet_answers.py PACKETS_DIR WAVE_DIR`，加 `--answered-by MODEL`（答題模型嘅確實 ID；run report 嘅 `packetAnsweredBy` 按模型數，用嚟核全書係咪同一個模型答）。佢驗證後原子追加入 `answers.jsonl`。之後重跑同一條步驟命令：腳本重播答案，跑晒決定論守門（`verify_characters`、`restore_merged_characters`、`check_rebuilt_table`、`punctuation_pass_ok`、`deleted_runs`），出下一個 wave，或者封 `page-NNNN.md` 同 `page-NNNN.json`。直到 exit `0` 先去下一步。
+5. **exit 11**：照答個 wave；另外 run report 嘅 `pages` 有 failed／blocked 嘅頁，重跑修唔好佢哋，要按原因處理（例如補底稿之後 `--overwrite --pages N`）。
 
-1. Verify the source and render hashes before reading OCR drafts or changing
-   text. Treat HunyuanOCR, PaddleOCR-VL, Apple Vision, GJ.cool, Gemini, and other
-   OCR as hints only. Missing optional-engine pages are not blank readings.
-2. Read boundary-context scans for joins, headings, lists, tables, and footnotes,
-   but do not transcribe them into a second segment or modify their owner's
-   files.
-3. Write only the assigned segment output. Never edit the final assembled
-   Markdown, another segment, a page/render manifest, or release evidence owned
-   by the main agent.
-4. Check every owned scan against its individual original/full-resolution
-   render. Preserve temporary page markers and report any unresolved character,
-   missing/duplicate scan, or boundary decision.
-5. Finish the segment, compute SHA-256 from its exact bytes, and return a
-   candidate seal containing assignment ID, path, SHA-256, owned scan set,
-   marker coverage, unresolved findings, and boundary notes.
-6. Enter **STOP-WRITE** immediately after returning the seal. Do not make even a
-   small cleanup edit, respond to a review finding with a patch, or refresh the
-   hash unless the main agent explicitly opens a new amendment assignment.
+規矩：
 
-When drafts are available, retain their file identities and pass substantive
-draft-to-candidate text differences to the existing audit as review priorities.
-Do not replace full-scan review with a diff-only pass. An ambiguous alignment is
-a block-level risk, not an exact character locator. Keep unresolved readings
-separate from actionable fixes, with enough context to distinguish repeated
-occurrences; a group label alone does not establish which occurrences were read.
+- Wave 唔會改：重播同一個 wave 用返同一啲檔同題目。同一個答案可以再用；同一題唔同嘅答案或者用量會被拒（exit 2），除非主 agent 用 `apply_packet_answers.py ... --amend`（可以加 `--reason`）：新紀錄寫明佢取代邊個答案嘅 SHA-256，舊紀錄留喺 `answers.jsonl` 做審計；已經用舊答案封好嘅頁，要對 apply 印出嘅頁加 `--overwrite --pages` 重做先會用新答案。
+- 重播唔再計費；逐頁 usage 計返答案記錄嘅用量，每個答案計一次。
+- 整頁清點、排版前補讀同最後覆核（開咗 v2 先有）係有界嘅步驟，唔係無限改錯：契約錯誤每條最多改一次，定唔到嘅記疑點。
+- 題目綁定圖、prompt 同影響答案嘅設定；新圖、新候選或者新契約要新答案。舊 v1 證據淨係歷史讀取。
+- 唔好為咗答題以外嘅理由逐頁覆核封存頁；bundle 冇問嘅位，定唔到嘅已經喺 `doubts.md`。
 
-Any byte change after sealing invalidates that candidate and every audit based
-on it. The main agent must designate one writer, produce a new SHA-256 seal, and
-send the affected scans and boundary context to a different auditor again.
+## Assignment 要交代乜
 
-## PacketClient wave bundle lifecycle
+（人手分段轉錄同獨立覆核用；packet worker 淨係要上面第 1 點。）主 agent 擁有頁段劃分同最後組裝。開子 agent 之前畀佢一份完整 assignment：
 
-For a single genuine OCR draft, run `proofread_pages.py --backend packet`
-without a second draft or a book profile. For two genuine drafts, measure
-`book_profile.py` first, then pass that profile and both draft directories to
-the same packet pipeline. Never copy one draft to fabricate independent engine
-evidence. Both routes emit compact work bundles (`packets/wave-NN/bundle-XX.json` plus PNG
-crops under `packets/crops/`).
+1. 唯一 assignment ID，同一個邏輯角色：分段 writer、packet worker 或者獨立覆核者；唔使平台註冊角色名；
+2. 來源 PDF 嘅確實路徑、SHA-256 同範圍內 scan 數；
+3. 佢擁有嘅 scan 範圍或者 scan 集，加淨係可以讀、唔可以寫嘅前後 context scan；
+4. 每個 scan 對應嘅個別原圖／全解像度 render、目前 render SHA-256、臨時 page marker，同有就寫嘅印刷頁碼；
+5. writer 嘅唯一輸出路徑；覆核者就係 candidate 路徑同封好嘅 SHA-256；
+6. 所揀嘅 `basic` 或者 `structured` profile、本地 repo 規則、notation policy、已知更正，同風險標記（表格、旋轉 spread、重複、缺頁、淡字、註腳、書眉、未定邊界）；
+7. 要回報嘅欄位，同要讀嘅 project-local manifest 或者證據路徑。
 
-1. The main agent assigns at most `min(runtime child slots, 8)` concurrent
-   generic packet workers, or processes the bundles itself sequentially. Each
-   assignment owns one input `bundle-XX.json` (with its SHA-256) and one output
-   `packets/wave-NN/answers-XX.json`. A registered custom role is optional; model
-   settings follow the invoking session's effective policy.
-2. Each worker inspects the exact PNG crop (or full-page render for `format`
-   items) referenced by each request in its bundle:
-   - `page-inventory`: inspect the complete page before accepting even a blank
-     draft; return the requested JSON with visible regions, boxes and printed
-     features. Include sparse text, Latin/numerals, tree labels and note
-     apparatus. Agreement between drafts is not evidence of completeness.
-   - `content-recovery` / `coverage-review`: compare every inventoried region
-     with the current candidate and full-page image. Return the exact JSON
-     contract, current candidate hash and uniquely located edits. Recover
-     only visible content; mark uncertain readings explicitly. Never infer a
-     missing call from the presence of a note definition or a numbering run.
-   - `adjudicate`: read the highlighted glyph spot directly from the crop and
-     follow the prompt's answer format (`字: ...`).
-   - `table-rebuild`: rebuild the table from the crop using every `required`
-     character and only `allowed` characters unless genuinely printed outside
-     both drafts.
-   - `census+punctuate`: count printed punctuation marks on the upscaled block
-     tile (`census`) and insert those exact marks into the locked character
-     span (`punctuated`) without adding, deleting, or swapping any character.
-   - `orient-table` / `cell-direction` / `notation`: answer the exact structural
-     or notation question from the supplied image and current grid. Cell
-     direction needs the exact row/column locator and visual evidence; a
-     plausible word or a matching arithmetic total does not authorize reversal.
-   - `format`: add Markdown structure (headings, paragraphs, lists, tables) and
-     remove margin running heads/folios while keeping every locked character,
-     locked punctuation mark, source-confirmed number/formula/item label and
-     `⟦Tn⟧` table placeholder intact. Printed list numbers remain content when
-     adding a bullet prefix.
-3. Each worker writes only its assigned `answers-XX.json`, computes its SHA-256,
-   reports the answered `request_id` count, and enters **STOP-WRITE**
-   immediately. Workers never touch `packets/answers.jsonl` or `page-NNNN.md`.
-4. Only the main agent runs `apply_packet_answers.py` to validate and append
-   worker bundles into `packets/answers.jsonl`, then re-runs
-   `proofread_pages.py --backend packet` to execute deterministic guards
-   (`verify_characters`, `restore_merged_characters`, `check_rebuilt_table`,
-   `punctuation_pass_ok`, `deleted_runs`) and advance to the next wave or seal
-   `page-NNNN.md` + `page-NNNN.json`.
+缺欄位、來源／render hash 對唔上、輸出路徑屬於另一個 writer，或者擁有嘅 scan 同另一個 active writer 重疊，就唔開工，將衝突報返主 agent。
 
-The full-page inventory, pre-format recovery and final coverage review are
-bounded steps, not an open-ended correction loop. Invalid or unresolved
-coverage cannot become a complete page seal. Compatible old packet answers may
-replay only under their unchanged content-addressed requests; new image,
-candidate or question contracts require fresh answers. See
-`content-fidelity.md` for measurement and source-preservation requirements.
+## 分段 writer 嘅流程
 
-## Independent visual auditor lifecycle
+（`structured-workflow.md` 嘅人手分段轉錄。）Writer 淨係擁有自己嗰段同 scan 範圍。
 
-The auditor must be a different reviewer from the writer and is read-only. An
-independent human or a separate agent/session can fill this logical role. It must
-not patch the candidate, use shell redirection to change it, or generate a
-replacement segment.
+1. 讀底稿或者改字之前先驗來源同 render hash。HunyuanOCR、PaddleOCR-VL、Apple Vision、GJ.cool、Gemini 同其他 OCR 都只係提示；可選引擎冇讀嘅頁唔係空白讀法。
+2. 讀 context scan 判斷接續、標題、列表、表格同註腳，但唔將佢哋轉錄入第二段，亦唔改佢哋 owner 嘅檔。
+3. 淨係寫自己嗰段輸出。永遠唔改最後組裝嘅 Markdown、另一段、page／render manifest，或者主 agent 擁有嘅覆核證據。
+4. 每個擁有嘅 scan 都對住佢個別嘅原圖／全解像度 render 核。保留臨時 page marker，報告每個未定嘅字、缺／重複 scan 同邊界決定。
+5. 寫完計 SHA-256，交返 candidate seal：assignment ID、路徑、SHA-256、擁有嘅 scan 集、marker coverage、未解決嘅發現同邊界備註。
+6. 交咗 seal 即刻**停寫**（STOP-WRITE）：連細嘅清理都唔做，唔因覆核意見自己補，亦唔刷新 hash，除非主 agent 明確開新嘅修訂 assignment。
 
-Before assigning it, confirm that the reviewer has effective read-only access
-to the sealed candidate and source evidence. For an automated auditor, verify
-actual permissions rather than relying on a prompt or adapter declaration;
-a broader runtime override can invalidate the claimed isolation. If the
-platform cannot provide that capability, request review through another
-read-only session or independent human, and leave the gate pending meanwhile.
-The reviewer returns findings to the main agent, which owns evidence storage.
+有底稿就保留佢哋嘅檔案身份，將底稿→candidate 嘅實質文字差異交畀覆核做優先次序；唔可以淨做 diff 代替全頁覆核。對齊唔唯一就係 block 級風險，唔係精確字位。未定讀法同可修嘅錯分開記，附足夠上下文分辨第幾次出現。
 
-1. Recompute the candidate SHA-256 and reject drift from the writer's seal.
-2. Verify the source and render hashes, then inspect 100% of the assigned scans
-   using the individual original/full-resolution renders. Contact sheets,
-   thumbnails, and OCR output are navigation aids only.
-3. Inspect the supplied boundary-context scans as context, without claiming
-   ownership or duplicating their coverage.
-4. Check faithful text, original glyphs and punctuation, page furniture,
-   marker coverage and order, cross-page joins, headings, lists, tables,
-   footnotes, and every assignment-specific risk flag.
-5. Return the sealed SHA-256, exact checked scan set, exact context scan set,
-   per-scan evidence disposition, boundary conclusions, and an explicit list of
-   open findings. An audit passes only with 100% assigned-scan coverage and zero
-   open findings.
+封好之後任何 byte 改動都令嗰份 candidate 同基於佢嘅覆核作廢。主 agent 要指定一個 writer、出新 SHA-256 seal，再將受影響 scan 同邊界 context 交畀另一個覆核者。
 
-Resolve supplied uncertainties at their stated locations. A statement that the
-page was checked does not individually resolve them, and checking one glyph
-does not resolve every glyph in its surrounding phrase. A retained best reading
-with indistinct source strokes stays an explicit source limitation; report it
-separately from the count of actionable fixes. See `human-review-feedback.md`
-when handing those items to a human or reconciling later human decisions.
+## 獨立覆核嘅流程
 
-If the candidate needs a patch, report the finding and stop. A read-only audit
-never converts itself into a writer assignment.
+覆核者一定唔係 writer，而且係唯讀：可以係獨立人員，或者另一個 agent／session。佢唔准改 candidate、用 shell redirection 改，亦唔准出替代嘅段。
 
-## Main-agent closure
+派之前確認覆核者對封好嘅 candidate 同來源證據真係淨係有唯讀權限；自動覆核者要驗實際權限，唔可以靠 prompt 或者 adapter 聲明，更大嘅 runtime override 可以令隔離失效。平台做唔到，就交另一個唯讀 session 或者獨立人員，期間保持 pending。覆核者將發現交返主 agent，由主 agent 保存證據。
 
-Before assembly, the main agent must verify that:
+1. 重新計 candidate 嘅 SHA-256，同 writer 嘅 seal 唔同就拒絕。
+2. 驗來源同 render hash，再用個別原圖／全解像度 render 覆核 100% 指定 scan；contact sheet、縮圖同 OCR 輸出淨係導航用。
+3. Context scan 淨係做上下文，唔當自己擁有，亦唔重複計 coverage。
+4. 核文字、原字形同標點、頁面家具、marker coverage 同次序、跨頁接續、標題、列表、表格、註腳，同 assignment 列明嘅每個風險。
+5. 交返封好嘅 SHA-256、確實核過嘅 scan 集、context scan 集、逐 scan 嘅證據處理、邊界結論，同明確嘅未解決清單。指定 scan 100% 覆核而且未解決係零先算通過。
 
-- writer-owned scan sets are mutually exclusive and together cover the intended
-  scope;
-- every current segment byte-matches its writer seal;
-- where independent review is required, every segment has a passing audit
-  from a distinct reviewer, with 100% owned scans plus the required boundary
-  context accounted for; self-review is recorded separately and cannot satisfy
-  that gate;
-- no writer remains active or may still modify a sealed segment; and
-- cross-segment boundaries, marker order, structure, and unresolved findings
-  are reconciled.
+喺佢講明嘅位置逐個解決交過嚟嘅疑點：話「呢頁核過」唔會逐個解決，核咗一個字亦唔會解決成句。筆畫睇唔清而保留最有根據讀法嘅，係來源限制，同可修嘅錯分開報。交畀人或者對返人工裁定見 `human-review-feedback.md`。
 
-Only the main agent assembles the final Markdown. After assembly it runs the
-applicable deterministic and visual closure. A late patch invalidates the
-affected seal and audit and returns that range to the amendment lifecycle; it
-must not be applied silently to an already accepted candidate.
+Candidate 要改，就報發現然後停；唯讀覆核永遠唔會自己變成 writer。
+
+## 主 agent 收尾
+
+組裝之前，主 agent 確認：
+
+- 各 writer 擁有嘅 scan 集互斥，加埋覆蓋預定範圍；
+- 每段目前嘅 bytes 同 writer 嘅 seal 一致；
+- 要求獨立覆核嘅，每段都有不同覆核者嘅通過結果，100% 擁有 scan 同所需邊界 context 都有交代；自我覆核另外記，唔可以頂替；
+- 冇 writer 仲 active 或者可能再改封好嘅段；
+- 跨段邊界、marker 次序、結構同未解決發現都對好。
+
+淨係主 agent 組裝最後 Markdown，之後跑適用嘅決定論檢查。遲來嘅改動令受影響嘅 seal 同覆核作廢，嗰段返去修訂流程；唔可以靜靜改已經接受咗嘅 candidate。

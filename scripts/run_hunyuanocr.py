@@ -3,9 +3,13 @@
 
 Local runners share one bounded llama.cpp server across sessions by default.
 Dedicated FIFO batches and explicit externally managed endpoints are optional.
-JSON/TXT completion pairs bind the render, tools, settings and returned text;
-raw model responses are retained in JSON. The model's whitespace/reading order,
-variant forms, punctuation and omitted furniture still require full-page review.
+JSON/TXT completion pairs record the render, tools, settings and returned text;
+raw model responses are retained in JSON. A finished page stays current while
+its render, model, runtime and output-affecting request settings are
+unchanged (see draft_identity). A reply cut off before its natural end (finish_reason other
+than "stop", e.g. max tokens) is kept as the draft and marked truncated.
+The model's whitespace/reading order, variant forms, punctuation and omitted
+furniture still require full-page review.
 Hunyuan emits whole-page text, not per-line coordinates or glyph confidence.
 """
 
@@ -60,6 +64,18 @@ OCR_PROFILE: dict[str, Any] = {
 }
 SENTENCE_MARKS = frozenset("。，、；：？！")
 
+# Drafts written before draftIdentity was recorded carry only a hash of their
+# whole profile.  The older runner's profile had exactly these keys (and, for a
+# while, "emitsSentencePunctuation": False); it sent none of repetition penalty,
+# seed or cache_prompt, so the server defaults applied.  llama.cpp's default
+# repetition penalty is 1.0 (off), although that profile said 1.08 for a time.
+LEGACY_PROFILE_KEYS = (
+    "engine", "prompt", "recognitionLevel", "usesLanguageCorrection", "temperature",
+    "topP", "repetitionPenalty", "readingOrder", "boundingBoxConvention",
+)
+LEGACY_UNSENT_KEYS = frozenset({"seed", "cachePrompt"})
+LEGACY_RECORDED_PENALTY = 1.08
+
 PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 READY_TIMEOUT = 600.0
 DEVICE_CHOICES = ("auto", "cpu", "cuda", "metal")
@@ -95,6 +111,15 @@ class PageInput:
     text_output: Path
 
 
+@dataclass(frozen=True)
+class ResumeCheck:
+    current: bool
+    reason: str
+    legacy: str | None = None
+    truncated: bool = False
+    finish_reason: str | None = None
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -123,6 +148,51 @@ def canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
 
 def profile_sha256(profile: Mapping[str, Any]) -> str:
     return sha256_bytes(canonical_json_bytes(profile))
+
+
+def draft_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
+    """What decides whether a finished page is still current.
+
+    The model (weights and projector, or an external endpoint's model ID and
+    declared revision), the runtime that ran it (the llama-server binary; an
+    external endpoint's is its owner's) and the request settings that shape
+    the reply: the fixed OCR_PROFILE (prompt, sampling) and max tokens.  The
+    deployment (server mode, slots, context, client workers, device),
+    helper-code and runner hashes and the render's absolute path are recorded
+    in the draft but not part of this identity.
+    """
+    deployment = profile.get("deployment") or {}
+    runtime = None
+    if deployment.get("mode") == "external-endpoint":
+        model = {"endpointModel": deployment.get("modelId"),
+                 "endpointRevision": deployment.get("revision")}
+    else:
+        model = {"modelSha256": deployment.get("modelSha256"),
+                 "mmprojSha256": deployment.get("mmprojSha256")}
+        # The user's decision of 2026-11-14: the draft identity covers the
+        # runtime, so drafts of two llama.cpp builds are not mixed in a book.
+        runtime = {"binarySha256": deployment.get("binarySha256")}
+    settings = {key: profile.get(key) for key in OCR_PROFILE}
+    settings["maxTokens"] = profile.get("maxTokens")
+    return {"engine": ENGINE, "model": model, **({"runtime": runtime} if runtime else {}),
+            "settings": settings}
+
+
+def legacy_profile_hashes(profile: Mapping[str, Any]) -> frozenset[str]:
+    """Whole-profile hashes an older runner wrote for the same prompt and
+    sampling as PROFILE; empty when PROFILE asks for something that runner
+    could not have sent."""
+    extra = set(OCR_PROFILE) - set(LEGACY_PROFILE_KEYS) - LEGACY_UNSENT_KEYS
+    # Seed and cache_prompt were left to the server; that is equivalent only
+    # for greedy decoding.
+    if extra or profile.get("temperature") != 0.0:
+        return frozenset()
+    base = {key: profile.get(key) for key in LEGACY_PROFILE_KEYS}
+    variants = [base]
+    if base["repetitionPenalty"] == 1.0:
+        variants.append(dict(base, repetitionPenalty=LEGACY_RECORDED_PENALTY))
+    variants += [dict(variant, emitsSentencePunctuation=False) for variant in variants]
+    return frozenset(profile_sha256(variant) for variant in variants)
 
 
 def device_profile(device: str, *, endpoint: bool = False) -> dict[str, Any]:
@@ -256,7 +326,9 @@ class HunyuanServer:
                  model: Path | None, mmproj: Path | None, port: int, ctx: int,
                  model_id: str = "hunyuanocr", lease_fds: tuple[int, ...] = (),
                  parallel: int = 1, log_path: Path | None = None,
-                 cancel_event=None, device: str = "auto"):
+                 cancel_event=None, device: str = "auto", ready_deadline: float | None = None):
+        """READY_DEADLINE: the phase deadline (time.time()); a server still
+        loading then raises StartupExpired instead of waiting out READY_TIMEOUT."""
         self.process: subprocess.Popen[bytes] | None = None
         self.execution_profile = device_profile(device, endpoint=bool(endpoint))
         self.model_id = model_id
@@ -293,7 +365,11 @@ class HunyuanServer:
             finally:
                 if log_handle is not None:
                     log_handle.close()
-            deadline = time.monotonic() + READY_TIMEOUT
+            began = time.monotonic()
+            deadline = began + READY_TIMEOUT
+            capped = ready_deadline is not None and began + max(0.0, ready_deadline - time.time()) < deadline
+            if capped:
+                deadline = began + max(0.0, ready_deadline - time.time())
             while time.monotonic() < deadline:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ConfigurationError("server startup cancelled")
@@ -303,7 +379,11 @@ class HunyuanServer:
                         "check the configured runtime and available GPU memory")
                 if self._healthy() and self.process.poll() is None:
                     return
-                time.sleep(0.2)
+                time.sleep(max(0.0, min(0.2, deadline - time.monotonic())))
+            waited = time.monotonic() - began
+            if capped:
+                raise StartupExpired(f"llama-server was still loading at the phase deadline, "
+                                     f"{waited:.0f}s after it started", waited)
             raise ConfigurationError(f"llama-server did not become ready in {READY_TIMEOUT:.0f}s")
         except BaseException:
             self.close()
@@ -344,8 +424,9 @@ class HunyuanServer:
             if payload.get("model") != self.model_id:
                 raise PageOCRFailure("response model ID differs from requested model")
             choice = payload["choices"][0]
-            if choice.get("finish_reason") != "stop":
-                raise PageOCRFailure(f"incomplete response: finish_reason={choice.get('finish_reason')}")
+            # A reply that did not end with "stop" (max tokens, for example) is
+            # still the engine's reading so far; the caller keeps it as the
+            # draft and marks it truncated.
             text = choice["message"].get("content")
             if not isinstance(text, str) or not text.strip():
                 raise PageOCRFailure("empty or non-text output")
@@ -380,12 +461,24 @@ def lines_from_text(text: str) -> list[dict[str, Any]]:
                     "boundingBox": [0.0, 0.0, 1.0, 1.0], "blockLabel": "whole-page"}]
 
 
+def finish_reason(raw_response: Mapping[str, Any]) -> str | None:
+    reason = raw_response["choices"][0].get("finish_reason")
+    return reason if isinstance(reason, str) else None
+
+
 def build_record(page: PageInput, lines: list[dict[str, Any]], text_bytes: bytes,
                  tool: ToolIdentity, profile: Mapping[str, Any],
                  raw_response: Mapping[str, Any]) -> dict[str, Any]:
+    identity = draft_identity(profile)
+    finish = finish_reason(raw_response)
     record = {
         "rawResponse": dict(raw_response),
         "rawText": raw_response["choices"][0]["message"]["content"],
+        "finishReason": finish,
+        "truncated": finish != "stop",
+        "draftIdentity": identity,
+        # Recorded for audit; only draftIdentity decides currency.
+        "ocrProfile": dict(profile),
         "schemaVersion": SCHEMA_VERSION,
         "scanPage": page.scan_page,
         "status": "complete",
@@ -402,6 +495,7 @@ def build_record(page: PageInput, lines: list[dict[str, Any]], text_bytes: bytes
             "renderSha256": page.render_sha256,
             "toolSha256": tool.combined_sha256,
             "ocrProfileSha256": profile_sha256(profile),
+            "draftIdentitySha256": profile_sha256(identity),
             "textSha256": sha256_bytes(text_bytes),
         },
     }
@@ -410,55 +504,78 @@ def build_record(page: PageInput, lines: list[dict[str, Any]], text_bytes: bytes
     return record
 
 
-def completion_is_current(page: PageInput, tool: ToolIdentity,
+def completion_is_current(page: PageInput, tool: ToolIdentity | None,
                           profile: Mapping[str, Any]) -> tuple[bool, str]:
+    """(current, reason) for PAGE's existing pair; see check_completion.
+    TOOL is recorded in each draft but no longer compared."""
+    check = check_completion(page, profile)
+    return check.current, check.reason
+
+
+def check_completion(page: PageInput, profile: Mapping[str, Any]) -> ResumeCheck:
+    """Whether PAGE's existing pair is a sealed draft of its current render made
+    with PROFILE's model, runtime and request settings (draft_identity).
+
+    Drafts written before draftIdentity was recorded are matched by their whole
+    profile hash: the current profile exactly, or an older runner's profile with
+    the same prompt and sampling (legacy_profile_hashes).  Those are reported
+    as legacy.  They may lack the raw response, and their recorded render path
+    may point to a folder that has since moved.
+    """
     if not (page.json_output.is_file() and page.text_output.is_file()):
-        return False, "no existing output"
+        return ResumeCheck(False, "no existing output")
     try:
         raw = page.json_output.read_bytes()
         text_bytes = page.text_output.read_bytes()
         record = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        return False, f"unreadable: {error}"
+        return ResumeCheck(False, f"unreadable: {error}")
     if not isinstance(record, dict):
-        return False, "completion JSON is not an object"
+        return ResumeCheck(False, "completion JSON is not an object")
     if record.get("schemaVersion") != SCHEMA_VERSION:
-        return False, "legacy schema"
+        return ResumeCheck(False, "legacy schema")
     if raw != canonical_json_bytes(record, pretty=True):
-        return False, "not canonical or edited"
+        return ResumeCheck(False, "not canonical or edited")
     for key, expected in {"status": "complete", "textAuthority": TEXT_AUTHORITY,
-                          "scanPage": page.scan_page, "renderFile": str(page.render_file),
-                          "engine": ENGINE}.items():
+                          "scanPage": page.scan_page, "engine": ENGINE}.items():
         if record.get(key) != expected:
-            return False, f"invalid {key}"
+            return ResumeCheck(False, f"invalid {key}")
     lines = record.get("lines")
     if not isinstance(lines, list) or any(not isinstance(line, dict) or
             not isinstance(line.get("text"), str) for line in lines):
-        return False, "invalid line records"
-    if not isinstance(record.get("rawText"), str) or not isinstance(record.get("rawResponse"), dict):
-        return False, "raw response is missing"
+        return ResumeCheck(False, "invalid line records")
     if text_from_lines(lines) != text_bytes:
-        return False, "TXT does not match JSON lines"
+        return ResumeCheck(False, "TXT does not match JSON lines")
     provenance = record.get("provenance")
     if not isinstance(provenance, dict):
-        return False, "provenance is missing"
-    expected = {
-        "renderSha256": page.render_sha256,
-        "toolSha256": tool.combined_sha256,
-        "ocrProfileSha256": profile_sha256(profile),
-        "textSha256": sha256_bytes(text_bytes),
-    }
-    for key, value in expected.items():
+        return ResumeCheck(False, "provenance is missing")
+    for key, value in {"renderSha256": page.render_sha256,
+                       "textSha256": sha256_bytes(text_bytes)}.items():
         if provenance.get(key) != value:
-            return False, f"provenance {key} differs"
+            return ResumeCheck(False, f"provenance {key} differs")
     sealed = provenance.get("jsonPayloadSha256")
     if not isinstance(sealed, str):
-        return False, "payload seal is missing"
+        return ResumeCheck(False, "payload seal is missing")
     unsealed = json.loads(json.dumps(record, ensure_ascii=False))
     del unsealed["provenance"]["jsonPayloadSha256"]
     if sha256_bytes(canonical_json_bytes(unsealed, pretty=True)) != sealed:
-        return False, "payload seal does not match"
-    return True, "current"
+        return ResumeCheck(False, "payload seal does not match")
+    finish = record.get("finishReason") if isinstance(record.get("finishReason"), str) else None
+    truncated = record.get("truncated") is True
+    legacy = None
+    if "draftIdentitySha256" in provenance:
+        if not isinstance(record.get("rawText"), str) or not isinstance(record.get("rawResponse"), dict):
+            return ResumeCheck(False, "raw response is missing")
+        if provenance["draftIdentitySha256"] != profile_sha256(draft_identity(profile)):
+            return ResumeCheck(False, "draft identity (model, runtime or request settings) differs")
+    elif provenance.get("ocrProfileSha256") == profile_sha256(profile):
+        legacy = "written before draft identity was recorded; same profile"
+    elif provenance.get("ocrProfileSha256") in legacy_profile_hashes(profile):
+        legacy = "older runner's draft; same prompt and sampling"
+    else:
+        return ResumeCheck(False, "provenance ocrProfileSha256 differs (a draft without "
+                                  "draftIdentity is matched by its whole profile)")
+    return ResumeCheck(True, "current", legacy, truncated, finish)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -500,10 +617,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, add_queue_arguments
+from _gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
+                        add_queue_arguments)
 
 from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
-    EXIT_INCOMPLETE, Budget, exit_on_sigterm, parent_bound_command)
+    EXIT_INCOMPLETE, Budget, StartupExpired, exit_on_sigterm, parent_bound_command)
 
 
 def recognize_pages(pages, server, budget, max_tokens, timeout, workers):
@@ -612,7 +730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     results: list[dict[str, Any]] = []
     pending: list[PageInput] = []
-    skipped = blocked = missing_failed = 0
+    skipped = blocked = missing_failed = legacy = truncated = 0
 
     for scan_page in pages:
         render = render_path(renders, scan_page).resolve()
@@ -623,16 +741,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             missing_failed += 1
             continue
         page = PageInput(scan_page, render, sha256_file(render), json_out, text_out)
-        current, reason = completion_is_current(page, tool, profile)
+        resume = check_completion(page, profile)
         exists = os.path.lexists(json_out) or os.path.lexists(text_out)
-        if current and not arguments.overwrite:
+        if resume.current and not arguments.overwrite:
             skipped += 1
-            results.append({"scanPage": scan_page, "status": "skipped-current"})
+            entry: dict[str, Any] = {"scanPage": scan_page, "status": "skipped-current"}
+            if resume.legacy:
+                legacy += 1
+                entry["legacy"] = resume.legacy
+            if resume.truncated:
+                truncated += 1
+                entry.update(truncated=True, finishReason=resume.finish_reason)
+            results.append(entry)
             continue
         if exists and not arguments.overwrite:
             blocked += 1
             results.append({"scanPage": scan_page, "status": "blocked",
-                            "error": f"existing output rejected: {reason}; use --overwrite"})
+                            "error": f"existing output rejected: {resume.reason}; use --overwrite"})
             continue
         pending.append(page)
 
@@ -641,9 +766,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     budget = Budget()
     server: HunyuanServer | None = None
     lease: GPUQueue | None = None
-    queue_deferred = False
+    queue_deferred = local_model_deferred = False
+    # The phase deadline came while the model loaded: (seconds it loaded,
+    # seconds of the budget left when this run began to load it).
+    load_expired: tuple[float, float] | None = None
+    # When the server answered with the model loaded (time.time()): the
+    # model-ready signal ocr_book.py measures the engine's load by.
+    model_ready_at: float | None = None
     try:
         if pending:
+            left_at_load = budget.remaining()
             try:
                 if not budget.allows_next_page():
                     raise GPUQueueTimeout("phase deadline reached before model loading")
@@ -671,9 +803,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                                            arguments.port, arguments.ctx_size * arguments.server_slots,
                                            deployment["modelId"], parallel=arguments.server_slots,
                                            device=arguments.device,
-                                           lease_fds=lease.pass_fds if lease is not None else ())
+                                           lease_fds=lease.pass_fds if lease is not None else (),
+                                           ready_deadline=budget.deadline)
+                model_ready_at = time.time()
+            except StartupExpired as error:
+                # Out of time while the model loaded (dedicated, or the shared
+                # broker's server): not done yet, not failed; and no queue wait,
+                # so the summary's ERROR says the budget is too small.
+                load_expired = (error.waited, left_at_load or 0.0)
+                deferred += len(pending)
+                results.extend({"scanPage": page.scan_page, "status": "deferred",
+                                "reason": "time budget ran out while the model was loading"} for page in pending)
+                print(f"  time budget reached while HunyuanOCR was loading ({error}): {len(pending)} page(s) "
+                      "left for the next call", flush=True)
+                pending = []
             except GPUQueueTimeout as error:
                 queue_deferred = True
+                local_model_deferred = isinstance(error, LocalModelOwnsGPU)
                 deferred += len(pending)
                 results.extend({"scanPage": page.scan_page, "status": "deferred",
                                 "reason": str(error)} for page in pending)
@@ -719,10 +865,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             completed += 1
             budget.record(seconds)
             budget.sealed(page.scan_page)
-            results.append({"scanPage": page.scan_page, "status": "completed",
-                            "renderSha256": page.render_sha256,
-                            "chars": len(text), "seconds": round(seconds, 2)})
-            print(f"  page {page.scan_page:04d}: {len(text)} chars in {seconds:.2f}s", flush=True)
+            entry = {"scanPage": page.scan_page, "status": "completed",
+                     "renderSha256": page.render_sha256,
+                     "chars": len(text), "seconds": round(seconds, 2),
+                     "finishReason": record["finishReason"]}
+            note = ""
+            if record["truncated"]:
+                truncated += 1
+                entry["truncated"] = True
+                note = f" (TRUNCATED: finish_reason={record['finishReason']}; kept as the draft)"
+            results.append(entry)
+            print(f"  page {page.scan_page:04d}: {len(text)} chars in {seconds:.2f}s{note}", flush=True)
     finally:
         try:
             if server is not None:
@@ -746,14 +899,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ocrProfile": profile, "ocrProfileSha256": profile_sha256(profile),
         "counts": {"requested": len(pages), "completed": completed,
                    "skippedCurrent": skipped, "blocked": blocked, "failed": failed,
-                   "deferred": deferred},
+                   "deferred": deferred, "legacy": legacy, "truncated": truncated},
+        "draftIdentity": draft_identity(profile),
+        "draftIdentitySha256": profile_sha256(draft_identity(profile)),
         "pages": results,
     }
+    if model_ready_at is not None:
+        report["modelReadyAt"] = round(model_ready_at, 3)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_bytes(canonical_json_bytes(report, pretty=True))
     print(f"  requested {len(pages)} | completed {completed} | skipped {skipped} | "
           f"blocked {blocked} | failed {failed} | deferred {deferred}", flush=True)
+    if legacy:
+        print(f"  {legacy} skipped page(s) are legacy drafts (no draftIdentity); see the report", flush=True)
+    if truncated:
+        print(f"  {truncated} page(s) hold a truncated reply (truncated: true in the report)", flush=True)
     print(f"  report: {report_path}", flush=True)
+    if local_model_deferred:
+        print(LOCAL_MODEL_SUMMARY, flush=True)
     # Pages left over after progress: call again (failed pages are retried then
     # too).  Pages left over with no progress: calling again would do exactly
     # the same, so stop the loop with an error the agent has to read.
@@ -761,6 +924,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_INCOMPLETE
     if deferred and completed:
         return EXIT_INCOMPLETE
+    if deferred and load_expired is not None:
+        waited, left = load_expired
+        print(f"ERROR the time budget is too small for HunyuanOCR's model load: {left:.0f}s of it were left "
+              f"when the load began, and the server was still loading after {waited:.0f}s, so no page was "
+              "sealed. Raise the budget (OCR_PHASE_MAX_SECONDS, below the tool call's time limit; raise both "
+              "together) well above the load; the same call with the same budget ends the same way.",
+              file=sys.stderr)
+        return 1
     if deferred:
         print("ERROR the time budget ran out before a single page was sealed "
               "(starting the server used it up, or this page is stuck). Keep the "

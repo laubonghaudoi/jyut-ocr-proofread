@@ -1,0 +1,214 @@
+{
+ "book": "興漢紀念廣東獨立全案",
+ "bookId": "hinghon-1911",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/hinghon/hinghon.pdf",
+  "sha256": "4a66f1176fdc1ae3718788a17e84feddc04c96c419a213f04eceba03ea93e168",
+  "pages": 26,
+  "reference": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr/廣州大典/興漢紀念廣東獨立全案.md",
+  "renderSha256": {
+   "1": "650f67a31ec5e778b3b51ef288ac08a01edac1c2bb38c7badb344a29c4ba81a1",
+   "2": "a6bbb7a5288fe7358190a1ad0950852ffd25b715e908bbf4603505465a56cfcb",
+   "3": "5964e5f6ffddb080ea49fb8fb27512a1c68c40629e3031a355a0216df068eb4b",
+   "4": "14885080f4e09c39299ac64f4b2b77970c44eecda0f313ef2885f7a378590128",
+   "5": "c86cb8399129dfb303c852c06e5a5f6b13f93696b47394889a15283242c57258"
+  },
+  "renderSha256From": "provenance.renderSha256 of this book's sealed pages in jyut-ocr-corpus and ~/ocr-runs, measured 2026-09-24: each page the assertions name has one hash across its 3-4 sealed outputs; an all-cases run skips this case when every recorded page of the output has another hash (another book's page)"
+ },
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "lead-type",
+  "1911",
+  "facsimile-four-leaves-per-page",
+  "emphasis-dots-圈點",
+  "double-circle-punctuation",
+  "engine-A-favoured"
+ ],
+ "notCovered": [
+  "horizontal layout",
+  "simplified han",
+  "multi-column",
+  "real table markup",
+  "poor scan quality"
+ ],
+ "assertions": [
+  {
+   "id": "contains-3-x1",
+   "page": 3,
+   "type": "contains",
+   "value": "風雲馳驟",
+   "provenance": "human",
+   "note": "golden ref + crop: PaddleOCR 驟 correct, HunyuanOCR 騄 wrong; prefer-engine B took the wrong one"
+  },
+  {
+   "id": "contains-3-x2",
+   "page": 3,
+   "type": "contains",
+   "value": "瑞氣靄空",
+   "provenance": "human",
+   "note": "golden ref + crop: A 靄 correct, B 讓 wrong"
+  },
+  {
+   "id": "contains-3-x3",
+   "page": 3,
+   "type": "contains",
+   "value": "騰驤於美利加",
+   "provenance": "human",
+   "note": "golden ref + crop: A 驤 correct, B 驥 wrong"
+  },
+  {
+   "id": "contains-3-x4",
+   "page": 3,
+   "type": "contains",
+   "value": "廣東之目的早定",
+   "provenance": "human",
+   "note": "golden ref + crop: A 目 correct, B 日 wrong"
+  },
+  {
+   "id": "contains-3-x5",
+   "page": 3,
+   "type": "contains",
+   "value": "劉巖之建國於粵嶠",
+   "provenance": "human",
+   "note": "crop: 劉巖 (founder of 南漢). A 巖 correct, B 嚴 wrong; the external reference reads 惑巖 and is wrong on the first character"
+  },
+  {
+   "id": "contains-3-x6",
+   "page": 3,
+   "type": "contains",
+   "value": "割據之霸圖",
+   "provenance": "human",
+   "note": "golden ref + crop: A 據 correct, B 攥 wrong"
+  },
+  {
+   "id": "contains-3-x7",
+   "page": 3,
+   "type": "contains",
+   "value": "專制復熾",
+   "provenance": "human",
+   "note": "golden ref + crop: A 熾 correct, B 織 wrong; the reference reads 尊制 and is wrong on 專"
+  },
+  {
+   "id": "contains-3-x8",
+   "page": 3,
+   "type": "contains",
+   "value": "獨立記始末",
+   "provenance": "human",
+   "note": "golden ref + crop: A 末 correct, B 未 wrong"
+  },
+  {
+   "id": "contains-3-x9",
+   "page": 3,
+   "type": "contains",
+   "value": "種種毒手",
+   "provenance": "human",
+   "note": "golden ref + crop: A 種 correct, B 糧 wrong"
+  },
+  {
+   "id": "contains-3-x10",
+   "page": 3,
+   "type": "contains",
+   "value": "以謀挽復大漢",
+   "provenance": "human",
+   "note": "golden ref + crop: A 挽 correct, B 禓 wrong"
+  },
+  {
+   "id": "contains-3-x11",
+   "page": 3,
+   "type": "contains",
+   "value": "若輩稍爲寒心",
+   "provenance": "human",
+   "note": "golden ref + crop: A 輩 correct, B 鑒 wrong"
+  },
+  {
+   "id": "contains-3-x12",
+   "page": 3,
+   "type": "contains",
+   "value": "茲先將九月初四",
+   "provenance": "human",
+   "note": "golden ref + crop: A 茲 correct, B 竝 wrong"
+  },
+  {
+   "id": "contains-3-x13",
+   "page": 3,
+   "type": "contains",
+   "value": "策勳飲至",
+   "provenance": "human",
+   "note": "golden ref: A 飲 correct, B 歓 wrong"
+  },
+  {
+   "id": "contains-3-x14",
+   "page": 3,
+   "type": "contains",
+   "value": "組織旣具",
+   "provenance": "human",
+   "note": "the leaf number 二 printed at the column foot leaked into the text as 二異; correct is 既異 | corrected 2026-09-24: print is 組織旣具 (user golden + crop ruling); 異 was wrong"
+  },
+  {
+   "id": "absent-3-x15",
+   "page": 3,
+   "type": "absent",
+   "value": "興漢紀念廣東獨立全案興漢",
+   "provenance": "human",
+   "note": "four original running heads on this facsimile page must be removed; the golden reference has none"
+  },
+  {
+   "id": "exact-3-x16",
+   "page": 3,
+   "type": "contains_exact",
+   "value": "卿。雲。爛。兮。",
+   "provenance": "human",
+   "note": "golden reference: 圈點 (per-character emphasis circles) are transcribed as 。 after each character; four four-character lines"
+  },
+  {
+   "id": "exact-3-x17",
+   "page": 3,
+   "type": "contains_exact",
+   "value": "風雲馳驟。。時會至矣。。",
+   "provenance": "human",
+   "note": "golden reference: printed double circles are kept as 。。; the page prints 160 of them in this span, the pipeline emitted 12"
+  },
+  {
+   "id": "absent-3-x18",
+   "page": 3,
+   "type": "absent",
+   "value": "，",
+   "provenance": "human",
+   "note": "golden reference has zero commas on this page; the book prints circles only"
+  },
+  {
+   "id": "note-3-x19",
+   "page": 3,
+   "type": "note",
+   "value": "prefer-engine B loses badly on this book: against the golden reference engine A is right on 12 of the 14 decidable disagreements, engine B on 2. Engine preference cannot be a fixed constant.",
+   "provenance": "human"
+  },
+  {
+   "id": "golden-1-x20",
+   "page": 1,
+   "pages": [
+    1,
+    5
+   ],
+   "type": "golden_page",
+   "value": "hinghon-1911/pages-0001-0005.md",
+   "stopAt": "自各界公議融和",
+   "provenance": "human",
+   "maxErrors": 91,
+   "minMarkRecall": 40.3,
+   "minMarkPrecision": 46.4,
+   "ratchetFrom": "~/ocr-runs/hinghon-p1-5-0923c/annotated (phase-3 pages of the 0923c run; identical to jyut-ocr-corpus/runs/hinghon-p1-5-0923c.meta/output-snapshot/annotated), scored 2026-09-24 against this golden and the variant list of that day",
+   "note": "user golden: lines 1-79 of the user's whole-book reference (a --- metadata block, scan pp.1-4 and p.5 up to the heading 自各界公議融和…). The user's annotation ends at that heading and the rest of their file is an unchecked OCR snapshot, so stopAt cuts the output there; the anchor starts with 自 because the heading does (without it the heading's 自 scored as an inserted character). Includes the user's corrections of 2026-09-24 (15 slips, round-2 rulings, Jyut OCR Rulings). 0923c: 91 errors = 58 front matter (44: the p.1 reprint title page written as body text instead of the --- metadata block; 5: 餘玉溪漢書 read off p.2, which prints only the faint 廣州大典 reprint mark; 9: the p.3 seal 〔印：…〕 missing) + 33 reading errors; 19 acceptable swaps; marks 239 of 593 right, 515 written; 。。 189 of 490 right, 244 written single. The older hinghon/proofread-v2 scores 110 errors, recall 22.1%, precision 25.7% (。。 64 of 490). 2026-09-26: the p.3 seal 〔印：廣東便民圖書館圖書〕 was taken out of the golden (user ruling: seals are not the book's text and are not scored).",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 77,
+     "minMarkRecall": 48.1,
+     "minMarkPrecision": 50.0,
+     "maxStructureErrors": 11,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  }
+ ]
+}

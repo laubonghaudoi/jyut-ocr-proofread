@@ -1,0 +1,318 @@
+{
+ "book": "廣東憲政籌備處報吿書第六期",
+ "bookId": "hinzing-6",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/hinzing-6/constitution-6.pdf",
+  "sha256": "d56a8c359be60d676c4dfef8d46e13a754dc5bcad7fa389385764858adb1928d",
+  "pages": 93,
+  "renderSha256": {
+   "2": "34a26d497b68afd57f30249882e285c661be532085a921bc529f88cba673a9d9",
+   "49": "51d27785e7007d0a2c9f57ba1a3e1d245bbee1d13314a07e34ea758a9fb75b4f",
+   "59": "1c7876244f75ebe6cc0326e47b871447f18716d1ec62372609df45dc570aecc9",
+   "61": "537d50824c3c740d5ab6ddc46dee03f033fd491cb12bb5585a3f34d1e36214c6",
+   "62": "0961c4f027955b9b7f172cf52c226536a0c74e4a6d3876b11aa78162bacd9d03",
+   "67": "041c24068667dd542475e98a66a61f7dc51ff322f81c05baab112b5c8f2bc60d",
+   "71": "440f9dc5cf1512c033cc16c92bbd4065b8447751bf77ae4deabdaa24c4f039f2",
+   "73": "2a111af363801c380d2520aed73ac046443789e00c28498972b67dafc7908108",
+   "85": "20caaed6b0946720d10d0e6680a4d91980a3b612543593bfd17b3421e040dbdf",
+   "63": "94ff4e03435f12a3852e0f2fb41d4a53917fed0db8e9eced24e0f1dcfd1497e9",
+   "4": "193db72bced67f81df8d4697697471c5b624060df1522591fa0736dca2074f59",
+   "5": "8e497b349449b0fffbcd221c23b22cb204b9175b1b0cbb3baf6eb21b1e472526"
+  },
+  "renderSha256From": "provenance.renderSha256 of this book's sealed pages in jyut-ocr-corpus and ~/ocr-runs, measured 2026-09-24: each page the assertions name has one hash across its 2-7 sealed outputs; an all-cases run skips this case when every recorded page of the output has another hash (another book's page); p.63 added 2026-09-25 as sha256 of jyut-ocr-corpus/hinzing-6/renders/page-0063.png"
+ },
+ "reference": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr/markdown/SSID-12956086_廣東憲政籌備處報告書_6.md",
+ "referenceCaveat": "GPT + Apple Vision; measured 4/11 on characters for cangwingming. A yardstick for STRUCTURE, not for individual characters.",
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "lead-type",
+  "1910",
+  "ruled-tables",
+  "grey-scan",
+  "blank-ruled-leaves",
+  "government-report"
+ ],
+ "notCovered": [
+  "horizontal layout",
+  "simplified han",
+  "modern typesetting",
+  "multi-column",
+  "footnotes",
+  "colour plates"
+ ],
+ "assertions": [
+  {
+   "id": "json_field-2-0",
+   "page": 2,
+   "type": "json_field",
+   "value": "blank-page",
+   "provenance": "regression",
+   "note": "cover; failed with 'merge produced no text' before adaptive blank detection",
+   "field": "mode"
+  },
+  {
+   "id": "json_field-49-1",
+   "page": 49,
+   "type": "json_field",
+   "value": "blank-page",
+   "provenance": "regression",
+   "note": "empty ruled leaf; failed with 'merge produced no text' before adaptive blank detection",
+   "field": "mode"
+  },
+  {
+   "id": "json_field-73-2",
+   "page": 73,
+   "type": "json_field",
+   "value": "blank-page",
+   "provenance": "regression",
+   "note": "empty ruled leaf; failed with 'merge produced no text' before adaptive blank detection",
+   "field": "mode"
+  },
+  {
+   "id": "json_field-73-3",
+   "page": 73,
+   "type": "json_field",
+   "value": false,
+   "provenance": "regression",
+   "note": "PaddleOCR hallucinated 4,244 chars onto this empty leaf; the page must not read as clean",
+   "field": "auditorClean"
+  },
+  {
+   "id": "table_row-67-4",
+   "page": 67,
+   "type": "table_row",
+   "value": [
+    "物名",
+    "件數",
+    "約計價"
+   ],
+   "provenance": "machine",
+   "note": "reference table 4; engine HTML converts cleanly, 12 rows"
+  },
+  {
+   "id": "table_row-67-5",
+   "page": 67,
+   "type": "table_row",
+   "value": [
+    "黑板",
+    "一",
+    "二元"
+   ],
+   "provenance": "machine",
+   "note": "reference table 4, first data row"
+  },
+  {
+   "id": "table_row-67-6",
+   "page": 67,
+   "type": "table_row",
+   "value": [
+    "扁額",
+    "一",
+    "一元"
+   ],
+   "provenance": "machine",
+   "note": "reference table 4, last data row"
+  },
+  {
+   "id": "absent-61-7",
+   "page": 61,
+   "type": "absent",
+   "value": "書名册全數書課每數册年備期用",
+   "provenance": "regression",
+   "note": "p.61's header was read column-wise and interleaved; the figures came out as 一一七 四 一二年 三星期四八 where the reference has 六 | 一二〇 | 三年. Silently wrong tabular data presented as clean prose."
+  },
+  {
+   "id": "all_pages_empty-0-8",
+   "page": 0,
+   "type": "all_pages_empty",
+   "value": [],
+   "provenance": "regression",
+   "note": "nothing may be silently dropped; this book's 33-character running head tripped DELETED_RUN_LIMIT until furniture was learned per book",
+   "field": "droppedRuns"
+  },
+  {
+   "id": "contains-59-h1",
+   "page": 59,
+   "type": "contains",
+   "value": "一此項學塾得酌授體操作爲隨意科",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: printed list numeral 一 at the column head; an adjudication crop cut at the frame rule read it as the rule and dropped it"
+  },
+  {
+   "id": "exact-59-h2",
+   "page": 59,
+   "type": "contains_exact",
+   "value": "七十分以上者）",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: closing bracket of the 優等 entry printed in the short continuation column"
+  },
+  {
+   "id": "exact-61-h3",
+   "page": 61,
+   "type": "contains_exact",
+   "value": "一并列入）",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: a closing bracket, not a 一 followed by a comma"
+  },
+  {
+   "id": "contains-61-h4",
+   "page": 61,
+   "type": "contains",
+   "value": "敎授要言",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: last header cell reads 敎授要言; the column-wise interleave dropped 言"
+  },
+  {
+   "id": "exact-61-h5",
+   "page": 61,
+   "type": "contains_exact",
+   "value": "大畧（算術課本",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: opening bracket printed before 算術課本"
+  },
+  {
+   "id": "absent-62-h6",
+   "page": 62,
+   "type": "absent",
+   "value": "珠筍",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: strictly the printed variant of 算 (珠算 is acceptable; 珠筍 is wrong); the user identified the printed form on 2026-09-26 as 𮅕 (U+2E155, ⺮ over 具), not 𫂁 as first noted",
+   "pages": [
+    61,
+    63
+   ]
+  },
+  {
+   "id": "note-62-h7",
+   "page": 62,
+   "type": "note",
+   "value": "循環復習幷質問疑義: user ruling 2026-09-22 - 幷 is the printed form, 並 acceptable; either passes",
+   "provenance": "human"
+  },
+  {
+   "id": "exact-62-h8",
+   "page": 62,
+   "type": "contains_exact",
+   "value": "字（卽數碼）此種字",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: brackets printed around 卽數碼",
+   "pages": [
+    61,
+    63
+   ]
+  },
+  {
+   "id": "absent-62-h9",
+   "page": 62,
+   "type": "absent",
+   "value": "便可畢業班皆能通曉",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: text after 便可畢業 belongs to another column (column order broken by the engine); the whole table is to be annotated separately",
+   "pages": [
+    61,
+    63
+   ]
+  },
+  {
+   "id": "note-61-h10",
+   "page": 61,
+   "type": "note",
+   "value": "user 2026-09-22: the p.61/62/71 tables need whole-table golden references (cell-by-cell rulings not possible). 2026-09-23: p.61 and p.71 received (golden_table assertions); p.62 is the continuation of p.61's table and still pending",
+   "provenance": "human"
+  },
+  {
+   "id": "absent-85-h11",
+   "page": 85,
+   "type": "absent",
+   "value": "統敎三班其",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: the body ends at 三班; the trailing 其 is not page text"
+  },
+  {
+   "id": "golden-61-63-h18",
+   "page": 61,
+   "pages": [
+    61,
+    63
+   ],
+   "type": "golden_table",
+   "value": "hinzing-6/pages-0061-0063.html",
+   "provenance": "human",
+   "note": "user golden 2026-09-25 (canvas 'Merged Tables', accepted without changes): the textbook table printed across pp.61-63 is ONE table, written merged. Built from the user's p.61 golden (2026-09-23) and p.62 golden (2026-09-24): p.62's first row continues p.61's 簡易學塾習字帖 敎授要言 cell, and p.63's top-right corner carries the tail of 普通珠𮅕課本's cell (…令學者旣通 + 曉𮅕法復能明白𮅕理爲要編中解釋之語稍文教者宜用白話詳析言之). The printed 算 variant in this table (8 on p.62, 曉𮅕法 and 𮅕理 on p.63) is written 𮅕 (U+2E155, ⺮ over 具) since the user's 2026-09-26 ruling (the golden first normalised it to 算; 算 stays acceptable via variant-equivalents.json). p.61's 算術課本 and p.71 print the ordinary 算. Replaces golden-61-h12 and golden-62-h14 (one golden per page), which a merged output would fail.",
+   "ratchets": {
+    "phase3": {
+     "minCellsExact": 1,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "golden-71-h13",
+   "page": 71,
+   "type": "golden_table",
+   "value": "hinzing-6/page-0071.md",
+   "provenance": "human",
+   "note": "user golden 2026-09-23: 10x5 price table; stacked sub-lines inside a cell are separated by spaces (whitespace is ignored when cells are compared)",
+   "ratchets": {
+    "phase3": {
+     "minCellsExact": 38,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "exact-62-h15",
+   "page": 62,
+   "type": "contains_exact",
+   "value": "逐課增補（或照簡易數學課本",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: opening bracket printed after 增補",
+   "pages": [
+    61,
+    63
+   ]
+  },
+  {
+   "id": "exact-62-h16",
+   "page": 62,
+   "type": "contains_exact",
+   "value": "自增習題均可）口訣頗備",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: closing bracket printed after 均可",
+   "pages": [
+    61,
+    63
+   ]
+  },
+  {
+   "id": "exact-67-h17",
+   "page": 67,
+   "type": "contains_exact",
+   "value": "（名牌揭示牌）",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: the 物名 cell prints （名牌　揭示牌） in one pair of brackets with a one-character gap (whitespace is ignored by contains_exact)"
+  },
+  {
+   "id": "golden-4-m1",
+   "page": 4,
+   "pages": [
+    4,
+    5
+   ],
+   "type": "golden_page",
+   "value": "hinzing-6/pages-0004-0005.md",
+   "provenance": "machine",
+   "note": "machine draft golden (goldgate, 2026-10-13), read column by column from 3-10x crops of the renders, to be confirmed by the user (notes: jyut-ocr-corpus/runs/goldgate/goldens/hinzing-6/page-0004.notes.md): the 目次 printed across scans 4-5, one file. # for the book title in column 1, its date 宣統二年八月 as a plain line, ## 第六期目次, ### for the six categories (憲政總類 民政類 財政類 司法類 教育類 附篇), as jinleon p.9 sets a group heading inside a contents. One entry per line: a column wrap and the page break are joined (…請　察核咨送 on scan 4 + 部處査核辦理由 on scan 5). The page prints no punctuation, leaders or page figures. Printed one-cell gaps as U+3000: after 署督部堂袁 and the honorific gaps before 察核 (x2) and 部 (與　部往來); the 附 entries, set one cell lower, indented by one U+3000 (caangung-4 p.3). Double-line small characters inline, right line first: 部處, 咨復度支法部. Printed forms kept: 吿, 淸 x4, 參, 査 x2, 埠, 烟, 議復/咨復 beside 咨覆/電覆, and the inversion 期限單淸. Unsure: 査 vs 查 (the box's sides reach the base on the bitmap; scored acceptable-opencc either way) and 粵 vs 粤 (not resolvable at 300 ppi; user-ruled acceptable). The running head on the fold (憲政籌備處報告書 目次) is not text. Engine B 0 errors (3 acceptable swaps); engine A 19 (the running head inserted mid-entry, both small pairs reversed, 慶 for 度, 長 for 袁, a dropped 署). No output exists for these pages yet.",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 18,
+     "minMarkRecall": 0.0,
+     "minMarkPrecision": 0.0,
+     "maxStructureErrors": 15,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 4 runs)"
+    }
+   }
+  }
+ ]
+}

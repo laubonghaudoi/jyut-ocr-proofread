@@ -20,6 +20,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import select
 import signal
 import socket
@@ -32,9 +33,13 @@ import time
 import uuid
 from typing import Any
 
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout
+from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, check_local_model
+from _phase_budget import StartupExpired, record_child
 
-PROTOCOL = 1
+# 2: the broker tells its members "starting" once it holds the GPU and loads
+# the server, so a deadline reached then is a load too long for the budget
+# (StartupExpired), not a queue wait.
+PROTOCOL = 2
 MAX_MESSAGE = 32 * 1024 * 1024
 MAX_COMMAND = 32 * 1024
 MAX_IMAGE_BYTES = 128 * 1024 * 1024
@@ -43,6 +48,14 @@ MAX_CONNECTIONS = 1024
 IDLE_GRACE = 0.5
 FIRST_JOIN_GRACE = 10.0
 DISCOVERY_TIMEOUT = 30.0
+# A broker's files are removed once it is gone and they are this old: its
+# logs stay a day for whoever reads the error that named them.
+STALE_RUNTIME_SECONDS = 24 * 3600
+# sun_path holds 108 bytes on Linux and 104 on macOS, the final NUL included.
+MAX_SOCKET_PATH = 103 if sys.platform == "darwin" else 107
+# What a socket path adds to the runtime root: /<partition>/<digest>.sock.
+SOCKET_TAIL = len("/") + 20 + len("/") + 32 + len(".sock")
+RUNTIME_FILE = re.compile(r"([0-9a-f]{32})(\.sock|\.json|\.log|\.llama\.log|\.owner|\.launch)")
 
 
 class SharedHunyuanError(RuntimeError):
@@ -136,11 +149,121 @@ def _identity(config: dict, root: Path, resource: str) -> dict:
     return body
 
 
+def _runtime_root() -> Path:
+    """The private folder of the brokers' sockets: jyut-ocr-<uid> in
+    XDG_RUNTIME_DIR, else in TMPDIR, else in /tmp - the first that can be
+    made and whose socket paths fit AF_UNIX (MAX_SOCKET_PATH: a long TMPDIR
+    does not).  A runner and the broker it starts share one environment, so
+    they find the same folder."""
+    name = f"jyut-ocr-{os.getuid()}"
+    candidates = []
+    for variable in ("XDG_RUNTIME_DIR", "TMPDIR"):
+        base = os.environ.get(variable) or ""
+        if os.path.isabs(base) and os.path.isdir(base):
+            root = Path(base).resolve() / name
+            if len(str(root)) + SOCKET_TAIL <= MAX_SOCKET_PATH:
+                candidates.append(root)
+    candidates.append(Path("/tmp").resolve() / name)
+    for root in candidates:
+        try:
+            _private_directory(root)
+        except PermissionError:
+            if root == candidates[-1]:
+                raise
+            continue
+        return root
+    raise AssertionError("unreachable")
+
+
+def _free(path: Path, held: list[int]) -> bool:
+    """Whether no broker or launcher holds PATH's lock (or PATH is gone);
+    the lock taken, its fd added to HELD."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return False
+    held.append(fd)
+    return True
+
+
+def _clean_stale(root: Path, now: float | None = None) -> list[Path]:
+    """Remove from ROOT the files of brokers that are gone, and the partition
+    folders left empty.  A broker's files (RUNTIME_FILE) go when none was
+    touched for STALE_RUNTIME_SECONDS and neither its owner lock (held by a
+    live broker) nor its launch lock (held while one starts) is held; a
+    folder holding anything else is left.  Only under the runtime root's
+    exclusive lock (_hold_runtime): no runner of this code is starting."""
+    now = time.time() if now is None else now
+    removed: list[Path] = []
+    order = (".sock", ".json", ".log", ".llama.log", ".owner", ".launch")
+    for partition in sorted(root.iterdir()):
+        info = partition.lstat()
+        if (not re.fullmatch(r"[0-9a-f]{20}", partition.name) or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid()):
+            continue
+        brokers: dict[str, list[Path]] = {}
+        other = False
+        for path in partition.iterdir():
+            match = RUNTIME_FILE.fullmatch(path.name)
+            mode = path.lstat().st_mode
+            if match and (stat.S_ISREG(mode) or (match.group(2) == ".sock" and stat.S_ISSOCK(mode))):
+                brokers.setdefault(match.group(1), []).append(path)
+            else:
+                other = True
+        for prefix, paths in brokers.items():
+            if any(path.lstat().st_mtime > now - STALE_RUNTIME_SECONDS for path in paths):
+                continue
+            held: list[int] = []
+            try:
+                if not (_free(partition / (prefix + ".launch"), held) and _free(partition / (prefix + ".owner"), held)):
+                    continue
+                for path in sorted(paths, key=lambda p: order.index(RUNTIME_FILE.fullmatch(p.name).group(2))):
+                    path.unlink(missing_ok=True)
+                    removed.append(path)
+            finally:
+                for fd in held:
+                    os.close(fd)
+        if not other:
+            try:
+                partition.rmdir()
+                removed.append(partition)
+            except OSError:
+                pass  # a broker's files are still there
+    return removed
+
+
+def _hold_runtime(root: Path) -> int:
+    """A shared lock on ROOT/.lock, held by a runner for its life, so that no
+    cleanup removes a folder it is about to use; before it, when no other
+    runner holds one, the stale brokers' files go (_clean_stale).  A cleanup
+    that fails is never a failed run."""
+    fd = _private_file(root / ".lock", os.O_RDWR | os.O_CREAT)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            try:
+                _clean_stale(root)
+            except OSError:
+                pass
+        fcntl.flock(fd, fcntl.LOCK_SH)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 def _paths(body: dict) -> tuple[Path, Path]:
     # AF_UNIX sockaddr paths are short on Linux; long home/project paths must
     # not silently disable sharing. This directory and every child are 0700.
-    runtime_root = Path("/tmp") / f"jyut-ocr-{os.getuid()}"
-    _private_directory(runtime_root)
+    runtime_root = _runtime_root()
     partition = hashlib.sha256(_json([body["queue_root"], body["resource"]])).hexdigest()[:20]
     directory = runtime_root / partition
     _private_directory(directory)
@@ -192,6 +315,10 @@ class SharedHunyuanClient:
     def __init__(self, config: dict, queue_dir: Path | str | None = None,
                  resource: str = "local-gpu", queue_timeout: float | None = None,
                  phase_deadline: float | None = None):
+        self._runtime_hold: int | None = None
+        # Before any broker starts: a local model that owns the GPU is only
+        # stopped by the hand-over, so outside its window this defers.
+        check_local_model()
         self.config = _config(config)
         queue_timeout = _seconds(queue_timeout, "queue timeout", optional=True)
         phase_deadline = _seconds(phase_deadline, "phase deadline", optional=True)
@@ -199,7 +326,14 @@ class SharedHunyuanClient:
         # Canonicalize lexical aliases to avoid two discovery sockets for one
         # physical queue. GPUQueue itself retains its normal lease validation.
         self.body = _identity(self.config, queue.root.resolve(), resource)
-        self.directory, self.socket_path = _paths(self.body)
+        # Held until close(): no cleanup removes this runner's folder.
+        self._runtime_hold = _hold_runtime(_runtime_root())
+        try:
+            self.directory, self.socket_path = _paths(self.body)
+        except BaseException:
+            os.close(self._runtime_hold)
+            self._runtime_hold = None
+            raise
         self._lock = threading.Lock()
         self._pages: set[socket.socket] = set()
         self._membership: socket.socket | None = None
@@ -216,11 +350,13 @@ class SharedHunyuanClient:
             # Try-once still permits one short local IPC handshake, but never
             # creates or waits for a model server.
             deadlines.append(started + (0.25 if queue_timeout == 0 else queue_timeout))
+        phase_end = None
         if phase_deadline is not None:
-            deadlines.append(started + max(0.0, phase_deadline - time.time()))
+            phase_end = started + max(0.0, phase_deadline - time.time())
+            deadlines.append(phase_end)
         deadline = min(deadlines) if deadlines else None
         try:
-            self._join(deadline, try_once=queue_timeout == 0)
+            self._join(deadline, try_once=queue_timeout == 0, phase_end=phase_end)
         except BaseException:
             self.close()
             raise
@@ -300,7 +436,11 @@ class SharedHunyuanClient:
                 os.close(owner)  # Never LOCK_UN an fd inherited by the broker.
             os.close(guard)
 
-    def _join(self, deadline: float | None, *, try_once: bool) -> None:
+    def _join(self, deadline: float | None, *, try_once: bool, phase_end: float | None = None) -> None:
+        """Join the broker and wait for its server, both until DEADLINE.
+        Reached once the broker has said it is starting the server, and
+        DEADLINE being PHASE_END (the phase deadline, not a queue timeout),
+        that raises StartupExpired: the load did not fit the budget."""
         last_notice = 0.0
         discovery_started = time.monotonic()
         eof_retries = 0
@@ -344,15 +484,36 @@ class SharedHunyuanClient:
                 self.session = response["session"]
                 self._report.update(brokerPid=response["brokerPid"], session=self.session,
                                     logFile=str(self.directory / (self.body["digest"][:32] + ".log")))
+                # The broker is detached; a hand-over must be able to wait for it.
+                record_child("broker", response["brokerPid"])
                 remaining = None if deadline is None else max(0.001, deadline - time.monotonic())
                 connection.settimeout(remaining)
                 response = _recv(connection)
+                if response.get("status") == "starting":
+                    # The broker holds the GPU and loads the server: no queue
+                    # wait from here.  The same deadline bounds the load; when
+                    # it is the phase's, reaching it is a budget too small for
+                    # the load, not a wait to retry.
+                    loading = time.monotonic()
+                    try:
+                        connection.settimeout(None if deadline is None
+                                              else max(0.001, deadline - time.monotonic()))
+                        response = _recv(connection)
+                    except (socket.timeout, TimeoutError) as error:
+                        _disconnect(connection)
+                        waited = time.monotonic() - loading
+                        if phase_end is not None and deadline is not None and phase_end <= deadline:
+                            raise StartupExpired(f"the shared HunyuanOCR server was still loading at the "
+                                                 f"phase deadline, {waited:.0f}s after it started",
+                                                 waited) from error
+                        raise GPUQueueTimeout("shared Hunyuan queue/startup wait deadline reached") from error
                 if response.get("status") != "ready":
                     raise GPUQueueError(response.get("error", "shared OCR startup failed"))
                 if response.get("digest") != self.body["digest"]:
                     raise GPUQueueError("shared OCR configuration identity mismatch")
                 self._report.update(status="ready", serverPid=response["serverPid"],
                                     queue=response["queue"])
+                record_child("server", response["serverPid"])
                 connection.settimeout(None)
                 return
             except (socket.timeout, TimeoutError) as error:
@@ -414,8 +575,11 @@ class SharedHunyuanClient:
                 connections.append(self._membership)
                 self._membership = None
             self._report["status"] = "membership-closed"
+            hold, self._runtime_hold = self._runtime_hold, None
         for connection in connections:
             _disconnect(connection)
+        if hold is not None:
+            os.close(hold)
 
 
 @dataclass
@@ -443,6 +607,9 @@ class _Broker:
         self.pending: dict[str, deque[_Request]] = {}
         self.request_counts: dict[str, int] = {}
         self.turns: deque[str] = deque()
+        # starting: the broker holds the GPU and loads the server (members are
+        # told, PROTOCOL 2); ready: the server answers.
+        self.starting = False
         self.ready = False
         self.draining = False
         self.error: str | None = None
@@ -478,7 +645,7 @@ class _Broker:
         session = self._admit(connection, request)
         if session is None:
             return
-        ready_sent = False
+        ready_sent = starting_sent = False
         try:
             _send(connection, {"status": "joined", "session": session, "brokerPid": os.getpid()})
             while not self.stopped.is_set():
@@ -486,6 +653,9 @@ class _Broker:
                     if self.error:
                         _send(connection, {"status": "error", "error": self.error})
                         return
+                    if self.starting and not self.ready and not starting_sent:
+                        _send(connection, {"status": "starting"})
+                        starting_sent = True
                     if self.ready and not ready_sent:
                         _send(connection, {"status": "ready", "digest": self.body["digest"],
                                            "serverPid": self.server.process.pid,
@@ -679,6 +849,9 @@ class _Broker:
                 port = probe.getsockname()[1]
             config = self.config
             print(f"[hunyuan-shared] starting broker={os.getpid()} slots={config['slots']} config={self.body['digest']}", flush=True)
+            with self.condition:
+                self.starting = True
+                self.condition.notify_all()
             self.server = HunyuanServer(
                 None, Path(config["binary"]), Path(config["model"]), Path(config["mmproj"]),
                 port, config["ctx"] * config["slots"], config["model_id"],

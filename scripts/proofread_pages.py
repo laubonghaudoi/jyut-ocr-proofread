@@ -3,23 +3,54 @@
 
 The default packet transport writes resumable question bundles and exits 10
 until the invoking agent has inspected the images and supplied answers. The
-same agent can answer sequentially; parallel workers are optional. An external
-HTTP model is used only with explicit --backend http and --endpoint options.
+same agent can answer sequentially; parallel workers are optional. An HTTP
+model is used with --backend http (--endpoint, else PROOFREAD_ENDPOINT; the
+model --model, else PROOFREAD_MODEL, else the server's first listed model).
+When the invoking agent is itself the local proofreading model, HTTP is the
+default and packets are refused (agent_is_local_model).
 
-A single draft provides reading hints for direct image transcription. A second
-OCR draft enables alignment and targeted disagreement checks; agreement between
-engines never proves that either engine captured all printed content.
+Two OCR engines are the default: engine A (PaddleOCR-VL, with layout labels)
+in DRAFT_DIR and engine B (HunyuanOCR) in --draft2-directory, else the folder
+the book profile's sources name, else ocr-hunyuan beside DRAFT_DIR.  The
+drafts' JSON must say so (engine_roles_problem): swapped folders are refused.
+--single-engine reads DRAFT_DIR alone and transcribes each page from the
+image with it as the hint.  A page missing engine B's draft is not proofread
+(engine B's OCR may still be running, or was interrupted): it counts as failed
+with a warning naming the pages, unless --allow-missing-engine-b, which
+transcribes it from engine A's draft alone.  A page missing engine A's draft
+is transcribed from engine B's.  Either one-engine page carries an
+engine-draft-missing doubt (missing_engine_doubt).  A document of at most SHORT_DOC_MAX_PAGES
+rendered pages needs no book profile (book_profile.py's short-document fast
+path, short_document_engines); a longer one does.
 
-Every page first receives a whole-image content inventory, including apparently
-blank pages. Content pages then receive image-based recovery, guarded formatting,
-and a final coverage check. Numbers, formulas, note markers, table structure,
-and uncertain readings remain part of those checks rather than being discarded
-as formatting noise. A second pass by the same agent is self-review, not an
-independent audit; an independent audit requires a distinct reviewer.
+A second OCR draft enables alignment and targeted disagreement checks;
+agreement between engines never proves that either engine captured all
+printed content.
 
-Output is a sealed per-page JSON/Markdown candidate with source, decision, and
-transport provenance for validated resume. A completed candidate does not by
-itself establish independent visual approval or a measured accuracy rate.
+Exit codes:
+    0   every selected page is sealed (proofread now or current already)
+    1   some pages failed or were blocked, and no packet answers are pending
+    2   wrong arguments or inputs (no engine B drafts and no --single-engine,
+        swapped engines, a profile for other drafts, ...): nothing was run
+    10  packet answers are pending and nothing failed: answer the wave named
+        on stdout, apply it, run the same command again
+    11  packet answers are pending AND some pages failed or were blocked:
+        answer the wave as for 10, and see the report for the failed pages
+
+With --content-fidelity on (off by default) every page first receives a
+whole-image content inventory, including apparently blank pages; content pages
+then receive image-based recovery, guarded formatting, and a final coverage
+check, and what those cannot settle is sealed as a doubt on the page. Numbers,
+formulas, note markers, table structure, and uncertain readings remain part of
+those checks rather than being discarded as formatting noise. A second pass by
+the same agent is self-review, not an independent audit; an independent audit
+requires a distinct reviewer.
+
+Output is a sealed per-page JSON/Markdown candidate with source and decision
+provenance for validated resume; the transport, model, endpoint and helper
+hashes are recorded beside it but do not decide whether a page is current. A
+completed candidate does not by itself establish independent visual approval
+or a measured accuracy rate.
 """
 
 from __future__ import annotations
@@ -39,6 +70,7 @@ import functools
 import hashlib
 import inspect
 import io
+import ipaddress
 import itertools
 import json
 import math
@@ -51,14 +83,19 @@ import time
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _tables  # noqa: E402
 import _loop_watch  # noqa: E402
 import _content_fidelity  # noqa: E402
+import _note_markers  # noqa: E402
 from _packet_client import (  # noqa: E402
+    DEFAULT_MAX_ITEMS_PER_BUNDLE,
     EXIT_PACKETS_PENDING,
+    EXIT_PACKETS_PENDING_WITH_FAILURES,
+    PACKET_USAGE_SOURCES,
     PacketClient,
     PacketPending,
     packet_page_context,
@@ -109,35 +146,82 @@ def in_context(pool: cf.Executor, fn: Callable[..., Any], items: Sequence[Any]) 
     return out
 
 
+def aggregate_usage(calls: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """New charged usage only; preserve unknowns and identify historical replay.
+
+    Response IDs deduplicate actual usage. Conflicting repeated provider values
+    fail instead of silently selecting a different accounting history.
+
+    A packet answer (usage_source in PACKET_USAGE_SOURCES) is replayed from
+    answers.jsonl by every run, but the agent that answered it spent its
+    tokens on it: its recorded usage counts, once per response identity,
+    and an answer recorded without usage makes the totals unknown (None),
+    never zero.  Other replays (reused, or charged False) count nothing.
+    """
+    fields = ("prompt_tokens", "completion_tokens", "reasoning_tokens", "cached_tokens")
+    totals: dict[str, Any] = {key: 0 for key in fields}
+    totals.update(charged_calls=0, reused_calls=0, unknown_calls=0, packet_answers=0)
+    seen: dict[str, tuple[Any, ...]] = {}
+    pending = list(calls)
+    while pending:
+        call = pending.pop(0)
+        if "fidelity_attempt_metrics" in call:
+            pending[0:0] = call["fidelity_attempt_metrics"]
+            continue
+        if not call:
+            continue  # no request (e.g. a skipped structure stage)
+        packet_answer = call.get("usage_source") in PACKET_USAGE_SOURCES
+        reused = not packet_answer and (call.get("reused") is True or call.get("charged") is False)
+        if reused:
+            totals["reused_calls"] += 1
+            continue
+        identity = call.get("response_id") or call.get("request_id")
+        values = tuple(call.get(key) for key in fields)
+        if identity:
+            if identity in seen:
+                if seen[identity] != values:
+                    raise ValueError("conflicting usage for the same response identity")
+                continue
+            seen[identity] = values
+        totals["packet_answers" if packet_answer else "charged_calls"] += 1
+        totals["unknown_calls"] += any(value is None for value in values)
+        for key, value in zip(fields, values):
+            if value is None:
+                totals[key] = None
+            elif type(value) not in {int, float} or value < 0:
+                raise ValueError("invalid provider usage count")
+            elif totals[key] is not None:
+                totals[key] += value
+    return totals
+
+
 def summarize_calls(calls: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per kind of call: how many, how long, how many tokens, how much of
-    the prompt the server served from its prefix cache, and how many images
-    were padded to the server's aspect ratio (fit_media_aspect).
-    With the loop detector on (--loop-detector), every kind has loopCut, how
-    many of its calls it gave up in a word-for-word loop, and
-    loopCutTokensSaved, what those left unspent of their max_tokens."""
+    """Per-kind accounting: unknown timings remain unknown, replay costs zero."""
     out: dict[str, dict[str, Any]] = {}
+    groups: dict[str, list[Mapping[str, Any]]] = {}
     for call in calls:
-        row = out.setdefault(call.get("kind") or "other", {
-            "n": 0, "seconds": 0.0, "waitSeconds": 0.0, "serverPromptMs": 0.0,
-            "serverDecodeMs": 0.0, "promptTokens": 0, "cachedTokens": 0,
-            "completionTokens": 0, "reasoningTokens": 0, "maxCompletion": 0,
-            "truncated": 0, "padded": 0})
-        row["n"] += 1
-        row["seconds"] = round(row["seconds"] + call.get("seconds", 0.0), 2)
-        row["waitSeconds"] = round(row["waitSeconds"] + call.get("waitSeconds", 0.0), 2)
-        row["serverPromptMs"] = round(row["serverPromptMs"] + call.get("serverPromptMs", 0.0), 1)
-        row["serverDecodeMs"] = round(row["serverDecodeMs"] + call.get("serverDecodeMs", 0.0), 1)
+        groups.setdefault(call.get("kind") or "other", []).append(call)
+    for kind, group in groups.items():
+        usage = aggregate_usage(group)
+        row: dict[str, Any] = {"n": len(group), "truncated": 0, "padded": 0,
+                               "chargedCalls": usage["charged_calls"], "reusedCalls": usage["reused_calls"],
+                               "packetAnswers": usage["packet_answers"],
+                               "unknownUsageCalls": usage["unknown_calls"]}
         for key, field in (("promptTokens", "prompt_tokens"), ("cachedTokens", "cached_tokens"),
-                           ("completionTokens", "completion_tokens"),
-                           ("reasoningTokens", "reasoning_tokens")):
-            row[key] += call.get(field, 0) or 0
-        row["maxCompletion"] = max(row["maxCompletion"], call.get("completion_tokens", 0) or 0)
-        row["truncated"] += call.get("finish_reason") == "length"
-        row["padded"] += bool(call.get("padded"))
-        if call.get("loopWatched"):
-            row["loopCut"] = row.get("loopCut", 0) + bool(call.get("loopCut"))
-            row["loopCutTokensSaved"] = row.get("loopCutTokensSaved", 0) + (call.get("loopCutTokensSaved") or 0)
+                           ("completionTokens", "completion_tokens"), ("reasoningTokens", "reasoning_tokens")):
+            row[key] = usage[field]
+        for key in ("seconds", "waitSeconds", "serverPromptMs", "serverDecodeMs"):
+            values = [call.get(key) for call in group]
+            row[key] = round(sum(values), 2) if all(type(v) in {int, float} for v in values) else None
+        completions = [c.get("completion_tokens") for c in group if c.get("charged") is not False and not c.get("reused")]
+        row["maxCompletion"] = max(completions, default=0) if all(type(v) in {int, float} for v in completions) else None
+        for call in group:
+            row["truncated"] += call.get("finish_reason") == "length"
+            row["padded"] += bool(call.get("padded"))
+            if call.get("loopWatched"):
+                row["loopCut"] = row.get("loopCut", 0) + bool(call.get("loopCut"))
+                row["loopCutTokensSaved"] = row.get("loopCutTokensSaved", 0) + (call.get("loopCutTokensSaved") or 0)
+        out[kind] = row
     return out
 
 
@@ -1364,6 +1448,373 @@ def restore_arabic_figures(given: str, formatted: str, figures: Sequence[tuple[A
     for char, gap in zip(chars, gaps[1:]):
         out += [char, gap]
     return "".join(out), how
+
+
+# A printed note marker as the punctuation pass writes it: a circled number.
+NOTE_MARK = re.compile(f"[{_note_markers.NOTE_CIRCLED}]")
+
+
+# The structure pass's input is sealed whole up to this many characters
+# (structure_input_record); a page's text is seldom a fifth of it.
+STRUCTURE_INPUT_SEALED = 20000
+
+
+def structure_input_record(text: str) -> dict[str, Any]:
+    """The seal's record of TEXT, the text the structure pass was given
+    (its question's text between the --- lines: the punctuated blocks, a
+    table as its ⟦Tn⟧ token): the text itself, cut at STRUCTURE_INPUT_SEALED
+    characters ("truncated"), its length and the sha256 of the whole.  A page
+    sealed without it showed what came out of the pass but not what went in:
+    measured on the benchmark (2026-11-15), a note's label both engines read
+    was missing from a sealed page, and whether the structure pass dropped it
+    or was never given it could only be argued from its restore not firing
+    (it had never reached the pass: place_note_markers)."""
+    return {"sha256": sha256_bytes(text.encode("utf-8")), "characters": len(text),
+            "text": text[:STRUCTURE_INPUT_SEALED],
+            **({"truncated": True} if len(text) > STRUCTURE_INPUT_SEALED else {})}
+
+
+def marker_cut(here: str, before: str, after: str, line_start: bool) -> int:
+    """Where in HERE, the gap a note marker is written into, the marker goes:
+    beside the mark that follows it where it was read (AFTER, up to its line
+    break: 「②《」), else beside the one before it on its own line (BEFORE's
+    part after its last line break), else after HERE's last line break where
+    it begins a line, else next to the character it goes with (a line's
+    first marker before the character after it, any other after the
+    character before).  A line's first marker is never put after the mark
+    that ends the line before: a note's label there stands on the wrong
+    note's line (「頁。\\n②某書」 had come back 「頁。②\\n\\n某書」)."""
+    after = after.split("\n", 1)[0]
+    tail = next((c for c in after if not c.isspace()), None) if not CJK(after[:1]) else None
+    head = next((c for c in reversed(before.rsplit("\n", 1)[-1]) if not c.isspace()), None)
+    if tail is not None and tail in here:
+        return here.index(tail)
+    if head is not None and head in here:
+        return here.rindex(head) + 1
+    if "\n" in before and "\n" in here:
+        return here.rindex("\n") + 1
+    return len(here) if line_start else 0
+
+
+# How many of a line's first characters, variant-folded, a note block's text
+# must hold for the line to be that block's (note_labels).
+NOTE_LINE_ANCHOR = 4
+# Engine A's labels for a block of notes (note_block_texts).
+NOTE_BLOCK_LABELS = frozenset({"footnote", "vision_footnote"})
+
+
+def note_block_texts(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The text of the page's note blocks: those engine A labelled a note
+    (NOTE_BLOCK_LABELS), and those in a folio's margin band (margin_blocks),
+    where a page's footnotes sit (note_labels)."""
+    margin = {id(block) for block in margin_blocks(blocks)}
+    return [str(block.get("text") or "") for block in blocks
+            if block.get("label") in NOTE_BLOCK_LABELS or id(block) in margin]
+
+
+def note_labels(given: str, notes: Sequence[str] = ()) -> set[int]:
+    """Where GIVEN holds a circled note marker (NOTE_MARK) that is a note's
+    label by evidence: it begins a line of GIVEN (nothing but marks before it
+    since the line break), and GIVEN holds a marker of the same number that
+    begins no line - its call - or the line it begins is the text of one of
+    NOTES, the page's note blocks (its first NOTE_LINE_ANCHOR characters,
+    variant-folded, stand in one).  The offsets are the markers' starts in
+    GIVEN.
+
+    A marker at a line's head is not a label by its place alone: the
+    punctuation pass, or engine A's line break, can put a call there
+    (FX3 review, made-up page: a call the structure answer set after its
+    character, at the end of the line before, was moved to the head of
+    the next paragraph, which finishing then read as a note)."""
+    found = [m for m in _note_markers.iter_note_markers(given) if NOTE_MARK.search(m.group())]
+    heads = {m.start() for m in found if not CJK(given[given.rfind("\n", 0, m.start()) + 1:m.start()])}
+    calls = {_note_markers.marker_key(m.group()) for m in found if m.start() not in heads}
+    folded = [variant_fold(CJK(text)) for text in notes]
+    labels = set()
+    for m in found:
+        if m.start() not in heads:
+            continue
+        line = given[m.end():].split("\n", 1)[0]
+        lead = variant_fold(CJK(line))[:NOTE_LINE_ANCHOR]
+        if _note_markers.marker_key(m.group()) in calls or (
+                len(lead) >= 2 and any(lead in text for text in folded)):
+            labels.add(m.start())
+    return labels
+
+
+def restore_note_markers(given: str, formatted: str,
+                         notes: Sequence[str] = ()) -> tuple[str, list[dict[str, Any]]]:
+    """FORMATTED (the structure pass's answer) with each note marker of GIVEN
+    (the text it was given) that it no longer holds written back where GIVEN
+    has it, and what was written back: one record per marker, with its gap
+    (GIVEN's character k as CJK counts them, before it), the marker and the
+    characters around it.
+
+    A note marker is print the merge leaves out (it holds characters alone):
+    the punctuation pass writes it back off the crop (agreed_marks: a note
+    marker is other print), or the merge where that pass left out one both
+    engines read (place_note_markers), and the structure pass, told to keep
+    every mark, must keep it.  Nothing held it there: verify_characters counts a circled
+    number as its figure, which a block in the folio's margin band may lose
+    as furniture (removable_text) - a page's footnotes sit there - and
+    furniture_unexplained counts CJK.  Measured on the benchmark (2026-11-15):
+    a page whose two notes, both in the margin band, begin with the labels ①
+    and ②, sealed with the first label alone, so only [^1] was paired and
+    the two notes came out swapped (45 errors); the ② had not reached the
+    text given (place_note_markers puts it there now).  Only circled numbers
+    (NOTE_MARK), counted by their figures (marker_key: an answer that writes
+    ② as [^2] or <sup>2</sup> keeps it, and so does one whose gap holds its
+    figure written another way, 「(2)」); a marker is written back beside the
+    mark GIVEN has after it in its gap (「②《」), else beside the one before
+    it on its own line, else at a line's start where GIVEN has it there, else
+    next to the character it goes with (marker_cut: a line's first marker
+    before the character after it, in a table cell too: 「| 甲 | ①乙 |」);
+    not where the character it goes with - the one after it at a line's
+    start, else the one before - is not in FORMATTED (the line taken out as
+    furniture).
+
+    A marker that begins a line of GIVEN and is a note's label by evidence
+    (note_labels: GIVEN also holds its call, or the line is the text of one
+    of NOTES, the page's note blocks) is kept only at the head of its line:
+    one the answer set before the line break that begins it - at the end of
+    the line before, or on a line of its own, more copies of it there than
+    GIVEN has - is moved back after that break (a record with "moved"),
+    since finishing pairs a note by the label that begins its line
+    (_footnotes).  Any other marker is written back only where the answer
+    left it out, as before: a call the answer set beside its character is
+    not moved to a paragraph's head."""
+    wanted = [m for m in _note_markers.iter_note_markers(given) if NOTE_MARK.search(m.group())]
+    if not wanted:
+        return formatted, []
+    keys = Counter(_note_markers.marker_key(m.group()) for m in _note_markers.iter_note_markers(formatted))
+    missing = Counter(_note_markers.marker_key(m.group()) for m in wanted) - keys
+    labels = note_labels(given, notes)
+    if not missing and not labels:
+        return formatted, []
+    source, target = CJK(given), CJK(formatted)
+    where: dict[int, int] = {}
+    for i, j, n in difflib.SequenceMatcher(None, source, target, autojunk=False).get_matching_blocks():
+        for d in range(n):
+            where[i + d] = j + d
+    chars, gaps = engine_gaps(formatted)
+    starts = [0]
+    for at, char in enumerate(given):
+        if CJK(char):
+            starts.append(at + 1)
+    restored = []
+    for m in wanted:
+        key = _note_markers.marker_key(m.group())
+        gap = len(CJK(given[:m.start()]))
+        before, after = given[starts[gap]:m.start()], given[m.end():]
+        after = after[:after.find("\n")] if "\n" in after else after
+        # A marker that begins a line goes with the character after it, any
+        # other with the character before it: it is written back only where
+        # FORMATTED still holds that character, and next to it when nothing
+        # else in the gap places it.
+        line_start = gap == 0 or "\n" in before
+        if line_start:
+            at = where.get(gap)
+        else:
+            at = where[gap - 1] + 1 if gap - 1 in where else None
+        if at is not None and m.start() in labels and "\n" in before and "\n" in gaps[at]:
+            # A note's label: at the head of its line, after the gap's last
+            # line break, or moved there from before it.
+            head = gaps[at].rindex("\n") + 1
+            pre, post = gaps[at][:head], gaps[at][head:]
+            if key in re.sub(r"\D", "", unicodedata.normalize("NFKC", post)):
+                continue
+            set_before = [found for found in _note_markers.iter_note_markers(pre)
+                          if _note_markers.marker_key(found.group()) == key]
+            moved = len(set_before) > sum(1 for found in _note_markers.iter_note_markers(
+                before[:before.rindex("\n")]) if _note_markers.marker_key(found.group()) == key)
+            if moved:
+                drop = set_before[-1]
+                pre = re.sub(r"\n{3,}", "\n\n", pre[:drop.start()] + pre[drop.end():])
+            elif missing[key] <= 0:
+                continue
+            else:
+                # Left out: the copies before the break are the line
+                # before's own, as GIVEN has them there.
+                missing[key] -= 1
+            cut = marker_cut(post, before, after, True)
+            gaps[at] = pre + post[:cut] + m.group() + post[cut:]
+            restored.append({"gap": gap, "marker": m.group(), "contextBefore": source[max(0, gap - 8):gap],
+                             "contextAfter": source[gap:gap + 8], **({"moved": True} if moved else {})})
+            continue
+        if missing[key] <= 0:
+            continue
+        # Kept there in any form: as a marker, or its figure written another
+        # way (「(2)」).
+        if at is None or key in re.sub(r"\D", "", unicodedata.normalize("NFKC", gaps[at])):
+            continue
+        here = gaps[at]
+        cut = marker_cut(here, before, after, line_start)
+        gaps[at] = here[:cut] + m.group() + here[cut:]
+        missing[key] -= 1
+        restored.append({"gap": gap, "marker": m.group(), "contextBefore": source[max(0, gap - 8):gap],
+                         "contextAfter": source[gap:gap + 8]})
+    out = [gaps[0]]
+    for char, gap_text in zip(chars, gaps[1:]):
+        out += [char, gap_text]
+    return "".join(out), restored
+
+
+def engine_note_markers(text: str, place: Mapping[int, int] | None) -> list[dict[str, Any]] | None:
+    """The circled note markers (NOTE_MARK, alone or in an engine's LaTeX or
+    <sup> around them) an engine read, TEXT, each tied to the merged text by
+    PLACE, its characters' exact places there (engine_places,
+    engine_b_places): {"gap": the merged text's gap, "marker": its circled
+    figures, "raw": as the engine wrote it, "lineStart", "before" and
+    "after": the print of its gap on either side of it}.  A marker that
+    begins a line (or the text) goes with the character after it, any other
+    with the character before it, as restore_note_markers takes them; one
+    whose character has no exact place is left out.  None when PLACE is."""
+    if place is None:
+        return None
+    chars, gaps = engine_gaps(text)
+    found = []
+    for k, gap in enumerate(gaps):
+        for m in _note_markers.iter_note_markers(gap):
+            figures = "".join(NOTE_MARK.findall(m.group()))
+            key = _note_markers.marker_key(figures) if figures else ""
+            if not key or key != _note_markers.marker_key(m.group()) or not int(key):
+                continue
+            before, after = gap[:m.start()], gap[m.end():]
+            line_start = k == 0 or "\n" in before
+            if line_start and k < len(chars):
+                at = place.get(k)
+            else:
+                at = place[k - 1] + 1 if k > 0 and k - 1 in place else None
+            if at is not None:
+                found.append({"gap": at, "marker": figures, "raw": m.group(), "lineStart": line_start,
+                              "before": before, "after": after})
+    return found
+
+
+# Circled figures an engine wrote in a run (①⑨, ⑲⑳), or one with a digit
+# after it (②0): the page prints note numbers past what one circled glyph
+# holds (a three-figure number in one circle), which the engines read as such
+# runs or cut short (recover_tables' table-note-marker-unverified).
+CIRCLED_RUN = re.compile(f"[{_note_markers.NOTE_CIRCLED}]{{2,}}|[{_note_markers.NOTE_CIRCLED}][0-9０-９]")
+
+
+def agreed_note_markers(draft: str, draft2: str | None, segments: Sequence[Mapping[str, Any]],
+                        pieces: Sequence[str], blocks: Sequence[Mapping[str, Any]] = ()) -> list[dict[str, Any]]:
+    """The circled note markers both engines read at one place of the merged
+    text ("".join(pieces)): engine A's (engine_note_markers, its "lineStart",
+    "before" and "after"), each with engine B's form ("rawB"), where engine B
+    read the same circled figures at the same gap; as many at a gap as the
+    engine that read fewer there.  Nothing where either engine's characters
+    do not spell the segments (engine_places, engine_b_places), nor on a page
+    where either engine wrote a run of circled figures (CIRCLED_RUN): there a
+    single circled glyph both read can be a longer number cut short (both
+    engines read ⑲ at the head of a note numbered 197 on a page whose other
+    labels came back as ⑲⑳ and ②0)."""
+    if draft2 is None or CIRCLED_RUN.search(draft) or CIRCLED_RUN.search(draft2):
+        return []
+    found_a = engine_places(engine_gaps(draft)[0], segments, pieces, blocks)
+    read_a = engine_note_markers(draft, found_a[0] if found_a else None)
+    read_b = engine_note_markers(draft2, engine_b_places(engine_gaps(draft2)[0], segments, pieces))
+    if not read_a or not read_b:
+        return []
+    by_place: dict[tuple[int, str], list[str]] = {}
+    for found in read_b:
+        by_place.setdefault((found["gap"], found["marker"]), []).append(found["raw"])
+    agreed = []
+    for found in read_a:
+        other = by_place.get((found["gap"], found["marker"]))
+        if other:
+            agreed.append(dict(found, rawB=other.pop(0)))
+    return agreed
+
+
+# How many gaps from where both engines read a note marker one the
+# punctuation pass wrote may stand and still be that marker
+# (place_note_markers).
+NOTE_MARKER_REACH = 2
+
+
+def place_note_markers(text: str, span: str,
+                       wanted: Sequence[tuple[int, Mapping[str, Any]]]) -> tuple[str, list[tuple[int, Mapping[str, Any]]]]:
+    """TEXT, a punctuated block, with each circled note marker both engines
+    read in it (WANTED: its gap in the block's characters SPAN, gap k before
+    character k, and the marker as agreed_note_markers gives it) that TEXT
+    does not hold, written at its gap (marker_cut, beside the marks the
+    engine read around it), and the markers written.
+
+    The merge holds characters alone, so a note marker stands in the page
+    only where the block's punctuation pass writes it off the crop; nothing
+    else wrote one, and a pass that left a printed label out lost it for
+    good - the structure pass is given no label to keep, and its restore
+    (restore_note_markers) takes them from that text.  Measured on the
+    benchmark (2026-11-15): a page's two notes each begin with a circled
+    label both engines read; the pass wrote the first and left the second
+    out (the same answer, token for token, from two skills), so only one
+    note was paired and the two came out swapped.  A marker is counted by
+    its figures (marker_key), so one the pass wrote in any form is not
+    written again; and each wanted marker is first paired with a marker of
+    the same number the pass wrote within NOTE_MARKER_REACH gaps of it,
+    nearest first, so one written a place or two off stands for it and the
+    one left out is written at its own gap (FX3 review, made-up block: the
+    same number at two gaps, one written a place off and the other left
+    out, had a second copy written beside the first).  Nor is one written
+    where the gap holds its figure written another way (「(2)」).  The
+    characters are never touched; a TEXT whose characters are not SPAN's
+    is returned as it is."""
+    chars, gaps = engine_gaps(text)
+    if not wanted or chars != CJK(span):
+        return text, []
+    found_in = [(len(CJK(text[:m.start()])), _note_markers.marker_key(m.group()))
+                for m in _note_markers.iter_note_markers(text)]
+    missing = (Counter(_note_markers.marker_key(found["marker"]) for _, found in wanted)
+               - Counter(key for _, key in found_in))
+    ordered = sorted(wanted, key=lambda item: item[0])
+    paired: set[int] = set()
+    taken: set[int] = set()
+    for _, i, j in sorted((abs(g - at), i, j) for i, (g, found) in enumerate(ordered)
+                          for j, (at, key) in enumerate(found_in)
+                          if key == _note_markers.marker_key(found["marker"]) and abs(g - at) <= NOTE_MARKER_REACH):
+        if i not in paired and j not in taken:
+            paired.add(i)
+            taken.add(j)
+    written = []
+    for i, (g, found) in enumerate(ordered):
+        key = _note_markers.marker_key(found["marker"])
+        if i in paired or missing[key] <= 0 or not 0 <= g < len(gaps):
+            continue
+        here = gaps[g]
+        if key in re.sub(r"\D", "", unicodedata.normalize("NFKC", here)):
+            continue
+        cut = marker_cut(here, found["before"], found["after"], found["lineStart"])
+        gaps[g] = here[:cut] + found["marker"] + here[cut:]
+        missing[key] -= 1
+        written.append((g, found))
+    if not written:
+        return text, []
+    out = [gaps[0]]
+    for char, gap_text in zip(chars, gaps[1:]):
+        out += [char, gap_text]
+    return "".join(out), written
+
+
+def note_markers_by_block(agreed: Sequence[Mapping[str, Any]],
+                          spans: Sequence[str]) -> dict[int, list[tuple[int, Mapping[str, Any]]]]:
+    """AGREED (agreed_note_markers) by block: block index -> (gap in the
+    block's span, marker).  A marker goes to the block of the character it
+    goes with: a line's first marker to the block it begins, any other to
+    the block it ends or stands in."""
+    ends = list(itertools.accumulate(len(span) for span in spans))
+    total = ends[-1] if ends else 0
+    per_block: dict[int, list[tuple[int, Mapping[str, Any]]]] = {}
+    for found in agreed:
+        if not total:
+            break
+        anchor = min(max(found["gap"] if found["lineStart"] else found["gap"] - 1, 0), total - 1)
+        k = bisect.bisect_right(ends, anchor)
+        start = ends[k - 1] if k else 0
+        if 0 <= found["gap"] - start <= len(spans[k]):
+            per_block.setdefault(k, []).append((found["gap"] - start, found))
+    return per_block
 
 
 def arabic_figure_kept(page_figures: Mapping[int, Sequence[Mapping[str, Any]]],
@@ -3021,16 +3472,66 @@ def adjudicate_segment(client: "Client", crop: bytes | None, seg: Mapping[str, A
     # (the user's ruling of 2026-09-27).  A question with deletionGuard False
     # (one character no engine read, confirm_unread) has 裁決's answer written
     # as it is.
+    #
+    # Nor the reading of an engine whose reply for the page was cut off
+    # (cutOffSides: engine B's reply ended for want of tokens, and what it
+    # read before its loop is merged, _proofread_page_inner): where the
+    # reading the answer is a view of (by overlap, over both sides, as
+    # above) is the cut-off engine's, the guard measures the answer against
+    # a whole engine's reading instead - one that shares a character with
+    # the answer (nothing printed is no verdict where both engines read
+    # text, above, so a whole reading never meets it here) - so text both
+    # engines read stays kept, and characters only the cut-off
+    # engine read may be answered away (cutOffReadingAnswered; a reading the
+    # merged text holds nowhere is still a reading-dropped doubt).  A whole
+    # reading that shares no character with an answer that is a view of the
+    # cut-off one is no reading of what 裁決 answered, and is not written
+    # over it (FX3 review, made-up spot: engine A 甲乙丙丁戊, engine B, cut
+    # off, 子丑寅卯辰巳, 裁決 子丑 - the guard wrote engine A's reading, which
+    # 裁決 had not chosen; its loss is a reading-dropped doubt where the page
+    # holds it nowhere else, and the answer's record names it,
+    # unsharedWholeReadings).  An engine whose
+    # reply ran out of tokens on a page was failing on that page, and what it
+    # read there - its reply up to the loop, and its second look at the
+    # blocks the reply left unread - is weaker evidence that text is printed
+    # than a whole reading: measured on the cut-off pages of a fiscal table
+    # printed over six pages, engine B's second look at one page's table read
+    # its column of row labels as a grid of doubled cells, and the heading
+    # after the table a second time, before the figures both engines read;
+    # 裁決 answered that nothing is printed there, the guard kept those 65
+    # characters over it, and the text they made between the two pages'
+    # tables kept the table from being stitched to the page before (written
+    # as a second table, under the next table's heading).
     kept_side = None
+    waived_side = None
+    unshared: list[str] = []
     written = "" if explicit_empty else picked
     if seg.get("deletionGuard", True) and not (partial or invalid or numeral) and (explicit_empty or (
             picked and picked not in (CJK(seg["a"]), CJK(seg["b"])))):
-        side, reading = max(((side, CJK(seg[side])) for side in ("a", "b") if CJK(seg[side])),
-                            key=lambda pair: (sum((Counter(pair[1]) & Counter(written)).values()), len(pair[1])),
-                            default=(None, ""))
-        if (side is not None and len(reading) - len(written) > ANSWER_DELETION_LIMIT
-                and side not in (seg.get("furnitureSides") or ())):
-            kept_side = side
+        cut_off = set(seg.get("cutOffSides") or ())
+
+        def guarded(sides: Sequence[str]) -> str | None:
+            """The side of SIDES whose reading the answer is a view of, when it
+            leaves out more than ANSWER_DELETION_LIMIT of its characters."""
+            side, reading = max(((side, CJK(seg[side])) for side in sides if CJK(seg[side])),
+                                key=lambda pair: (sum((Counter(pair[1]) & Counter(written)).values()),
+                                                  len(pair[1])),
+                                default=(None, ""))
+            if (side is not None and len(reading) - len(written) > ANSWER_DELETION_LIMIT
+                    and side not in (seg.get("furnitureSides") or ())):
+                return side
+            return None
+
+        viewed = guarded(("a", "b"))
+        if viewed is not None and viewed in cut_off:
+            whole = [side for side in ("a", "b") if side not in cut_off and CJK(seg[side])]
+            sharing = [side for side in whole if sum((Counter(CJK(seg[side])) & Counter(written)).values())]
+            unshared = [side for side in whole if side not in sharing]
+            kept_side = guarded(sharing)
+            # What the guard would have kept with the engine's reply whole.
+            waived_side = viewed if kept_side is None else None
+        else:
+            kept_side = viewed
     if partial:
         piece = seg["a"] or seg["b"]
     elif kept_side is not None:
@@ -3070,6 +3571,13 @@ def adjudicate_segment(client: "Client", crop: bytes | None, seg: Mapping[str, A
         # answer as given in answeredTraditional, which the doubts quote.
         **({"answered": written} if partial or kept_side is not None else {}),
         **({"answeredTraditional": as_given} if converted else {}),
+        # The cut-off engine whose reading the deletion guard would have kept
+        # over the answer, had its reply been whole (cutOffSides).
+        **({"cutOffReadingAnswered": waived_side.upper()} if waived_side is not None else {}),
+        # A whole engine's reading here that shares no character with the
+        # answer, so the guard did not keep it over the answer.
+        **({"unsharedWholeReadings": [side.upper() for side in unshared]}
+           if waived_side is not None and unshared else {}),
     }
     return piece, record, metrics
 
@@ -3324,8 +3832,8 @@ def confirm_nothing(client: "Client", crop: bytes | None, seg: Mapping[str, Any]
         return answer
     transcript, used = client.ask_answering(BLIND_SYSTEM, BLIND_USER, crop, max_tokens, kind="coverage-read")
     metrics = dict(metrics)
-    for key in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
-        metrics[key] = (metrics.get(key) or 0) + (used.get(key) or 0)
+    combined_usage = aggregate_usage([metrics, used])
+    metrics = {**metrics, **combined_usage}
     shown, reading, how = crop_shows_spot(transcript or "", seg, coverage["beforeRoom"], coverage["afterRoom"])
     # What the answer writes, not nothing: a 無 on a numeral run keeps the
     # digits both engines read, and a crop that shows them there shows the
@@ -3530,6 +4038,9 @@ class PageJob:
     draft2_text: Path | None
     out_json: Path
     out_md: Path
+    # "A" or "B": the engine whose draft this page lacks on a two-engine run
+    # (the page is transcribed from the other's, with a doubt saying so).
+    missing_engine: str | None = None
 
 
 def utc_now() -> str:
@@ -3626,11 +4137,12 @@ def fit_media_aspect(image_bytes: bytes, limit: float = MEDIA_ASPECT_LIMIT) -> b
 class Client:
     """Minimal chat client. Retries only on transport errors, never on HTTP 4xx."""
 
-    def __init__(self, endpoint: str, model: str, effort: str | None, timeout: float,
+    def __init__(self, endpoint: str, model: str | None, effort: str | None, timeout: float,
                  temperature: float = 0.0, max_inflight: int | None = None,
                  loop_detector: _loop_watch.Rule | None = None):
         self.endpoint = endpoint
-        self.model = model
+        # No model named: the server's first listed one (resolve_http_model).
+        self.model = resolve_http_model(endpoint, model, timeout)
         self.effort = effort
         self.timeout = timeout
         self.temperature = temperature
@@ -5004,6 +5516,22 @@ def fix_cell_direction(table_text: str, client: "Client | None", max_tokens: int
     answers preserve the reading and emit an explicit undecided record.
     The transformation changes cell text only, preserving dimensions/spans
     under either output policy.  Records bind decisions to input bytes.
+
+    A split vote stays undecided: no third witness breaks it without a model
+    call.  Neither engine is one: both read a horizontal label left to right
+    whichever way it is printed, so their order inside a cell is the reading
+    asked about, not evidence on it.  Measured (2026-11-15) on a vertically
+    set fiscal report whose two tables print their row labels horizontally
+    right to left: engine A's grids held every label reversed; engine B's own
+    grid held each label of the first table in the same left-to-right order
+    (19 of 19 rows, none the other way) and split those of the second over
+    two cells.  One run's verdicts split on 38 of the tables' 42 candidates,
+    every label among them, each answer taking the option offered first;
+    engine B's order as a third vote would have kept every label reversed,
+    as the split did.  Nor does the page's print direction settle it: the
+    first table prints its column headings left to right beside those labels,
+    two of the 38, and turning every split cell of a vertical page would have
+    reversed them.
     """
     table = first_table(table_text)
     cells = direction_candidates(table) if table is not None else []
@@ -5147,17 +5675,207 @@ def table_orientation_record(before: str, after: str, how: str,
             "sourceImageSha256": sha256_bytes(render_bytes) if render_bytes else None}
 
 
+# How the stored grid turns into the benchmark's table.  "kept": its rows are
+# already the printed lines in reading order.  "rotated" (counter-clockwise):
+# its last column is the first printed line - a physical grid of a vertical
+# table, whose printed columns run right to left.  "flipped": its rows are the
+# printed lines in the reverse order - engine A's grid of a vertical table
+# read column by column from the left.  Spans turn with the cells.
+TABLE_TURNS: dict[str, Callable[["_tables.Table"], "_tables.Table"]] = {
+    "kept": lambda table: table,
+    "rotated": lambda table: _tables.rotate_counterclockwise(table),
+    "flipped": lambda table: _tables.rotate_counterclockwise(_tables.transpose(table)),
+}
+# Engine B's reading order settles a turn when the best turn puts at least
+# READING_ORDER_PAIRS pairs of cells in engine B's order and at least
+# READING_ORDER_SHARE of all the pairs it places, and no other turn ties it.
+# Measured on the corpus's engine A table grids (126 grids, 11 books; 87 have
+# an engine B page that is itself a table or none, 2 are single lines): of
+# the 37 left, a horizontal book's 15 came out "kept" 14 times and turned
+# none; on vertical books engine A's grid was the physical grid (rotated:
+# 115 of 119 pairs, 10 of 10, 154 of 161), the reading-order grid (kept: 990
+# of 990, 171 of 171, 120 of 120) and the columns read from the left
+# (flipped: 323 of 324) - so no fixed turn of engine A's grid is right.  The
+# three shapes were confirmed on the renders of four table pages.
+READING_ORDER_PAIRS = 3
+READING_ORDER_SHARE = 0.8
+# The turns a table the structure pass wrote itself may need
+# (orient_written_tables): TABLE_TURNS' three, and "transposed" - its rows
+# the printed lines across the page, its columns the printed columns in
+# reading order, right to left, which a turn of engine A's left-to-right
+# grid never is.  Measured on the benchmark (a vertical textbook table, its
+# engine grid refused): the structure answer wrote each field as a row and
+# each item as a column, items right to left; engine B's reading order put
+# 325 of 325 pairs of its cells in order transposed, 227 kept, 25 rotated
+# and 160 flipped, and the 25 pairs of its cells engine B read on one line
+# all shared a column (witness_line_axis).
+WRITTEN_TABLE_TURNS: dict[str, Callable[["_tables.Table"], "_tables.Table"]] = {
+    **TABLE_TURNS,
+    "transposed": lambda table: _tables.transpose(table),
+}
+# A block this many times taller than wide (in pixels) is vertical text, this
+# many times wider than tall horizontal; a page's print direction is the one
+# with at least PRINT_DIRECTION_LEAD times the other's characters, and at
+# least PRINT_DIRECTION_MINIMUM of them.
+PRINT_DIRECTION_ASPECT = 2.0
+PRINT_DIRECTION_LEAD = 2
+PRINT_DIRECTION_MINIMUM = 6
+# Furniture does not count: a vertical book's running head is often printed
+# across the top, right to left (measured: the one block beside a vertical
+# table on a pamphlet page, which would have called the page horizontal).
+PRINT_DIRECTION_SKIP = frozenset({"table", "image", "figure", "seal", "number", "header", "footer",
+                                  "header_image", "footer_image", "chart"})
+
+
+def image_size(render_bytes: bytes | None) -> tuple[int, int] | None:
+    """The render's (width, height) in pixels, or None."""
+    if not render_bytes:
+        return None
+    try:
+        from PIL import Image
+        with Image.open(io.BytesIO(render_bytes)) as image:
+            return image.size
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def page_print_direction(blocks: Sequence[Mapping[str, Any]],
+                         size: tuple[int, int] | None) -> str | None:
+    """"vertical" or "horizontal": which way the page's own text is printed,
+    from engine A's layout - a block it labelled vertical_text, or a block
+    whose box is PRINT_DIRECTION_ASPECT times taller than wide (a running
+    title in the margin, a heading labelled text), counts its characters as
+    vertical; a box that many times wider than tall as horizontal.  Tables,
+    figures, stamps, folios and running heads do not count.  None when the
+    page shows too little, or both: a page holding only a table says nothing
+    here.
+
+    The benchmark's table rule turns on this: a horizontally printed table
+    keeps its rows and columns; a vertically printed table's printed columns,
+    right to left, become its rows top to bottom."""
+    vertical = horizontal = 0
+    for block in blocks:
+        label = str(block.get("label") or "")
+        chars = len(CJK(str(block.get("text") or "")))
+        if label in PRINT_DIRECTION_SKIP or chars < 3:
+            continue
+        box = block.get("box") or []
+        aspect = None
+        if size and len(box) == 4 and box[2] > 0 and box[3] > 0:
+            aspect = (float(box[3]) * size[1]) / (float(box[2]) * size[0])
+        if label == "vertical_text" or (aspect is not None and aspect >= PRINT_DIRECTION_ASPECT):
+            vertical += chars
+        elif aspect is not None and aspect <= 1 / PRINT_DIRECTION_ASPECT:
+            horizontal += chars
+    if vertical >= PRINT_DIRECTION_MINIMUM and vertical >= PRINT_DIRECTION_LEAD * horizontal:
+        return "vertical"
+    if horizontal >= PRINT_DIRECTION_MINIMUM and horizontal >= PRINT_DIRECTION_LEAD * vertical:
+        return "horizontal"
+    return None
+
+
+def reading_order_votes(table: "_tables.Table", witness: str | None,
+                        turns: Sequence[str] = tuple(TABLE_TURNS)) -> dict[str, tuple[int, int]]:
+    """For each turn, how many pairs of the turned grid's cells engine B read
+    in the grid's row-major order, and how many in the other order.
+
+    The benchmark's table, read row by row, is the page's reading order: a
+    horizontal table's rows top to bottom, a vertical one's printed columns
+    right to left, each cell from the top.  Engine B reads a page in that
+    order.  A cell is placed by its first piece of WITNESS_ANCHOR characters
+    engine B read once (witness_anchors), a shorter one of two or more when
+    engine B read it whole once, variants folded (turn_records' measure in
+    the old skill).  Engine B's own <table> is a grid, not a reading: no
+    votes."""
+    if not witness or "<table" in witness.lower():
+        return {name: (0, 0) for name in turns}
+    reading = variant_fold(CJK(witness))
+    matcher = difflib.SequenceMatcher(None, "", reading, autojunk=False)
+    at: dict[tuple[int, int, int, int], int] = {}
+    for cell in table.cells:
+        text = variant_fold(CJK(cell.text))
+        if len(text) >= WITNESS_ANCHOR:
+            anchors = witness_anchors(text, reading, matcher)
+            if anchors:
+                at[(cell.row, cell.col, cell.rowspan, cell.colspan)] = anchors[0][1] - anchors[0][0]
+        elif len(text) >= 2 and reading.count(text) == 1:
+            at[(cell.row, cell.col, cell.rowspan, cell.colspan)] = reading.index(text)
+    votes: dict[str, tuple[int, int]] = {}
+    for name in turns:
+        placed = sorted((_turned_place(table, cell, name), at[key]) for cell in table.cells
+                        if (key := (cell.row, cell.col, cell.rowspan, cell.colspan)) in at)
+        agree = disagree = 0
+        for (_, a1), (_, a2) in itertools.combinations(placed, 2):
+            if a1 < a2:
+                agree += 1
+            elif a1 > a2:
+                disagree += 1
+        votes[name] = (agree, disagree)
+    return votes
+
+
+def _turned_place(table: "_tables.Table", cell: "_tables.Cell", name: str) -> tuple[int, int]:
+    """Where CELL's top-left slot lands when TABLE takes the turn NAME
+    (TABLE_TURNS; the arithmetic of _tables.rotate_counterclockwise)."""
+    if name == "rotated":
+        return table.cols - cell.col - cell.colspan, cell.row
+    if name == "flipped":
+        return table.rows - cell.row - cell.rowspan, cell.col
+    if name == "transposed":
+        return cell.col, cell.row
+    return cell.row, cell.col
+
+
+def reading_order_turn(table: "_tables.Table", witness: str | None,
+                       turns: Sequence[str] = tuple(TABLE_TURNS)) -> tuple[str | None, str]:
+    """The turn engine B's reading order settles (reading_order_votes), or
+    None, and what the votes were."""
+    votes = reading_order_votes(table, witness, turns)
+    shown = ", ".join(f"{name} {a}/{a + d}" for name, (a, d) in votes.items())
+    margins = sorted((votes[name][0] - votes[name][1], name) for name in turns)
+    best = margins[-1][1]
+    agree, disagree = votes[best]
+    tied = len(margins) > 1 and margins[-2][0] == margins[-1][0]
+    if (not tied and agree >= READING_ORDER_PAIRS
+            and agree >= READING_ORDER_SHARE * (agree + disagree)):
+        return best, f"engine B's reading order: {shown} pair(s) in order"
+    return None, f"engine B's reading order settles nothing ({shown} pair(s) in order)"
+
+
 def orient_table(table_text: str, render_bytes: bytes | None, client: "Client | None",
                  max_tokens: int, turn: Callable[[str], tuple[str, str]] | None = None,
-                 table_orientation: str = "auto", *, context: str = "") -> tuple[str, str]:
-    """Select logical rows only when the source image establishes their axes.
+                 table_orientation: str = "auto", *, context: str = "",
+                 witness: str | None = None, print_direction: str | None = None,
+                 physical: bool = False) -> tuple[str, str]:
+    """The table turned the benchmark's way, and how.
 
-    As-printed preserves the existing physical grid, including merged cells.
-    Auto checks both axes and record order visually; arithmetic and OCR
-    witnesses supply review clues only.  An isolated header strip can be
-    oriented when the image/context establishes its table relationship,
-    otherwise it stays explicitly undecided.  No missing/unknown answer
-    falls back to a book-wide reading direction.
+    The rule is mechanical: a horizontally printed table keeps its rows and
+    columns; a vertically printed one's printed columns, right to left,
+    become its rows top to bottom, each column's cells, top down, its cells
+    left to right, merged cells turned with them.  Nothing is reordered by
+    what the cells say.  Equivalently, the table read row by row is the page's
+    reading order.
+
+    A PHYSICAL grid (a table rebuilt from the crop, whose prompt asks for the
+    printed rows and columns as they stand) follows `print_direction`
+    (page_print_direction) directly: vertical -> rotated, horizontal -> kept;
+    but on a vertical page, where engine B's reading order settles that the
+    grid's rows are its printed columns already (kept over rotated; not a
+    single line of cells), it is kept: a model may answer the rebuild with
+    the reading-order grid, and rotated again its rows come out in reverse
+    (measured on a bench page, 2026-11-15: a price table's three rows in
+    reverse, engine B's order 15 of 15 pairs kept).  Engine A's grid of a vertical table does not say how it lies - the
+    physical grid, the reading-order grid, or the columns read from the left
+    (TABLE_TURNS) - so for it, in order: on a vertical page an exact 合計
+    settles which axis holds the printed columns (totals_axis; the old
+    skill's measured rule, without a model call); a single line of cells is
+    kept and sealed undecided, with no question (the old skill's measured
+    guard: a nineteen-cell label column once cost a 132-second question,
+    truncated, answered from another table); engine B's reading order
+    (reading_order_turn); a horizontal page keeps the grid.  For either kind,
+    when nothing settles it, engine B's order is asked first and then the
+    source image (ORIENT_SYSTEM, ask_first_record) - the only model question
+    left.  As-printed keeps the physical grid.
     """
     if table_orientation not in {"auto", "as-printed"}:
         raise ValueError(f"unknown table orientation policy: {table_orientation}")
@@ -5171,10 +5889,42 @@ def orient_table(table_text: str, render_bytes: bytes | None, client: "Client | 
         prefix = SINGLE_LINE_KEPT if single_line_grid(table_text) else "kept"
         return table_text, f"{prefix}, UNDECIDED — policy=auto; {reason}"
 
-    if not render_bytes or client is None:
-        return undecided("no source image" if not render_bytes else "no visual reviewer")
+    def turned(name: str, reason: str) -> tuple[str, str]:
+        out = table_text if name == "kept" else _tables.render(TABLE_TURNS[name](table))
+        return out, f"{name} — {reason}"
+
     if table.problems:
         return undecided("source grid requires repair: " + "; ".join(table.problems))
+    single = single_line_grid(table_text)
+    if physical and print_direction == "vertical":
+        # The rebuild prompt asks for the physical grid, but a model may write
+        # the printed columns as rows already (the reading-order grid);
+        # turned again, its rows come out in reverse.  Engine B's reading
+        # order tells the two apart where it settles (kept or rotated); not
+        # on a single line of cells, whose order says nothing of its shape.
+        name, votes = (None, "") if single else reading_order_turn(table, witness, ("kept", "rotated"))
+        if name == "kept":
+            return turned("kept", f"vertical print, the rebuilt grid already in reading order: {votes}")
+        return turned("rotated", "vertical print: the printed columns, right to left, are the rows"
+                      + (f" ({votes})" if name == "rotated" else ""))
+    if physical and print_direction == "horizontal":
+        return turned("kept", "horizontal print keeps its rows and columns")
+    if not physical and print_direction == "vertical":
+        axis = totals_axis(table_text)
+        if axis == "column":
+            return turned("rotated", "合計 reconciles down the column")
+        if axis == "row":
+            return turned("kept", "合計 reconciles along the row")
+    if single:
+        return table_text, (f"{SINGLE_LINE_KEPT} ({table.rows} x {table.cols}); a single line of cells "
+                            "does not show which way it lies, so no question was asked")
+    name, votes = reading_order_turn(table, witness, ("kept", "rotated") if physical else tuple(TABLE_TURNS))
+    if name is not None:
+        return turned(name, votes)
+    if print_direction == "horizontal":
+        return turned("kept", f"horizontal print keeps its rows and columns ({votes})")
+    if not render_bytes or client is None:
+        return undecided(("no source image" if not render_bytes else "no visual reviewer") + f"; {votes}")
     axis = totals_axis(table_text)
     hint = f"數目核對線索：現有格仔 {axis} 軸加總吻合；呢個唔證明紀錄方向。" if axis else ""
     verdict, _ = client.ask_answering(
@@ -5230,26 +5980,205 @@ def ask_first_record(table_text: str, render_bytes: bytes | None, client: "Clien
 
 def turn_records(table_text: str, witness: str | None,
                  ask: Callable[[str], tuple[str | None, str]] | None = None) -> tuple[str, str]:
-    """Exchange already-verified axes using a visually established record order.
+    """A table whose records are its columns, turned so that each record is a
+    row, in reading order; and how it was turned.
 
-    An OCR witness may suggest where to inspect but cannot authorize a
-    transpose/rotation.  Missing or conflicting visual order preserves the
-    original grid.  A single column needs no left/right choice: transposition
-    and rotation have identical order in that case.
-    """
+    Two turns make records of columns: a transpose (the first column becomes
+    the first row) and a counter-clockwise rotation (the last column becomes
+    the first row).  A table the formatter or the rebuild wrote does not say
+    which way its columns run (measured on three rebuilds of one vertical
+    textbook table: two listed the page's columns in reading order, one in
+    page order).  Engine B's reading of the page is in reading order - the
+    order the benchmark's table is read in - so it decides first: each cell
+    found there places its column (a cell of WITNESS_ANCHOR characters or
+    more by its first piece engine B read once, a shorter one of two or more
+    when engine B read it whole, once, variants folded), and every pair of
+    such cells in different columns votes for the column order it shows.
+    With no vote, or a tie, the page is asked (ASK, ask_first_record: is the
+    first record the grid's leftmost column or its rightmost).  With no answer
+    the grid is kept and the decision left undecided: no default turn.  A
+    single column needs no left/right choice."""
     table = first_table(table_text)
     if table is None:
         return table_text, "kept, UNDECIDED — unparsed table"
     if table.cols == 1:
         return _tables.render(_tables.transpose(table)), "transposed (one column; no record-order ambiguity)"
-    if ask is None:
-        return table_text, "kept, UNDECIDED — no visual record-order decision"
-    first, said = ask(table_text)
+    reading = variant_fold(CJK(witness or "")) if "<table" not in (witness or "").lower() else ""
+    matcher = difflib.SequenceMatcher(None, "", reading, autojunk=False)
+    placed: list[tuple[int, int, int]] = []
+    for cell in table.cells:
+        text = variant_fold(CJK(cell.text))
+        if len(text) >= WITNESS_ANCHOR:
+            anchors = witness_anchors(text, reading, matcher)
+            if anchors:
+                placed.append((cell.col, cell.col + cell.colspan - 1, anchors[0][1] - anchors[0][0]))
+        elif len(text) >= 2 and reading.count(text) == 1:
+            placed.append((cell.col, cell.col + cell.colspan - 1, reading.index(text)))
+    forward = backward = 0
+    for (lo1, hi1, at1), (lo2, hi2, at2) in itertools.combinations(placed, 2):
+        if hi1 < lo2 or hi2 < lo1:
+            left_first = (at1 < at2) == (hi1 < lo2)
+            forward, backward = forward + left_first, backward + (not left_first)
+    votes = f"engine B's reading order: {forward} pair(s) left to right, {backward} right to left"
+    first = "left" if forward > backward else "right" if backward > forward else None
+    if first is None and ask is not None:
+        first, said = ask(table_text)
+        votes += f"; asked, the first record is the {first or 'unread'} column - {said}"
     if first == "left":
-        return _tables.render(_tables.transpose(table)), f"transposed (visual first=left; {said})"
+        return _tables.render(_tables.transpose(table)), f"transposed ({votes})"
     if first == "right":
-        return rotate_table(table_text), f"rotated (visual first=right; {said})"
-    return table_text, f"kept, UNDECIDED — visual record order unknown; {said}"
+        return rotate_table(table_text), f"rotated ({votes})"
+    return table_text, f"kept, UNDECIDED — record order unknown ({votes})"
+
+
+def witness_line_axis(table: "_tables.Table", witness: str | None) -> tuple[str | None, str]:
+    """Which axis of TABLE holds the cells engine B read on one line of its
+    reading: "row", "column", or None; and what the pairs were.
+
+    Engine B writes a page one printed line at a time - on a vertical page a
+    printed column to a line - and the benchmark makes each printed line of
+    a table one row.  So two cells engine B read on one line belong in one
+    row: where they share a row of TABLE its rows are the printed lines, and
+    where they share a column its columns are.  A cell is placed as in
+    reading_order_votes (its first piece of WITNESS_ANCHOR characters engine
+    B read once, or a shorter one of two or more read whole once), on the
+    line that piece starts on.  An axis settles with at least
+    READING_ORDER_PAIRS pairs and READING_ORDER_SHARE of every pair that
+    shares a line (one sharing neither a row nor a column counts against
+    both).  A reading that gives each cell a line of its own - a ruled table
+    read band by band, one cell to a line - says nothing here, though its
+    order runs field by field (measured on the benchmark: on such a page
+    engine B's order put 102 of 105 pairs of the old skill's structure
+    answer's table, written in the reading order, in order transposed, and
+    no line held two of its cells).  Engine B's own <table> is a grid, not
+    a reading."""
+    if not witness or "<table" in witness.lower():
+        return None, "engine B's lines: no reading"
+    line_of: list[int] = []
+    for number, line in enumerate(witness.split("\n")):
+        line_of += [number] * len(CJK(line))
+    reading = variant_fold(CJK(witness))
+    if len(line_of) != len(reading):
+        return None, "engine B's lines: not aligned"
+    matcher = difflib.SequenceMatcher(None, "", reading, autojunk=False)
+    placed: list[tuple["_tables.Cell", int]] = []
+    for cell in table.cells:
+        text = variant_fold(CJK(cell.text))
+        at = None
+        if len(text) >= WITNESS_ANCHOR:
+            anchors = witness_anchors(text, reading, matcher)
+            if anchors:
+                at = anchors[0][1]
+        elif len(text) >= 2 and reading.count(text) == 1:
+            at = reading.index(text)
+        if at is not None:
+            placed.append((cell, line_of[at]))
+    rows = columns = neither = 0
+    for (one, line1), (two, line2) in itertools.combinations(placed, 2):
+        if line1 != line2:
+            continue
+        row = one.row < two.row + two.rowspan and two.row < one.row + one.rowspan
+        column = one.col < two.col + two.colspan and two.col < one.col + one.colspan
+        rows += row and not column
+        columns += column and not row
+        neither += row == column
+    shown = f"engine B's lines: {rows} pair(s) of cells on one line share a row, {columns} a column, {neither} neither"
+    for axis, count in (("row", rows), ("column", columns)):
+        if count >= READING_ORDER_PAIRS and count >= READING_ORDER_SHARE * (rows + columns + neither):
+            return axis, shown
+    return None, shown
+
+
+# The axis of the stored grid that holds a printed line, for each turn
+# (TABLE_TURNS, WRITTEN_TABLE_TURNS): what witness_line_axis must find for
+# that turn to be taken.
+TURN_AXIS = {"kept": "row", "flipped": "row", "transposed": "column", "rotated": "column"}
+# What orient_written_tables says of every turn it takes: nothing but engine
+# B's one reading settled it.
+WRITTEN_TURN_UNCHECKED = "turned on engine B's reading alone"
+
+
+def orient_written_tables(text: str, recovered: Sequence[str], witness: str | None,
+                          print_direction: str | None, policy: str = "auto"
+                          ) -> tuple[str, list[tuple[str, str, str]]]:
+    """TEXT, an accepted structure answer, with each table it wrote itself
+    turned the benchmark's way where engine B's reading settles how it lies;
+    and, for each table looked at, (as written, as it now stands, how).
+
+    The structure pass builds a table from the page where no engine grid or
+    rebuild stands for it (a grid refused, or none).  Its prompt asks for the
+    reading order, but nothing held the answer to it, and orient_table, which
+    turns the engine grids and the rebuilds, never saw it: a model may write
+    a vertical table as printed - each printed line across the page a row,
+    the printed columns its columns, right to left or left to right - and it
+    was delivered so (measured on the benchmark: a vertical textbook table,
+    each field written as a row and each item as a column, its whole text
+    stream out of order; WRITTEN_TABLE_TURNS).  The rule is orient_table's:
+    the table read row by row is the page's reading order, which is engine
+    B's.  So each table of TEXT that is none of RECOVERED (those were turned
+    before the pass, and the pass's copies of them are put back) and holds
+    more than one line of cells is turned the way engine B's reading settles
+    on two counts that must agree: its order (reading_order_turn over
+    WRITTEN_TABLE_TURNS) names the turn, and its lines (witness_line_axis)
+    the axis that turn takes a printed line from (TURN_AXIS) - the order
+    alone is the bands' on a ruled table engine B read band by band, and
+    would turn a table written right.  Merged cells turn with the grid.
+    When the two do not settle one turn the answer's table stands,
+    undecided, and no question is asked: the pass was told the rule, and
+    nothing else on the page says how its table lies.  A page printed
+    horizontally keeps its rows and columns (orient_table's rule, the one
+    the pass was given), and the as-printed policy keeps the grid the pass
+    was asked for there, so neither is looked at.  A single line of cells
+    is not either: its order says nothing of its shape.
+
+    Both counts are one reading's, engine B's, and they can agree on a wrong
+    turn: engine B may read a vertical table one printed band across the
+    page to a line, several cells a line, and that reading of a table
+    written right has the order and the lines of one printed column a line
+    of the same table written as printed - the axes swapped (made-up page:
+    a 4 x 3 table written each item a row, read band by band, came out
+    transposed; on the benchmark a correctly written vertical textbook
+    table's order already says transposed, 124 of 135 pairs, with one pair
+    of its cells on one of engine B's lines).  Nothing on the page checks a
+    turn deterministically.  A 合計 says which axis a table's records lie
+    on, not which axis was printed as a line: a total printed at the foot
+    of each printed column and a total printed as a column of its own
+    reconcile along different axes of the same table, so a 合計 check
+    would refuse a right turn on one table and vouch for a wrong one on
+    the other, and the benchmark's rule is mechanical (the printed columns,
+    right to left, become the rows), not read from the content.  Engine
+    A's grid of the block is no check either: it lies three ways on
+    vertical pages (TABLE_TURNS, measured: the physical grid, the
+    reading-order grid, the columns read from the left), so its rows are
+    printed lines on some pages and bands on others - the same two
+    readings engine B's lines have.  So every turn is taken on engine B's
+    reading alone (WRITTEN_TURN_UNCHECKED), says so, and the page raises a
+    doubt for it (table-orientation-turned) for a person to check against
+    the image."""
+    if policy == "as-printed" or print_direction == "horizontal":
+        return text, []
+    recovered_at = {(start, end) for start, end, _, _ in recovered_runs(text, recovered)} if recovered else set()
+    notes: list[tuple[str, str, str]] = []
+    for start, end in reversed(table_spans(text)):
+        if (start, end) in recovered_at:
+            continue
+        written = text[start:end]
+        table = first_table(written)
+        if table is None or table.problems or table.rows < 2 or table.cols < 2:
+            continue
+        name, votes = reading_order_turn(table, witness, tuple(WRITTEN_TABLE_TURNS))
+        axis, lines = witness_line_axis(table, witness)
+        if name is None or axis != TURN_AXIS[name]:
+            notes.append((written, written, f"kept, UNDECIDED — the structure pass's table stands; {votes}; {lines}"))
+            continue
+        if name == "kept":
+            notes.append((written, written, f"{name} — {votes}; {lines}"))
+            continue
+        turned = _tables.render(WRITTEN_TABLE_TURNS[name](table))
+        text = text[:start] + turned + text[end:]
+        notes.append((written, turned, f"{name} — {votes}; {lines}; {WRITTEN_TURN_UNCHECKED}"))
+    notes.reverse()
+    return text, notes
 
 
 TABLE_BRACKET_REACH = 4   # characters of engine A's reading either side that place a bracket in a cell
@@ -5326,8 +6255,98 @@ def table_brackets(table_text: str, sources: Sequence[str]) -> tuple[str, dict[s
 
 
 # A note marker as an engine writes it inside a table cell: a LaTeX or HTML
-# superscript, or a run of circled figures (recover_tables).
-CELL_NOTE_MARKER = re.compile(r"\$\s*\^\{[^$]{1,12}\}\s*\$|<sup>[^<]{1,8}</sup>|[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf\u24ea-\u24ff]+")
+# superscript, a LaTeX \textcircled, or a run of circled figures
+# (recover_tables).
+CELL_NOTE_MARKER = re.compile(r"\$\s*\^\{[^$]{1,12}\}\s*\$|\$\s*\\textcircled\s*\{\s*[0-9]{1,2}\s*\}\s*\$"
+                              r"|<sup>[^<]{1,8}</sup>|[\u2460-\u2473\u3251-\u325f\u32b1-\u32bf\u24ea-\u24ff]+")
+# An engine's LaTeX in a cell, and the \textcircled command inside one.
+CELL_LATEX = re.compile(r"\$[^$\n]{1,60}\$")
+TEXTCIRCLED = re.compile(r"\\textcircled\s*\{\s*([0-9]{1,2})\s*\}")
+# A note number's glyphs: figures, circled figures, superscript figures.
+NOTE_FIGURES = re.compile(f"[0-9\uff10-\uff19{_note_markers.NOTE_CIRCLED}{_note_markers.SUPERSCRIPTS}]+")
+SUPERSCRIPT_FIGURES = str.maketrans("0123456789\uff10\uff11\uff12\uff13\uff14\uff15\uff16\uff17\uff18\uff19", "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079" * 2)
+
+
+def circled_figure(number: int) -> str | None:
+    """The circled glyph of NUMBER (0 to 50), as \\textcircled{NUMBER} prints."""
+    if number == 0:
+        return "\u24ea"
+    if 1 <= number <= 20:
+        return chr(0x2460 + number - 1)
+    if 21 <= number <= 35:
+        return chr(0x3251 + number - 21)
+    if 36 <= number <= 50:
+        return chr(0x32B1 + number - 36)
+    return None
+
+
+def bare_note_call(cell: str, start: int, end: int) -> str | None:
+    """The note call the LaTeX wrapper CELL[START:END] holds, written bare, or
+    None when it is no note call.
+
+    A note call: a superscript or \\textcircled wrapper around a note number
+    alone (_note_markers.marker_key: figures, circled or superscript figures,
+    balanced braces), not beside a formula's base or operator
+    (_note_markers.math_context).  Circled figures are never an exponent, so
+    a figure before them is no base (a year with its call, 1990①); an Arabic
+    figure after a figure, a Latin letter or a bracket may be one (10$^{6}$,
+    m$^{2}$) and stays.  Written bare: the circled glyphs as the engine read
+    them, Arabic figures as superscript figures - the plain-text form of a
+    printed superscript call, which stays the same note number to the footnote
+    step and the repair (_note_markers reads bare superscript figures as one).
+    Bare Arabic figures would join the figure or word before them (二〇〇〇兩203)
+    and be no note number to either: replayed on the table measured below, the
+    repair then doubted three calls as note numbers the engines read and the
+    page lacks.
+    """
+    raw = cell[start:end]
+    if not _note_markers.marker_key(raw):
+        return None
+    inner = TEXTCIRCLED.sub(lambda m: circled_figure(int(m.group(1))) or m.group(), raw[1:-1])
+    glyphs = re.sub(r"[\s^{}]", "", inner)
+    if not NOTE_FIGURES.fullmatch(glyphs):
+        return None
+    circled = all(NOTE_MARK.fullmatch(c) for c in glyphs)
+    if _note_markers.math_context(cell, start, end, figure_base=not circled):
+        return None
+    return glyphs if circled else glyphs.translate(SUPERSCRIPT_FIGURES)
+
+
+def bare_cell_note_calls(table_text: str) -> tuple[str, list[tuple[str, str]]]:
+    """TABLE_TEXT with each note call an engine wrapped in LaTeX inside a cell
+    written bare (bare_note_call), and each one so written as (wrapper, bare).
+    A table with none comes back unchanged, byte for byte.
+
+    The engines write a superscript note call as LaTeX: engine A `$ ^{⑲} $`,
+    `$ ^{{①⑨}} $` or `$ ^{203} $` in a modern book's table cells, engine B
+    `$ ^{19} $` in its running text.  In running text the merge keeps the
+    characters alone and the run stage writes a call as its glyphs, but a
+    recovered table's cells are engine A's as read (restate_table), so the
+    wrapper reached the delivered book as text no page prints: measured on a
+    four-page table of that book: with the eight calls in its figures' cells
+    written bare, the benchmark's CER on those pages fell from 115 errors to 85.
+    The footnote step pairs a bare call as it paired the wrapper: the same
+    note number (_note_markers.marker_key).
+    """
+    table = first_table(table_text)
+    if table is None or "$" not in table_text:
+        return table_text, []
+    written: list[tuple[str, str]] = []
+    texts: list[str] = []
+    for cell in table.cells:
+        out, at = [], 0
+        for m in CELL_LATEX.finditer(cell.text):
+            bare = bare_note_call(cell.text, m.start(), m.end())
+            if bare is None:
+                continue
+            out += [cell.text[at:m.start()], bare]
+            at = m.end()
+            written.append((m.group(), bare))
+        texts.append("".join(out) + cell.text[at:] if out else cell.text)
+    if not written:
+        return table_text, []
+    fixed = _tables.with_texts(table, texts)
+    return (_tables.render_html(fixed) if table.kind == "html" else _tables.render_markdown(fixed)), written
 
 
 def recover_tables(
@@ -5380,6 +6399,7 @@ def recover_tables(
                               "tableOrientationEvidence": [], "edges": {}}
     span_at = (list(itertools.accumulate((len(CJK(text)) for text in spans), initial=0))
                if spans is not None else None)
+    direction = page_print_direction(blocks, image_size(render_bytes))
     for index, block in enumerate(blocks):
         if block.get("label") != "table":
             continue
@@ -5411,22 +6431,25 @@ def recover_tables(
                              "reason": "table text not found in the merged text"})
             continue
         markers = CELL_NOTE_MARKER.findall(restated)
+        note_doubt: dict[str, Any] | None = None
         if markers:
             # A note marker in a cell is engine A's reading and nothing checks
             # it: the modern book prints circled three-figure note numbers
             # (199, 200) that engine A wrote as ①⑨ and ②⑩ and engine B as ⑲
             # and ⑳ (checked against the page images, 2 of 8 vouched rows).
-            sealed["doubts"].append({"kind": "table-note-marker-unverified", "detail": (
+            note_doubt = {"kind": "table-note-marker-unverified", "detail": (
                 f"TABLE NOTE MARKERS UNVERIFIED: block {layout}: {len(markers)} note marker(s) in its cells as "
                 f"engine A read them ({'、'.join(m.strip() for m in markers[:6])}{'…' if len(markers) > 6 else ''}); "
-                "a circled number above 20 is often misread")})
+                "a circled number above 20 is often misread")}
+            sealed["doubts"].append(note_doubt)
         before_orientation = restated
         context = (f"block={layout}; page box (x,y,width,height)={block.get('box')}; "
                    f"source grid before orientation:\n{before_orientation}")
         try:
             restated, how = orient_table(
                 restated, render_bytes, client, max_tokens,
-                table_orientation=table_orientation, context=context)
+                table_orientation=table_orientation, context=context,
+                witness=witness, print_direction=direction)
             orientations.append(f"block {layout}: {how}")
             sealed["tableOrientationEvidence"].append(table_orientation_record(
                 before_orientation, restated, how, render_bytes, table_orientation, block=layout))
@@ -5445,6 +6468,28 @@ def recover_tables(
                     "source image evidence was absent, ambiguous or not agreed")})
         except PacketPending:
             sealed["packetPending"] = True
+        # After the questions above, which are asked on the grid as read: an
+        # engine's LaTeX around a cell's note call is no print of the page.
+        restated, bare = bare_cell_note_calls(restated)
+        records = sealed["tableOrientationEvidence"]
+        if bare and records and records[-1].get("block") == layout:
+            # The orientation record binds the table as it now stands: its
+            # output written bare too, so it still matches the page's table
+            # (status active), and what was written bare.
+            output, written = bare_cell_note_calls(records[-1]["outputText"])
+            records[-1].update(outputText=output, outputSha256=sha256_bytes(output.encode("utf-8")),
+                               noteCallsBare=[[wrapper, call] for wrapper, call in written])
+        if bare and note_doubt is None:
+            # A call no form above matched, written bare all the same: still
+            # engine A's reading, and unchecked.
+            note_doubt = {"kind": "table-note-marker-unverified", "detail": (
+                f"TABLE NOTE MARKERS UNVERIFIED: block {layout}: {len(bare)} note marker(s) in its cells as "
+                f"engine A read them ({'、'.join(w.strip() for w, _ in bare[:6])}{'…' if len(bare) > 6 else ''}); "
+                "a circled number above 20 is often misread")}
+            sealed["doubts"].append(note_doubt)
+        if bare:
+            note_doubt["detail"] += ("; written bare on the page: "
+                                     + "、".join(b for _, b in bare[:6]) + ("…" if len(bare) > 6 else ""))
         recovered.append(restated)
         sources.append(index)
     return recovered, rejected, orientations, sources, sealed
@@ -6372,8 +7417,8 @@ REBUILD_SYSTEM = """你係 jyut-ocr-table-builder。畀你一個版面區域嘅�
 - 如果唔係表格（係一段段嘅文字、一條條直行嘅正文），淨係答：唔係表格
 - 如果係表格，對住裁圖將佢寫出嚟：
   1. 由裁圖重建物理格網：上至下係行、左至右係欄，記清楚邊啲格合併咗。
-     本步唔轉置；下一步會獨立對圖判斷紀錄軸同閱讀方向。
-     唔可以因為直排中文就假定最右先，亦唔可以靠合計方向決定轉置。
+     本步唔轉置、唔倒序：下一步按頁面印刷方向機械轉換（直排表由右至左嘅直欄變成由上至下嘅行）。
+     唔好按內容或者合計方向自行重排。
   2. 冇合併格寫 Markdown 表；有合併格（一格跨幾行或者幾欄）寫 HTML `<table>`，用 rowspan／colspan，
      唔好拆格、補空格或者將同一段字抄入幾格。
   3. **字淨係可以用畀你嗰啲**：每個字最多用佢喺下面出現嘅次數，可以按裁圖重新排次序，
@@ -6872,6 +7917,17 @@ def punctuation_density(text: str) -> float:
         return -1.0
     return 100.0 * sum(text.count(p) for p in SENTENCE_PUNCT) / cjk
 
+# Engine B's draft a page was sealed with (sha256; "" when it had none).
+DRAFT2_KEY = "draft2Sha256"
+
+
+def sealed_inputs(job: PageJob) -> dict[str, str]:
+    """The input hashes a page's seal carries: its render and both engines'
+    drafts."""
+    return {"renderSha256": sha256_file(job.render), "draftSha256": sha256_file(job.draft_text),
+            DRAFT2_KEY: sha256_file(job.draft2_text) if job.draft2_text is not None else ""}
+
+
 def validate_completion(job: PageJob, expect: Mapping[str, str]) -> tuple[bool, str]:
     if not job.out_json.is_file() or not job.out_md.is_file():
         return False, "no existing output"
@@ -6885,10 +7941,34 @@ def validate_completion(job: PageJob, expect: Mapping[str, str]) -> tuple[bool, 
     if raw != canonical_json_bytes(record):
         return False, "not canonical or edited"
     provenance = record.get("provenance") or {}
+    # Rule keys the seal was made before (LEGACY_ABSENT_KEYS): taken as sealed.
+    legacy: list[str] = []
     for key, value in expect.items():
-        # The switches' keys (last in EXPECT) are compared below, both ways.
-        if key not in OPTIONAL_PROVENANCE and provenance.get(key) != value:
+        # The switches' keys (last in EXPECT) are compared below, both ways;
+        # the informational keys not at all; engine B's draft and the
+        # fidelity switch below.
+        if (key in OPTIONAL_PROVENANCE or key in INFORMATIONAL_PROVENANCE
+                or key in (DRAFT2_KEY, CONTENT_FIDELITY_KEY)):
+            continue
+        if key not in provenance and key in LEGACY_ABSENT_KEYS:
+            legacy.append(key)
+            continue
+        if provenance.get(key, PROVENANCE_ABSENT_MEANS.get(key)) != value:
             return False, f"provenance {key} differs"
+    # Engine B's draft: a page sealed with another (or none, where there now
+    # is one) was merged from other readings.  A seal without the key was
+    # made before it was recorded and is taken as it is.
+    if DRAFT2_KEY in provenance and provenance[DRAFT2_KEY] != expect.get(DRAFT2_KEY, ""):
+        return False, ("engine B's draft differs from the one the page was sealed with"
+                       if provenance[DRAFT2_KEY] else "engine B's draft was added after the page was sealed")
+    # A run with --content-fidelity on asks for its evidence, not for the
+    # key: a page sealed by a skill that always ran the v2 questions carries
+    # the current contract with no switch key, and validate_completed_record
+    # below decides whether that evidence holds.
+    if (expect.get(CONTENT_FIDELITY_KEY) and provenance.get(CONTENT_FIDELITY_KEY) != expect[CONTENT_FIDELITY_KEY]
+            and record.get("contentFidelityContract") != _content_fidelity.CONTRACT_VERSION):
+        return False, (f"provenance {CONTENT_FIDELITY_KEY} differs: sealed without --content-fidelity on, "
+                       "which this run asks for")
     for key in OPTIONAL_PROVENANCE:
         # Absent means off: a page sealed with the switch on is not current
         # for a run with it off.
@@ -6920,6 +8000,16 @@ def validate_completion(job: PageJob, expect: Mapping[str, str]) -> tuple[bool, 
     del unsealed["provenance"]["jsonPayloadSha256"]
     if sha256_bytes(canonical_json_bytes(unsealed)) != sealed:
         return False, "payload seal does not match"
+    # Content-fidelity evidence is checked wherever a page carries it (it
+    # must still be bound to this render and text); a page with none - the
+    # switch off, or sealed before it existed - needs none.
+    if _content_fidelity.carries_record(record) or expect.get(CONTENT_FIDELITY_KEY):
+        try:
+            _content_fidelity.validate_completed_record(record, body.decode("utf-8"), provenance["renderSha256"])
+        except (ValueError, KeyError, TypeError) as error:
+            return False, f"content fidelity: {error}"
+    if legacy:
+        return True, LEGACY_REASON + ", ".join(legacy)
     return True, "current"
 
 
@@ -7032,7 +8122,7 @@ FORMAT_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一串**已經定咗�
    表格：冇合併格就寫 Markdown 表；有合併格（一格跨幾行或者幾欄，例如一格附註管住幾行、
    一個標題蓋住幾欄）就寫 HTML `<table>`，合併格用 rowspan／colspan 表示。
    Markdown 表表達唔到合併格，唔好為咗塞入 Markdown 而拆格、補空格，或者將同一段字抄入幾格。
-3. 來源覆核已經移除確認嘅家具；保留收到嘅全部文字、數字、外文同算式。
+3. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。
 
 **絕對唔准改字，亦唔准加任何漢字。** 唔准正規化異體字，唔准「修正」你覺得怪嘅字。
 
@@ -7041,8 +8131,8 @@ FORMAT_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一串**已經定咗�
 要做 list 就用 Markdown 嘅 `-`，唔好自己補漢字數字。
 但係如果頁上嘅編號係括住嘅（例如「（一）」「（二）」），括號要加返——括號係標點，唔係字；
 括號入面嘅數字就照字串，唔准改。
-本階段只做格式；如懷疑來源讀法有問題，留待隨後整頁圖像覆核裁定。兩引擎一致唔係正確保證。
-本階段唔准刪字；家具判斷只由整頁圖像覆核處理。
+畀你嘅字係由兩個獨立 OCR 引擎核對過嘅，比你單獨睇圖準。你改咗就係倒退。
+唯一準你刪嘅係頁面家具；正文一個字（包括外文同數字）都唔准動。
 
 輸出：淨係輸出加咗標點同結構嘅 Markdown 正文。唔好解釋，唔好 code fence。"""
 
@@ -7091,7 +8181,7 @@ STRUCTURE_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一頁**字同標�
 
 你**唯一**嘅工作係加版面結構：
 1. heading、段落、list、原書編號——先由頁圖判斷版式（直排／橫排、欄數、閱讀方向），唔好假設。
-2. 來源覆核已經移除確認嘅家具；唔准再刪收到嘅文字、數字、外文同算式。
+2. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。
 3. 表格：文本入面自己一行嘅表格記號（例如 ⟦T1⟧）代表一個已經定咗嘅表——嗰行原封不動照抄、擺喺原位，
    唔好自己寫嗰個表，亦唔好刪走或者重複個記號。
    頁上明明係表格、但文本入面冇記號嘅，按頁圖重建：冇合併格寫 Markdown 表；有合併格（一格跨幾行
@@ -7103,9 +8193,38 @@ STRUCTURE_SYSTEM = """你係 jyut-ocr-formatter。下面畀你一頁**字同標�
 括號係結構，唔係字；括號入面嘅數字照文本，唔准改。
 舊書凡例好多時每條都用同一個「一」做項目符號，唔係一二三四五；你**唔准**幫佢重新編號，
 要做 list 就用 Markdown 嘅 `-`。
-本階段唔准刪字或符號；家具判斷只由整頁圖像覆核處理。
+唯一準你刪嘅係頁面家具；正文一個字（包括外文同數字）、一個符號都唔准動。
 
 輸出：淨係輸出加咗結構嘅 Markdown 正文。唔好解釋，唔好 code fence。"""
+
+def _reviewed_prompt(prompt: str, passages: Sequence[tuple[str, str]]) -> str:
+    """PROMPT with each (passage, replacement) of PASSAGES replaced; a passage
+    it lacks is a programming error."""
+    for passage, replacement in passages:
+        if passage not in prompt:
+            raise AssertionError(f"prompt passage not found: {passage[:30]}")
+        prompt = prompt.replace(passage, replacement)
+    return prompt
+
+
+# Switch --content-fidelity: once a content-recovery review has looked at the
+# page image, it has removed the furniture it confirmed, so the formatter
+# keeps every glyph it is given (verify_characters' strict rule).  Without
+# that review nothing else removes running heads and folios: the formatter
+# is told to, as the old skill did, and may delete them alone.
+FORMAT_SYSTEM_REVIEWED = _reviewed_prompt(FORMAT_SYSTEM, [
+    ("3. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。\n",
+     "3. 來源覆核已經移除確認嘅家具；保留收到嘅全部文字、數字、外文同算式。\n"),
+    ("畀你嘅字係由兩個獨立 OCR 引擎核對過嘅，比你單獨睇圖準。你改咗就係倒退。\n"
+     "唯一準你刪嘅係頁面家具；正文一個字（包括外文同數字）都唔准動。\n",
+     "本階段只做格式；如懷疑來源讀法有問題，留待隨後整頁圖像覆核裁定。兩引擎一致唔係正確保證。\n"
+     "本階段唔准刪字；家具判斷只由整頁圖像覆核處理。\n")])
+STRUCTURE_SYSTEM_REVIEWED = _reviewed_prompt(STRUCTURE_SYSTEM, [
+    ("2. 刪走欄外書眉、頁碼等頁面家具（OCR 底稿會將佢哋混入正文）。\n",
+     "2. 來源覆核已經移除確認嘅家具；唔准再刪收到嘅文字、數字、外文同算式。\n"),
+    ("唯一準你刪嘅係頁面家具；正文一個字（包括外文同數字）、一個符號都唔准動。\n",
+     "本階段唔准刪字或符號；家具判斷只由整頁圖像覆核處理。\n")])
+
 
 SENTENCE_MARKS = "。，、；：？！（）「」『』《》〈〉"
 # Printed item bullets, kept as printed (decision D5), and the dots of a leader
@@ -7511,6 +8630,61 @@ def punctuation_kept(before: str, after: str) -> bool:
     return not lost and set(gained) <= {"（", "）"}
 
 
+def table_block_marks(spans: Sequence[str], indices: Iterable[int], given: Sequence[str],
+                      readings: Sequence[tuple[list[str], list[str]] | None]) -> Counter:
+    """The marks both engines read in the table blocks INDICES that the text
+    the structure pass is given there (GIVEN, by block) lacks.
+
+    A table block gets no punctuation pass (FURNITURE_LABELS): where its grid
+    is recovered, the table stands in the text with the marks engine A read
+    in its cells, but where the grid is refused (tablesRejected) the block
+    goes to the structure pass as its characters alone, and the pass builds
+    the table from the image.  The pass is told to keep the text as given,
+    so it writes the cells with the marks it sees printed in them (an
+    enumeration's 、, a bracketed formula in a header), and the punctuation
+    lock, counting those against a text that holds none, refused the table:
+    the page was sealed with the table as one paragraph.  READINGS: each
+    engine's marks tied to the merged text (engine_marks_merged,
+    engine_b_marks_merged); at each gap of a block's stretch of the merged
+    text (SPANS, the blocks' stretches in order) a mark counts as often as
+    both engines wrote it there - one engine's reading of a mark is not
+    enough, and none where either reading is None.
+    """
+    found: Counter = Counter()
+    if len(readings) != 2 or any(reading is None for reading in readings):
+        return found
+    starts = list(itertools.accumulate((len(span) for span in spans), initial=0))
+    for index in indices:
+        both: Counter = Counter()
+        for x, y in zip(*(gaps_of(reading, starts[index], len(spans[index])) for reading in readings)):
+            both += punctuation_counts(x) & punctuation_counts(y)
+        found += both - punctuation_counts(given[index])
+    return found
+
+
+def table_marks_lock(given: str, answer: str, allowed: Counter) -> tuple[str, Counter]:
+    """The text the structure pass's punctuation lock holds ANSWER to, and
+    the marks it adds: GIVEN, the text the pass was given with its tables
+    written out, plus each mark of ALLOWED (table_block_marks) that ANSWER
+    writes inside its tables beyond what GIVEN's tables hold.
+
+    Only inside tables: the lock's purpose - the pass may not invent a mark
+    in prose - is kept, and a table built from the image may carry only the
+    marks both engines read in the table blocks, each as often as they read
+    it.  Each mark goes on a line of its own, so a leader counts once."""
+    if not allowed:
+        return given, Counter()
+
+    def in_tables(text: str) -> Counter:
+        counts: Counter = Counter()
+        for start, end in table_spans(text):
+            counts += punctuation_counts(text[start:end])
+        return counts
+
+    extra = (in_tables(answer) - in_tables(given)) & allowed
+    return (given + "\n" + "\n".join(extra.elements()) if extra else given), extra
+
+
 def is_running_head(text: str, heads: Sequence[str], similarity: float = 0.8) -> bool:
     """Whether a block's text is one of the book's measured running heads.
 
@@ -7603,13 +8777,59 @@ SEALED_ON = {
 }
 
 
+# Recorded in every seal but never compared (validate_completion) and kept
+# out of packet request IDs (packet_request_config): which transport, model
+# and endpoint proofread a page, and the bytes of the helper code.  The
+# user's decision of 2026-11-14: editing the scripts, switching between the
+# agent's packets and a local model, or renaming the model or the endpoint
+# does not make a sealed page stale or orphan a stored answer.
+INFORMATIONAL_PROVENANCE = ("proofreadTransport", "proofreadModel", "proofreadEndpoint",
+                            "proofreadScriptSha256", "contentFidelitySha256", "contentNoteMarkersSha256")
+# Keys decision_provenance gained after pages were first sealed without them,
+# with the value their absence stands for: a page sealed before the key
+# existed was decided that way.
+PROVENANCE_ABSENT_MEANS = {"tableOrientation": "auto"}
+# Rule keys the old skill added to its seals as its rules came on: the
+# variant pairs from the lists alone, agreed marks, unread table characters
+# and the rules always on now (SEALED_ON).  A page it sealed before one of
+# them carries no such key and was decided without that rule.  The user's
+# decision of 2026-11-14 accepts the old skill's seals as they are, with no
+# proofreading again, so such a page is current; validate_completion says
+# which keys it lacks (LEGACY_REASON) and the run report marks it legacy.
+# A key that is present is compared as always.
+LEGACY_ABSENT_KEYS = frozenset({"variantPairs", "agreedMarks", "unreadTableCharacters", *SEALED_ON})
+LEGACY_REASON = "legacy seal, accepted as sealed; made before the rules "
+# Switch --content-fidelity on (absent: off).  Compared one way only
+# (validate_completion): a run with it on does not take a page sealed
+# without its evidence (a page with the current v2 contract and no key, as
+# the skill sealed every page before the switch, is judged by its evidence),
+# a run with it off takes either.
+CONTENT_FIDELITY_KEY = "contentFidelity"
+
+
+def content_fidelity_on(arguments: Any) -> bool:
+    """Switch --content-fidelity: the three whole-page image questions
+    (inventory, content recovery, coverage review).  Off unless asked for."""
+    return getattr(arguments, "content_fidelity", "off") == "on"
+
+
+def packet_request_config(arguments: Any) -> dict[str, str]:
+    """The part of decision_provenance a packet request ID is bound to: what
+    decides an answer, not the informational keys nor the fidelity switch
+    (the question asked is the same either way)."""
+    return {key: value for key, value in decision_provenance(arguments).items()
+            if key not in INFORMATIONAL_PROVENANCE and key != CONTENT_FIDELITY_KEY}
+
+
 def decision_provenance(arguments: Any) -> dict[str, str]:
     """What decided a page's characters, sealed so a resume under different
     decisions (another profile, new rulings, a switch set otherwise) is not
-    mixed in."""
+    mixed in.  INFORMATIONAL_PROVENANCE is recorded with them, not compared."""
     return {
         "proofreadTransport": getattr(arguments, "backend", "packet"),
-        "proofreadModel": getattr(arguments, "model", None) or DEFAULT_MODEL,
+        # The packet label, or the HTTP model the client resolved (main).
+        "proofreadModel": getattr(arguments, "model", None)
+                          or (DEFAULT_MODEL if getattr(arguments, "backend", "packet") == "packet" else ""),
         "proofreadEndpoint": (getattr(arguments, "endpoint", None) or "")
                              if getattr(arguments, "backend", "packet") == "http" else "",
         "proofreadScriptSha256": sha256_file(Path(__file__)),
@@ -7660,6 +8880,7 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # book's evidence or another profile's is not current.  Only when on.
         **({"learnedHeads": learned_heads_seal(arguments)} if getattr(arguments, "learned_heads", False) else {}),
         "tableOrientation": getattr(arguments, "table_orientation", "auto") or "auto",
+        **({CONTENT_FIDELITY_KEY: "on"} if content_fidelity_on(arguments) else {}),
     }
 
 
@@ -9236,15 +10457,51 @@ def restore_merged_characters(resolved: str, formatted: str) -> str | None:
     return repaired
 
 
-def verify_characters(resolved: str, formatted: str) -> tuple[bool, str]:
+def non_cjk_glyphs(text: str) -> Counter:
+    """The letters and figures of TEXT that are not CJK, as a multiset:
+    Latin, Greek, kana and the like, and figures folded by NFKC (a full-width,
+    circled or superscript figure counts as its digits, so a formatter that
+    writes ① as 1 loses nothing).  Markup tags, LaTeX command names and the
+    layout markup visible_text drops are not text."""
+    text = re.sub(r"</?[A-Za-z][^<>\n]*>", " ", re.sub(r"\\[A-Za-z]+", " ", text))
+    text = unicodedata.normalize("NFKC", _content_fidelity.visible_text(text))
+    return Counter(c for c in text if unicodedata.category(c)[0] in "LN" and not CJK(c))
+
+
+def verify_characters(resolved: str, formatted: str, removable: str | None = None) -> tuple[bool, str]:
     """Formatting may rearrange text, but cannot invent or delete glyphs.
 
-    Image-confirmed furniture removal happens in content-recovery before this
-    lock.  Include Latin, numerals and formula signs; a CJK-only subsequence
-    check used to accept both a missing digit and a completely empty output.
+    REMOVABLE None (switch --content-fidelity, after a content-recovery
+    review): image-confirmed furniture removal happened in content-recovery
+    before this lock, so nothing may go.  Include Latin, numerals and formula
+    signs; a CJK-only subsequence check used to accept both a missing digit
+    and a completely empty output (no_answer refuses the empty one first).
     Position-sensitive source features are checked separately against their
     image-confirmed anchors and in the final full-page coverage review.
+
+    REMOVABLE a string (no such review): the formatter removes the page's
+    furniture itself, as the old skill's did.  A CJK character it invented is
+    refused, and a CJK one it deleted is left to deleted_runs and
+    furniture_unexplained, which know the furniture (the page checks them
+    after this, so a long run keeps deleted_runs' reason); a letter or figure
+    that is not CJK may go only as far as REMOVABLE holds it (the furniture
+    blocks, the page's known heads, lone folio lines, the figures
+    restore_arabic_figures writes back).  The old
+    rule counted CJK alone, so '見Skinner所著，共1513人。' formatted as
+    '見所著，共人。' passed every check and the name and the number were gone.
     """
+    if removable is not None:
+        invented = Counter(CJK(formatted)) - Counter(CJK(resolved))
+        if invented:
+            detail = "".join(char * count for char, count in invented.items())
+            return False, (f"formatter introduced {sum(invented.values())} character(s) "
+                           f"not in the merged text: {detail[:40]}")
+        lost = non_cjk_glyphs(resolved) - non_cjk_glyphs(formatted) - non_cjk_glyphs(removable)
+        if lost:
+            detail = "".join(char * count for char, count in lost.items())
+            return False, (f"formatter deleted {sum(lost.values())} letter(s) or figure(s) "
+                           f"outside the page's furniture: {detail[:40]}")
+        return True, "characters preserved"
     have, output = (_content_fidelity.character_counts(t) for t in (resolved, formatted))
     invented = output - have
     if invented:
@@ -9256,6 +10513,38 @@ def verify_characters(resolved: str, formatted: str) -> tuple[bool, str]:
         detail = "".join(char * count for char, count in lost.items())
         return False, f"formatter deleted {sum(lost.values())} retained character(s): {detail[:40]}"
     return True, "characters preserved"
+
+
+# The blocks whose own text the formatter may delete on the whole-page path
+# (removable_text): a running head, a folio, a seal.
+WHOLE_PAGE_FURNITURE_LABELS = frozenset({"header", "footer", "number", "seal"})
+
+
+def removable_text(blocks: Sequence[Mapping[str, Any]], punctuated: Sequence[str], format_input: str,
+                   heads: Iterable[str], figures: Iterable[str]) -> str:
+    """What the structure pass may delete of the letters and figures it is
+    given (verify_characters' REMOVABLE): the text of the blocks labelled
+    furniture (FURNITURE_LABELS, a table's excepted, as the fallback leaves
+    them out) and of the blocks in a folio's margin band (margin_blocks), the
+    book's known heads (HEADS), each line of FORMAT_INPUT that is a lone folio
+    (LONE_FOLIO), and FIGURES, which restore_arabic_figures writes back where
+    the pass left them out.  BLOCKS and PUNCTUATED go together (the block
+    path).  On the whole-page path PUNCTUATED is empty and the merged text
+    holds the furniture as the engines read it: the blocks' own text is the
+    evidence there, those labelled WHOLE_PAGE_FURNITURE_LABELS and those in a
+    folio's margin band.  A figure's or an image's text is not removable
+    there, since the whole-page fallback keeps it."""
+    margin = {id(block) for block in margin_blocks(blocks)}
+    if punctuated:
+        parts = [text for block, text in zip(blocks, punctuated)
+                 if (block.get("label") in FURNITURE_LABELS and block.get("label") != "table")
+                 or id(block) in margin]
+    else:
+        parts = [str(block.get("text") or "") for block in blocks
+                 if block.get("label") in WHOLE_PAGE_FURNITURE_LABELS or id(block) in margin]
+    parts += [line for line in format_input.split("\n")
+              if line.strip() and re.fullmatch(LONE_FOLIO % FOLIO_MAX_FIGURES, line.strip(), flags=re.IGNORECASE)]
+    return "\n".join([*parts, *heads, *figures])
 
 
 RULE_COVERAGE = 0.5      # a row/column this inked is a printed rule, not text
@@ -9346,6 +10635,125 @@ def distinct_ngram_ratio(text: str, size: int = 4) -> float:
     return len(set(grams)) / len(grams) if grams else 1.0
 
 
+def engine_b_cut_off(draft_text: Path | None) -> str | None:
+    """Why engine B's draft at DRAFT_TEXT is cut off: its record (the .json
+    beside it, run_hunyuanocr's) marks it truncated - the reply ended for a
+    reason other than "stop" - and this is that finish reason ("truncated"
+    when the record names none).  None for a draft whose reply ended, and for
+    one with no such record (the old skill's drafts, a Paddle draft)."""
+    if draft_text is None:
+        return None
+    try:
+        record = json.loads(draft_text.with_suffix(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("truncated") is not True:
+        return None
+    reason = record.get("finishReason")
+    return reason if isinstance(reason, str) and reason else "truncated"
+
+
+# Engine B's loops (build_draft.py cuts the draft at them; phase 3 cuts engine
+# B's cut-off reading at them before merging it).  Engine B sometimes does not
+# stop: from some point on a page it writes one stretch back to back until its
+# tokens run out.  Measured on engine B's drafts of the calibration corpus
+# (1,279 distinct page files, eight books): 18 pages hold a stretch of
+# LOOP_MIN_COPIES or more copies of a unit of at most LOOP_PERIOD_MAX
+# characters that holds text, LOOP_MIN_CHARS characters or more in all - each
+# 3,958 to 12,517 characters, the unit one character (a page of 口) up to a
+# table row of 150, every one running to the file's end, its last copy cut
+# short - and the longest such repetition under LOOP_MIN_CHARS is 120
+# characters: one table cell printed ten times over, which is text.  A unit of
+# markup alone (empty table cells: 90 characters at most in engine B's drafts)
+# holds no text to lose and may be a table's printed shape: kept.
+LOOP_PERIOD_MAX = 200
+LOOP_MIN_COPIES = 5
+LOOP_MIN_CHARS = 1000
+LOOP_PATTERN = re.compile(r"(.{1,%d}?)\1{%d,}" % (LOOP_PERIOD_MAX, LOOP_MIN_COPIES - 1), re.DOTALL)
+LOOP_MARKUP = re.compile(r"<[^<>]*>")
+
+
+def find_loops(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, unit) of each loop in TEXT: a unit of at most
+    LOOP_PERIOD_MAX characters, holding text outside markup, back to back
+    LOOP_MIN_COPIES times or more and LOOP_MIN_CHARS characters or more in
+    all.  A last copy cut short is part of the loop only where nothing but
+    blank follows it (the engine's tokens ran out in the middle of it); text
+    after it is the page's."""
+    if len(text) < LOOP_MIN_CHARS:
+        return []
+    found = []
+    at = 0
+    while True:
+        match = LOOP_PATTERN.search(text, at)
+        if match is None:
+            return found
+        start, end, unit = match.start(), match.end(), match.group(1)
+        if not loop_holds_text(unit):
+            at = end                  # markup alone: no stretch of it holds text
+            continue
+        if end - start < LOOP_MIN_CHARS:
+            # The shortest unit repeating here may not be the loop's: a loop
+            # can start with a run of one character.  Look again one on.
+            at = start + 1
+            continue
+        tail = 0
+        while tail < len(unit) - 1 and end + tail < len(text) and text[end + tail] == unit[tail]:
+            tail += 1
+        if tail and not text[end + tail:].strip():
+            end += tail
+        found.append((start, end, unit))
+        at = end
+
+
+def loop_unit_from_tag(unit: str) -> str:
+    """A loop's UNIT read from its first < on, where a tag starts.  A unit
+    is any rotation of the stretch that repeats - it starts where the loop
+    does, taking in a tag's closing > of the text before it - and read from
+    a tag's start its tags are whole."""
+    at = unit.find("<")
+    return unit[at:] + unit[:at] if at > 0 else unit
+
+
+def loop_holds_text(unit: str) -> bool:
+    """Whether a loop's UNIT holds anything but markup."""
+    return bool(LOOP_MARKUP.sub("", loop_unit_from_tag(unit)).strip())
+
+
+def cut_engine_b_loops(text: str) -> tuple[str, list[tuple[int, int, str]]]:
+    """Engine B's reading TEXT with each loop (find_loops) cut, and the loops
+    cut, as (start, end, unit) in TEXT.  Cut as the draft cuts it
+    (build_draft.cut_loops): the unit kept once where the loop starts, then
+    the text after the loop, if any, on a line of its own.
+
+    Except inside a table: a loop in a table engine B opened on the loop's
+    own line (it writes a table a line) keeps the rows it closed before the
+    loop, the table closed after them, and nothing of the row the loop is in.
+    That row is the loop's run-up, not a reading: measured on the three
+    cut-off pages of a fiscal table printed over six pages, a second table
+    opened after the page's whole table, its first cell 「十 九」「十 九 年 度
+    十八、八、七、九、二、三…」 or 「九〇〇四九〇〇八七〇〇〇…」 running into the
+    loop; cut at the loop, 「十九〇二〇」 stood after the page's table as text
+    engine B alone read, and the table no longer ended the page, so its stitch
+    to the next page was not tried."""
+    found = find_loops(text)
+    if not found:
+        return text, []
+    pieces, at = [], 0
+    for start, end, unit in found:
+        line = max(at, text.rfind("\n", 0, start) + 1)
+        opened = text.rfind("<table", line, start)
+        if opened >= 0 and text.rfind("</table>", opened, start) < 0:
+            closed = text.rfind("</tr>", opened, start)
+            head = (text[at:closed + len("</tr>")] + "</table>" if closed >= 0 else text[at:opened])
+        else:
+            head = text[at:start + len(unit)]
+        pieces.append(head.rstrip())
+        at = end
+    pieces.append(text[at:].strip())
+    return "\n".join(piece for piece in pieces if piece.strip()), found
+
+
 def unsupported_reading(draft: str, draft2: str | None) -> str:
     """The text one engine returned for a page the other did not see.
 
@@ -9364,6 +10772,41 @@ def unsupported_reading(draft: str, draft2: str | None) -> str:
     if distinct_ngram_ratio(longer) > DEGENERATE_NGRAM_RATIO:
         return ""
     return longer
+
+
+# The layout labels of page furniture (running head, folio, seal): text in such
+# a block of engine A's layout does not make a page hold text.
+PAGE_FURNITURE_LABELS = frozenset({"header", "footer", "number", "seal", "header_image", "footer_image"})
+# A draft that is one folio and nothing else: figures (at most
+# FOLIO_MAX_FIGURES, put in for %d) or a roman numeral, with any dashes or
+# brackets round it.
+LONE_FOLIO = (r"[\W_]*(?:\d{1,%d}|(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})"
+              r"(?:ix|iv|v?i{0,3}))[\W_]*")
+
+
+def non_cjk_text(draft: str, draft2: str | None, blocks: Sequence[Mapping[str, Any]]) -> str:
+    """The text a page's drafts read past its furniture, on a page where
+    neither holds CJK: a title page in Latin letters, a page of figures, a
+    formula.  "" when there is none, and the page is blank.
+
+    Engine A's blocks labelled as furniture are left out (when its layout
+    accounts for its draft), and so is a draft that is one lone folio (up to
+    FOLIO_MAX_FIGURES figures, or a roman numeral, dashes or brackets round
+    it).  Markup tags and engine B's grounding boxes are not text.  What is
+    left is text when it holds a letter or a figure.
+
+    The blank-page rule asked only for CJK, so such a page was sealed empty
+    and clean: every word of it lost, and nothing said so."""
+    if blocks and "\n".join(str(b["text"]) for b in blocks).strip() == draft.strip():
+        draft = "\n".join(str(b["text"]) for b in blocks if b.get("label") not in PAGE_FURNITURE_LABELS)
+    kept = []
+    for text in (draft, draft2 or ""):
+        text = re.sub(r"<[^<>]*>", " ", strip_grounding(text)).strip()
+        if re.fullmatch(LONE_FOLIO % FOLIO_MAX_FIGURES, text, flags=re.IGNORECASE):
+            continue
+        if any(c.isalnum() for c in text):
+            kept.append(text)
+    return "\n".join(kept)
 
 
 def looped_blocks(blocks: Sequence[Mapping[str, Any]], draft: str, draft2: str | None) -> list[int]:
@@ -10113,9 +11556,7 @@ def learn_heads(page_blocks: Mapping[int, Sequence[Mapping[str, Any]]], heads: S
                                 if value is not None)
                 if len(label) >= LEARNED_LABEL_MINIMUM_CHARACTERS:
                     labels.setdefault(label, set()).add(page)
-    min_label_pages = 2 if (len(page_blocks) == 2 and stems) else LEARNED_LABEL_MINIMUM_PAGES
-    min_region_pages = 2 if (len(page_blocks) == 2 and stems) else LEARNED_REGION_MINIMUM_PAGES
-    learned = {label: len(pages) for label, pages in labels.items() if len(pages) >= min_label_pages}
+    learned = {label: len(pages) for label, pages in labels.items() if len(pages) >= LEARNED_LABEL_MINIMUM_PAGES}
     record["labels"] = dict(sorted(learned.items(), key=lambda kv: (-kv[1], kv[0])))
     families: dict[str, set[str]] = {}
     for label in learned:
@@ -10135,7 +11576,7 @@ def learn_heads(page_blocks: Mapping[int, Sequence[Mapping[str, Any]]], heads: S
             clusters[-1].append(item)
         for cluster in clusters:
             pages = {item[3] for item in cluster}
-            if len(pages) >= min_region_pages:
+            if len(pages) >= LEARNED_REGION_MINIMUM_PAGES:
                 record["regions"].append({"parity": "odd" if parity else "even", "axis": axis,
                                           "span": [round(min(i[1] for i in cluster), 4),
                                                    round(max(i[2] for i in cluster), 4)],
@@ -10629,6 +12070,108 @@ def deleted_runs(resolved: str, formatted: str,
             continue
         runs.append(run)
     return runs
+
+
+def furniture_unexplained(given: str, formatted: str, removable: str,
+                          furniture: frozenset[str] | set[str] = frozenset(),
+                          heads: Sequence[str] = ()) -> str:
+    """The CJK characters of GIVEN, the text the structure pass was given,
+    that FORMATTED lacks and the page's furniture does not explain, in GIVEN's
+    order: "" when what it deleted, if anything, is furniture.
+
+    Without a content review the formatter deletes the page's furniture
+    itself (verify_characters' REMOVABLE).  deleted_runs reports a deletion
+    only from DELETED_RUN_LIMIT characters on, so body text in shorter runs
+    went with no refusal and no doubt: two clauses of 7 and 9 characters, or
+    the repeated 一 of a 凡例 renumbered 1. 2. 3.  Here every character the
+    output lacks (a multiset: text moved is not lost) must be furniture by
+    evidence: REMOVABLE's (removable_text: the blocks labelled furniture and
+    those in a folio's margin band, the book's known heads; on the whole-page
+    path the page's margin blocks, margin_furniture), or a deleted stretch the
+    book's recurring n-grams (FURNITURE, furniture_grams) and its running
+    heads (HEADS) explain - furniture_leftover at most INSERTION_LIMIT, one
+    character at least explained, or a run deleted_runs takes for furniture
+    (_is_furniture)."""
+    src, out = CJK(given), CJK(formatted)
+    lacking = Counter(src) - Counter(out) - Counter(CJK(removable))
+    if not lacking:
+        return ""
+
+    def explained(i1: int, i2: int) -> bool:
+        if not (furniture or heads):
+            return False
+        left = furniture_leftover(src, furniture, heads, (i1, i2))
+        at_edge = i1 <= FURNITURE_EDGE or i2 >= len(src) - FURNITURE_EDGE
+        return (left <= INSERTION_LIMIT and left < i2 - i1) or bool(
+            furniture and _is_furniture(src[i1:i2], furniture, DELETED_RUN_LIMIT, at_edge))
+
+    # The stretches the output lacks, with those INSERTION_LIMIT characters
+    # apart or less as one: the diff cuts a deleted head in two where a
+    # character of it matches one the output holds elsewhere (a head, its
+    # volume and its folio, 某書第五集六九, with the 五 matched), and each
+    # piece alone is too short for its n-grams.
+    groups: list[list[tuple[int, int]]] = []
+    for tag, i1, i2, _, _ in difflib.SequenceMatcher(None, src, out, autojunk=False).get_opcodes():
+        if tag in ("delete", "replace"):
+            if groups and i1 - groups[-1][-1][1] <= INSERTION_LIMIT:
+                groups[-1].append((i1, i2))
+            else:
+                groups.append([(i1, i2)])
+    lost: list[int] = []
+    for group in groups:
+        whole = len(group) > 1 and explained(group[0][0], group[-1][1])
+        for i1, i2 in group:
+            if whole or explained(i1, i2):
+                lacking -= Counter(src[i1:i2])
+            else:
+                lost.extend(range(i1, i2))
+    named = []
+    for at in lost:
+        if lacking[src[at]] > 0:
+            lacking[src[at]] -= 1
+            named.append(src[at])
+    return "".join(named)
+
+
+def split_table_losses(lost: str, given: str, formatted: str, tables: str) -> tuple[str, str]:
+    """LOST, characters of GIVEN (the text the structure pass was given) that
+    FORMATTED (its answer) lacks, split into the prose's and the tables':
+    (prose, tables), each in LOST's order.  TABLES is the text of GIVEN's
+    table blocks - a recovered or rebuilt table written out, or the text of a
+    table block whose grid was refused.
+
+    furniture_unexplained is a guard on body text, whose short runs
+    deleted_runs does not see; deleted_runs leaves the table blocks out, and
+    so does this.  A table's text is rebuilt by the structure pass, and what
+    a table lacks is table_characters_lost's to report, a doubt: refused
+    instead, the table was lost as well (measured on the benchmark: a page's
+    table whose retry left out one 兩 of a merged cell was sealed as a
+    paragraph, every count gone, #4 0 against 100; another's first answer,
+    four characters short, was refused and its retry split the table's rows,
+    #4 73 against 100).  A character is counted where it went: the tables'
+    share is what GIVEN's tables hold that the answer's tables
+    (table_spans) lack and its prose does not hold beyond GIVEN's prose;
+    the rest is the prose's.  So prose moved into a table (a lead-in, a
+    header line turned into a header row) lacks nothing, and a table cell
+    written as prose lacks nothing; a character both lost, the tables' share
+    first."""
+    if not lost or not tables:
+        return lost, ""
+    in_tables = Counter(CJK(tables))
+    in_prose = Counter(CJK(given)) - in_tables
+    out_tables: Counter = Counter()
+    for start, end in table_spans(formatted):
+        out_tables.update(CJK(formatted[start:end]))
+    out_prose = Counter(CJK(formatted)) - out_tables
+    table_share = in_tables - out_tables - (out_prose - in_prose)
+    prose, table = [], []
+    for char in lost:
+        if table_share[char] > 0:
+            table_share[char] -= 1
+            table.append(char)
+        else:
+            prose.append(char)
+    return "".join(prose), "".join(table)
 
 
 def punctuation_doubts(passes: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
@@ -11207,16 +12750,16 @@ def _proofread_page_inner(
     _LOOP_CUTS.set(loop_cuts)
     render_bytes = job.render.read_bytes()
     draft = job.draft_text.read_text(encoding="utf-8").strip()
-    metrics = {"prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0}
+    metrics = aggregate_usage([])
+    metric_calls: list[Mapping[str, Any]] = []
     page_concurrency = max(1, getattr(arguments, "page_concurrency", DEFAULT_PAGE_CONCURRENCY) or 1)
     table_orientation_mode = getattr(arguments, "table_orientation", "auto") or "auto"
     recovery_packet_pending = False
     rebuild_packet_pending = False
 
     def add(m: Mapping[str, Any]) -> None:
-        # Token counts only: a call's metrics also carry finish_reason and effort.
-        for k in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
-            metrics[k] += m.get(k, 0) or 0
+        metric_calls.append(m)
+        metrics.update(aggregate_usage(metric_calls))
 
     draft2 = (strip_grounding(job.draft2_text.read_text(encoding="utf-8")).strip()
               if job.draft2_text is not None and job.draft2_text.is_file() else None)
@@ -11232,6 +12775,8 @@ def _proofread_page_inner(
     learned_dropped: set[int] = set()
     variant_unruled: list[str] = []
     rejected_output: str | None = None
+    # The text the structure pass was given (structure_input_record).
+    structure_input: dict[str, Any] | None = None
     # Why the formatter's first answer was refused, when it was (a retry followed).
     format_retry_reason: str | None = None
     # Why the retry was refused too, and what it wrote: before, only the first
@@ -11242,6 +12787,53 @@ def _proofread_page_inner(
     # Every reason the page is not clean, {kind, detail}: auditorClean is "no
     # doubts" and auditorReport their details, so a run report can count kinds.
     doubts: list[dict[str, Any]] = []
+    if job.missing_engine:
+        doubts.append(missing_engine_doubt(job))
+    if job.missing_engine == "A":
+        # Engine B's text in engine A's place: without its grounding markup.
+        draft = strip_grounding(draft).strip()
+    # Engine B's reply for this page did not end (its runner keeps such a reply
+    # as the draft and marks it truncated): its reading stops short of the
+    # page, in a loop more often than not (find_loops).  What it read before
+    # the loop is a reading of the page like any other: it is cut at the loop
+    # (cut_engine_b_loops, as the draft cuts it) and merged as the second
+    # reading, the text past the cut read by engine A alone, and a doubt names
+    # the cut.  Measured on a fiscal table printed over six pages (three
+    # replies cut off in a loop of 〇 or 八、 after the page's whole table):
+    # taken whole the loop was read against the page, and dropped the three
+    # pages went the one-engine way - no table path, no stitch, 717 more
+    # errors on the benchmark than the old skill, which merged the same
+    # readings.  Only where the cut leaves fewer than UNCORROBORATED_WITNESS
+    # characters (the reply looped from its start) is there no reading to
+    # merge: the page goes the one-engine way (transcribed from the image,
+    # engine A's draft its hint).  Whether the page holds text at all still
+    # counts what engine B read (read_b): a page is not sealed blank for want
+    # of engine A's text when engine B's cut-off reading holds some.
+    cut_reading = ""
+    b_cut_off = engine_b_cut_off(job.draft2_text) if draft2 is not None else None
+    if b_cut_off is not None:
+        whole_b = draft2 or ""
+        kept_b, b_loops = cut_engine_b_loops(whole_b)
+        cut = (f" and from character {len(CJK(whole_b[:b_loops[0][0]]))} on it wrote "
+               f"「{' '.join(LOOP_MARKUP.sub(' ', loop_unit_from_tag(b_loops[0][2])).split())[:12]}」 "
+               f"{(b_loops[0][1] - b_loops[0][0]) // len(b_loops[0][2])} times over" if b_loops else "")
+        if len(CJK(kept_b)) >= UNCORROBORATED_WITNESS:
+            draft2 = kept_b
+            doubts.append({"kind": "engine-b-truncated", "detail": (
+                f"ENGINE B CUT OFF: its reply for this page did not end (finish reason {b_cut_off}){cut}; "
+                + (f"its reading is merged up to there ({len(CJK(kept_b))} of its {len(CJK(whole_b))} "
+                   "characters; the loop is not merged)" if b_loops else
+                   f"its reading is merged as far as it goes ({len(CJK(kept_b))} characters)")
+                + ", so what the page holds past that is engine A's reading alone - check it against the "
+                "image, or OCR the page again with engine B")})
+        else:
+            cut_reading, draft2 = whole_b, None
+            doubts.append({"kind": "engine-b-truncated", "detail": (
+                f"ENGINE B CUT OFF: its reply for this page did not end (finish reason {b_cut_off}){cut}, "
+                f"leaving {len(CJK(kept_b))} of its {len(CJK(whole_b))} characters, so it is not merged as a "
+                "second reading; the page is transcribed from the image with engine A's draft as its hint - "
+                "check it against the image, or OCR the page again with engine B")})
+    read_b = draft2 if draft2 is not None else (cut_reading or None)
     # Defined here because the single-engine path never reaches the merge branch
     # but the sealed record always reports them.
     tables: list[str] = []
@@ -11250,6 +12842,12 @@ def _proofread_page_inner(
     tables_missing: list[int] = []
     tables_disputed: list[int] = []
     table_characters: str = ""
+    # Characters the accepted structure pass left out of the table blocks it
+    # was given (split_table_losses), for the table-characters-lost doubt.
+    structure_table_lost: str = ""
+    # The marks its punctuation lock let through in the tables it built from
+    # the image (table_marks_lock), for the seal.
+    structure_table_marks: str = ""
     prose: str | None = None
     guarded: str | None = None
     known_heads: list[str] = []
@@ -11290,41 +12888,141 @@ def _proofread_page_inner(
     engine_a_characters = len(CJK(draft))
     engine_b_characters = len(CJK(draft2 or ""))
 
-    # Every page first receives a full-image inventory, including pages for
-    # which both CJK streams are empty.  Packet replay binds image and prompt;
-    # no standalone old sidecar can authorize a blank or a content repair.
-    inventory, inventory_metrics = _content_fidelity.inventory_page(
-        client, render_bytes, [draft, draft2 or ""], arguments.max_tokens)
-    add(inventory_metrics)
+    inventory: dict[str, Any] = {}
+    # Switch --content-fidelity (off unless asked): the page's full-image
+    # inventory, its content recovery before formatting and its coverage
+    # review of the final text.  `reviewing` stays true while the stages
+    # are settled; a stage that cannot be (fidelity_doubt) ends them for the
+    # page, which is sealed with the text it had and a doubt, not failed.
+    fidelity_on = content_fidelity_on(arguments)
+    reviewing = fidelity_on
+    fidelity_status = "complete"
     content_recovery: dict[str, Any] | None = None
     coverage_review: dict[str, Any] | None = None
 
-    def image_review(candidate: str, stage: str) -> tuple[str, dict[str, Any]]:
-        result, evidence, used = _content_fidelity.review_page(
-            client, render_bytes, candidate, inventory, arguments.max_tokens, stage=stage,
-            table_orientation=table_orientation_mode)
+    def fail_fidelity(candidate: str, detail: Mapping[str, Any]) -> None:
+        evidence = {"schema_version": 2, "contract_version": _content_fidelity.CONTRACT_VERSION,
+                    "status": "failed", "source_image_sha256": hashlib.sha256(render_bytes).hexdigest(),
+                    "candidate": candidate, "candidate_sha256": _content_fidelity.text_sha256(candidate),
+                    "inventory": inventory,
+                    "detail": dict(detail), "formatter_rejected_output": rejected_output,
+                    "formatter_retry_reason": format_retry_reason, "formatter_rejected_retry": rejected_retry,
+                    "formatter_retry_refusal": retry_refusal}
+        path = job.out_json.with_name(job.out_json.stem + ".fidelity-failure.json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        encoded = canonical_json_bytes(evidence)
+        # Immutable content-addressed failures survive retry and later success.
+        path = path.with_name(path.stem + "-" + hashlib.sha256(encoded).hexdigest()[:16] + path.suffix)
+        if not path.exists():
+            path.write_bytes(encoded)
+
+    def fidelity_doubt(stage: str, detail: str) -> None:
+        """A fidelity stage that could not be settled: a doubt, and no further
+        stage on this page."""
+        nonlocal reviewing, fidelity_status
+        reviewing, fidelity_status = False, "doubt"
+        doubts.append({"kind": _content_fidelity.DOUBT_KIND, "detail": (
+            f"CONTENT FIDELITY UNRESOLVED ({stage}): {detail} - check the page against the image")})
+
+    def review_changes(stage: str, evidence: Mapping[str, Any], adopted: bool) -> None:
+        """Each edit a fidelity review made (or proposed, when set aside), for
+        decisionChanges: what it replaced, with what, and its evidence."""
+        for edit in evidence.get("edits") or []:
+            decision_changes.append({
+                "decision": "contentFidelity", "rule": stage, "region": edit.get("region_id"),
+                "contextBefore": edit.get("before", ""), "contextAfter": edit.get("after", ""),
+                "before": edit.get("old", ""), "after": edit.get("new", ""),
+                "evidence": {"source": edit.get("evidence"), "adopted": adopted,
+                             "reviewedResultSha256": evidence.get("reviewed_result_sha256")}})
+
+    # With the switch on, every page first receives a full-image inventory,
+    # including pages for which both CJK streams are empty.  Packet replay
+    # binds image and prompt; no standalone old sidecar can authorize a blank
+    # or a content repair.
+    if fidelity_on:
+        try:
+            inventory, inventory_metrics = _content_fidelity.inventory_page(
+                client, render_bytes, [draft, draft2 or ""], arguments.max_tokens)
+            add(inventory_metrics)
+        except _content_fidelity.FidelityError as error:
+            fail_fidelity(draft, {**error.diagnostic(), "stage": "page-inventory",
+                                 "rejected_answer": getattr(error, "rejected_answer", None),
+                                 "correction": getattr(error, "correction", None)})
+            inventory = {}
+            fidelity_doubt("page-inventory", f"no valid inventory answer ({error}); the page is not image-reviewed")
+
+    def image_review(candidate: str, stage: str) -> tuple[str, dict[str, Any] | None]:
+        """CANDIDATE after the STAGE review, and the review's evidence.  An
+        answer that fails its contract (after its one correction) is a doubt
+        and leaves CANDIDATE as it was; so is a coverage review that does not
+        come back complete, whose edits stand only when they lose no source
+        feature and leave retained content."""
+        try:
+            result, evidence, used = _content_fidelity.review_page(
+                client, render_bytes, candidate, inventory, arguments.max_tokens, stage=stage,
+                table_orientation=table_orientation_mode)
+        except _content_fidelity.FidelityError as error:
+            fail_fidelity(candidate, {**error.diagnostic(), "stage": stage,
+                                     "rejected_answer": getattr(error, "rejected_answer", None),
+                                     "correction": getattr(error, "correction", None)})
+            fidelity_doubt(stage, f"no valid review answer ({error}); the text is kept as it was before the review")
+            return candidate, None
         add(used)
-        return result, evidence
+        adopted = True
+        if stage == "coverage-review" and not evidence["complete"]:
+            adopted = not evidence["feature_losses"] and not evidence["empty_retained_content"]
+            fail_fidelity(result, {"code": "visual-uncertain", "review": evidence})
+            open_items = [*(f"issue {i}" for i in evidence.get("unresolved_issue_ids") or []),
+                          *(f"region {r['id']} {r['status']}" for r in evidence.get("regions") or []
+                            if r.get("status") == "uncertain"),
+                          *(f"table region {t} unmapped" for t in evidence.get("unmapped_table_regions") or []),
+                          *(f"feature {f} lost" for f in evidence.get("feature_losses") or [])]
+            fidelity_doubt(stage, f"coverage {evidence.get('verdict')}: "
+                           + ("; ".join(open_items[:8]) or "not confirmed complete")
+                           + ("; its edits are kept" if adopted else "; its edits are set aside"))
+        review_changes(stage, evidence, adopted)
+        return (result if adopted else candidate), evidence
 
     # A page carrying no text either engine can corroborate.  Two shapes:
     # genuinely blank (both engines silent) and unsupported (one engine emitted
     # a page of degenerate text the other never saw).  Both are sealed rather
     # than failed, so the assembled deliverable has no hole where a page should
-    # be - three such pages failed the whole phase before this existed.
-    unsupported = unsupported_reading(draft, draft2)
-    if inventory["page_state"] == "blank" or (not CJK(draft) and not CJK(draft2 or "")) or unsupported:
+    # be - three such pages failed the whole phase before this existed.  With
+    # content fidelity on, the inventory may also find the page blank, and a
+    # page the engines found nothing on is transcribed from the image unless
+    # the inventory finds it blank.  A page whose engines read text with no
+    # CJK in it (non_cjk_text) is not blank: with nothing to merge, it is
+    # transcribed from the image, both drafts its hint.
+    unsupported = unsupported_reading(draft, read_b)
+    engines_silent = not CJK(draft) and not CJK(read_b or "")
+    non_cjk = non_cjk_text(draft, read_b, load_blocks(job.draft_json)) if engines_silent else ""
+    if (reviewing and inventory["page_state"] == "blank" and (not engines_silent or non_cjk)
+            and not unsupported):
+        # The engines read text the inventory says is not there: their text is
+        # merged (or transcribed) as usual, and a person looks (a blank answer
+        # never empties a page the engines read).
+        fidelity_doubt("page-inventory", (
+            f"the inventory calls the page blank, but the engines read {len(CJK(draft))} and "
+            f"{len(CJK(draft2 or ''))} characters; their text is kept, not image-reviewed"
+            if not engines_silent else
+            f"the inventory calls the page blank, but the engines read {len(non_cjk)} characters "
+            "of text with no CJK in it; the page is transcribed from the image, not image-reviewed"))
+    if ((reviewing and inventory["page_state"] == "blank") or (engines_silent and (reviewing or not non_cjk))
+            or unsupported):
         if unsupported:
             doubts.append({"kind": "unsupported-reading", "detail": (
                 f"one engine returned {len(CJK(unsupported))} characters the other "
                 f"never saw, and the text repeats itself "
                 f"({distinct_ngram_ratio(CJK(unsupported)):.3f} distinct 4-grams); "
-                "requires a full-image transcription rather than a blank shortcut")})
+                + ("requires a full-image transcription rather than a blank shortcut"
+                   if reviewing and inventory["page_state"] != "blank" else "discarded as unsupported"))})
         writer_text = ""
-        if inventory["page_state"] != "blank":
+        mode = "blank-page"
+        if reviewing and inventory["page_state"] != "blank":
+            mode = "image-recovery"
             writer_text, content_recovery = image_review(draft if not unsupported else "", "content-recovery")
-            writer_text, coverage_review = image_review(writer_text, "coverage-review")
-            if not coverage_review["complete"]:
-                raise ProofreadError("full-page coverage unresolved: " + json.dumps(coverage_review, ensure_ascii=False))
+            if reviewing:
+                writer_text, coverage_review = image_review(writer_text, "coverage-review")
         record = {
             "schemaVersion": SCHEMA_VERSION,
             "scanPage": job.scan_page,
@@ -11336,10 +13034,12 @@ def _proofread_page_inner(
             "renderFile": str(job.render),
             # An unsupported reading is not a clean page: a human should look.
             "auditorClean": not doubts,
-            "mode": "blank-page" if inventory["page_state"] == "blank" else "image-recovery",
-            "pageInventory": inventory,
-            "contentRecovery": content_recovery,
-            "coverageReview": coverage_review,
+            "mode": mode,
+            **({"contentFidelityContract": _content_fidelity.CONTRACT_VERSION,
+                "contentFidelityStatus": fidelity_status,
+                "pageInventory": inventory or None,
+                "contentRecovery": content_recovery,
+                "coverageReview": coverage_review} if fidelity_on else {}),
             "inkFraction": round(page_ink_fraction(job.render), 6),
             "engineDisagreements": [],
             "auditorReport": "; ".join(d["detail"] for d in doubts),
@@ -11348,14 +13048,15 @@ def _proofread_page_inner(
             # still here to recover.
             "discardedOnBlankPage": unsupported[:2000] if unsupported else "",
             "adjudications": [],
+            # Each edit a fidelity review made (switch --content-fidelity).
+            **({"decisionChanges": decision_changes} if decision_changes else {}),
             "usage": metrics,
             "punctuationDensity": 0.0,
             "degraded": False,
             "seconds": round(time.monotonic() - started, 1),
             "calls": summarize_calls(ledger),
             "provenance": {
-                "renderSha256": sha256_file(job.render),
-                "draftSha256": sha256_file(job.draft_text),
+                **sealed_inputs(job),
                 **decision_provenance(arguments),
                 "markdownSha256": sha256_bytes(writer_text.encode("utf-8")),
             },
@@ -11365,21 +13066,34 @@ def _proofread_page_inner(
         seal_page(job, writer_text.encode("utf-8"), record)
         return record
 
-    if draft2 is None:
+    # Transcribed, not merged: one engine only, or text with no CJK to merge.
+    transcribing = draft2 is None or bool(non_cjk)
+    if transcribing:
         # Single-engine fallback: no second reading to merge against, so the
         # model must transcribe. Less accurate - measured 4/11 vs 11/11 for two
-        # agreeing engines - but it is all that is available.
+        # agreeing engines - but it is all that is available.  The same for a
+        # page of text with no CJK (non_cjk), which the merge cannot align:
+        # both drafts are its hint.
+        hint = (f"OCR 底稿（提示，非權威）：\n---\n{draft}\n---\n\n" if draft2 is None else
+                f"OCR 底稿 A（提示，非權威）：\n---\n{draft}\n---\n\n"
+                f"OCR 底稿 B（提示，非權威）：\n---\n{draft2}\n---\n\n")
         writer_text, m = client.ask_answering(
-            WRITER_SYSTEM,
-            f"OCR 底稿（提示，非權威）：\n---\n{draft}\n---\n\n"
-            "睇頁圖，輸出呢一頁嘅忠實 Markdown 轉錄。",
+            WRITER_SYSTEM, hint + "睇頁圖，輸出呢一頁嘅忠實 Markdown 轉錄。",
             render_bytes, arguments.max_tokens, kind="writer")
         add(m)
         writer_text = strip_fence(writer_text)
-        if not writer_text:
+        if not writer_text and not non_cjk:
             raise ProofreadError("writer returned empty output")
+        if not writer_text:
+            # Sealed, not failed (a blank page is), but not clean: the engines
+            # read text the transcription does not hold.
+            doubts.append({"kind": "non-cjk-text-not-transcribed", "detail": (
+                f"NO TEXT TRANSCRIBED: the engines read {len(non_cjk)} characters of text with no CJK "
+                f"in it (「{non_cjk[:60]}」), and the transcription from the image is empty - "
+                "check the page against the image")})
         resolved, mode = writer_text, "transcribe"
-        writer_text, content_recovery = image_review(writer_text, "content-recovery")
+        if reviewing:
+            writer_text, content_recovery = image_review(writer_text, "content-recovery")
     else:
         # MERGE. Where two independent engines agree, that reading is frozen and
         # no model is allowed to revise it. Only differences go to adjudication.
@@ -12247,6 +13961,10 @@ def _proofread_page_inner(
             seg = dict(seg, furnitureSides=[side for side in ("a", "b")
                                             if len(CJK(seg[side])) > ANSWER_DELETION_LIMIT
                                             and leftover(side) <= INSERTION_LIMIT],
+                       # Engine B's reply was cut off and its reading merged up
+                       # to the cut: the guard keeps none of its reading alone
+                       # over 裁決's answer (adjudicate_segment, cutOffSides).
+                       cutOffSides=["b"] if b_cut_off is not None else [],
                        # Where the spot is, for a D16 change if the answer is refused,
                        # and where each engine read it (explain).
                        answerSite=site(seg, a_start), streamAt=(a_start, b_starts[index]))
@@ -12312,6 +14030,22 @@ def _proofread_page_inner(
                     # - unless the merged text holds it nearby, which is looked
                     # at once every answer is in (below).
                     refusals.append((slot, asked, record, crop, engine))
+                if record.get("cutOffReadingAnswered") and record.get("resolved_from") in (
+                        "adjudicator", "adjudicator-empty"):
+                    # D16 kept no reading here only because the engine that
+                    # read more than the answer was cut off (adjudicate_segment):
+                    # the answer is written, and the change is sealed.
+                    cut_side = record["cutOffReadingAnswered"].lower()
+                    changes.append((slot, {
+                        "decision": "D16", "rule": "answer-accepted-cut-off-reading", **asked["answerSite"],
+                        "evidence": {"cutOffEngine": cut_side.upper(),
+                                     "readingCharacters": len(CJK(asked[cut_side])),
+                                     "answeredCharacters": len(CJK(record["resolved"])),
+                                     "limit": ANSWER_DELETION_LIMIT,
+                                     # A whole engine's reading here that shares
+                                     # no character with the answer.
+                                     **({"unsharedWholeReadings": record["unsharedWholeReadings"]}
+                                        if record.get("unsharedWholeReadings") else {})}}))
                 if record.get("resolved_from") == "adjudicator-empty-unconfirmed":
                     # 裁決 answered 無 on a crop not shown to hold the spot
                     # (confirm_nothing): the reading stands, and a person looks.
@@ -13115,14 +14849,18 @@ def _proofread_page_inner(
             as_written = table
             orientation_context = (f"rebuilt block {layout}, full-page boxes "
                                    f"{[blocks[j].get('box') for j in region]}; source grid:\n{table}")
-            # Orientation is a separate image-backed decision after rebuilding
-            # the physical grid.  Arithmetic and OCR order are hints only.
+            # The rebuild was asked for the physical grid; the benchmark's rule
+            # turns it by the page's print direction (orient_table) - unless
+            # engine B's reading order shows the rows are the printed columns
+            # already - and engine B's order or the image where that is unknown.
             try:
                 oriented, how = orient_table(
                     table, render_bytes, client, arguments.max_tokens,
                     turn=lambda written: turn_records(written, draft2, ask=lambda grid: ask_first_record(
                         grid, render_bytes, client, arguments.max_tokens, context=orientation_context)),
-                    table_orientation=table_orientation_mode, context=orientation_context)
+                    table_orientation=table_orientation_mode, context=orientation_context,
+                    witness=draft2, print_direction=page_print_direction(blocks, image_size(render_bytes)),
+                    physical=True)
                 table_orientation_evidence.append(table_orientation_record(
                     as_written, oriented, how, render_bytes, table_orientation_mode, layout))
                 if orientation_undecided(how):
@@ -13409,6 +15147,24 @@ def _proofread_page_inner(
                 punctuated[index], found = mark_changes(punctuated[index], span_starts[index],
                                                         layout_index(blocks, index), own, arguments)
                 decision_changes.extend(found)
+            # A circled note marker both engines read at one place that the
+            # block's pass left out is written in (place_note_markers): the
+            # structure pass is given it, and restore_note_markers keeps it.
+            markers_at = note_markers_by_block(agreed_note_markers(draft, draft2, segments, pieces, blocks),
+                                               spans) if draft2 is not None else {}
+            merged_chars = "".join(spans)
+            for index in to_punctuate:
+                if index not in markers_at:
+                    continue
+                punctuated[index], written = place_note_markers(punctuated[index], spans[index], markers_at[index])
+                for g, found in written:
+                    at = span_starts[index] + g
+                    decision_changes.append({
+                        "decision": "textLoss", "rule": "note-marker-both-engines",
+                        "block": layout_index(blocks, index),
+                        "contextBefore": merged_chars[max(0, at - 8):at], "contextAfter": merged_chars[at:at + 8],
+                        "engineA": found["raw"], "engineB": found["rawB"], "after": found["marker"],
+                        "mergedOffset": at, "evidence": {"blockGap": g}})
             if figures_kept:
                 # Switch --keep-arabic-numerals: each figure the merge keeps is
                 # written into its block at its gap, among the marks the block
@@ -13536,24 +15292,50 @@ def _proofread_page_inner(
         if recovery_packet_pending or rebuild_packet_pending:
             raise PacketPending("table-wave")
 
-        # Before formatting, review the actual candidate including full tables.
-        # This is the one bounded opportunity to recover regions or non-CJK
-        # content dropped by the CJK merge, and to remove image-confirmed
-        # furniture.  Never restore raw OCR digits by agreement alone.
-        if placeholders:
-            format_input, misplaced_input, _ = place_recovered_tables(format_input, tables)
-            if misplaced_input:
-                raise ProofreadError("content-recovery table expansion failed: " + misplaced_input)
-            placeholders = False
-        format_input, content_recovery = image_review(format_input, "content-recovery")
-        # Keep a recovered table's confirmed repairs when the formatter copies
-        # it.  A changed table count cannot be mapped to old block IDs safely;
-        # final image coverage will verify those regions without such mapping.
-        recovered_grids = [format_input[a:b] for a, b in table_spans(format_input)]
-        source_table_mapping_current, recovery_table_correspondence = _content_fidelity.refresh_table_mapping(
-            tables, recovered_grids)
-        if source_table_mapping_current:
-            tables = recovered_grids
+        def expanded(text: str) -> str:
+            """TEXT with each table token (⟦Tn⟧) written out as its table."""
+            if not placeholders:
+                return text
+            out, misplaced_tokens, _ = place_recovered_tables(text, tables)
+            if misplaced_tokens:
+                raise ProofreadError("table expansion failed: " + misplaced_tokens)
+            return out
+
+        # Switch --content-fidelity: before formatting, review the actual
+        # candidate with its tables written out.  This is the one bounded
+        # opportunity to recover regions or non-CJK content dropped by the CJK
+        # merge, and to remove image-confirmed furniture.  Never restore raw
+        # OCR digits by agreement alone.  The formatter is then given the
+        # tables as tokens again, as without the review, unless the review
+        # changed them past mapping (refresh_table_mapping).
+        if reviewing:
+            candidate = expanded(format_input)
+            reviewed, content_recovery = image_review(candidate, "content-recovery")
+            if reviewed != candidate:
+                if table_spans(candidate):
+                    # Keep a recovered table's confirmed repairs when the
+                    # formatter copies it.  A changed table count cannot be
+                    # mapped to old block IDs safely; final image coverage
+                    # will verify those regions without such mapping.  (On
+                    # the whole-page path the tables are not in the
+                    # candidate but in the formatter's hint: nothing to map.)
+                    grids = [reviewed[a:b] for a, b in table_spans(reviewed)]
+                    source_table_mapping_current, recovery_table_correspondence = (
+                        _content_fidelity.refresh_table_mapping(tables, grids))
+                    if source_table_mapping_current:
+                        tables = grids
+                if placeholders and source_table_mapping_current:
+                    # The reviewed text with its tables as tokens again.
+                    retokened = reviewed
+                    for (start, stop), token in reversed(list(zip(table_spans(reviewed),
+                                                                  table_tokens(len(tables))))):
+                        retokened = retokened[:start] + token + retokened[stop:]
+                    format_input = retokened
+                else:
+                    format_input, placeholders = reviewed, False
+        # What the formatter is given, its tables written out: what its
+        # answer is checked against once the tokens are replaced.
+        expanded_input = expanded(format_input)
 
         # Stage B - structure.  With punctuation locked the model may only add
         # headings, lists, tables and remove furniture; never touch a mark.
@@ -13603,16 +15385,31 @@ def _proofread_page_inner(
             else:
                 table_hint += (
                     "\n頁上有表格要你對住頁圖重建（引擎嘅格仔信唔過，冇畀你）。"
-                    "按當前表格圖像確認欄名、紀錄軸同每筆紀錄嘅位置。"
-                    "唔可以只因直排中文就假定最右先，亦唔可以靠合計方向決定轉置。"
-                    "冇清楚圖像證據就保留物理格網，由整頁覆核記為未定。\n"
+                    "橫排表保持原圖嘅行同欄；直排表將原圖由右至左嘅直欄，依次寫成由上至下嘅行，"
+                    "原欄內由上至下嘅格，依次寫成由左至右嘅欄，合併格嘅 rowspan／colspan 對調。"
+                    "唔好按內容自行重排行列，亦唔好虛構表頭；冇表頭或者有合併格就寫 HTML `<table>`。\n"
                     "重建淨係搬字，一個字都唔准加、唔准刪、唔准換。\n")
+        # Switch --content-fidelity: whether a content-recovery review ran on
+        # this page.  It removed the furniture it confirmed, so the formatter
+        # deletes nothing (FORMAT_SYSTEM_REVIEWED, verify_characters' strict
+        # rule).  Otherwise the formatter takes the furniture out, as the old
+        # skill's did: told to here, and checked by what it may delete
+        # (removable_text) - the hint asking it to delete running heads was
+        # left beside a prompt and a check that forbade any deletion, so a
+        # formatter that did as the hint said was refused.
+        furniture_reviewed = content_recovery is not None
+        if furniture_reviewed:
+            format_system = {FORMAT_SYSTEM: FORMAT_SYSTEM_REVIEWED,
+                             STRUCTURE_SYSTEM: STRUCTURE_SYSTEM_REVIEWED}[format_system]
+        keep_or_delete = ("保留全部來源覆核後嘅字、數字、算式同符號" if furniture_reviewed
+                          else "刪走欄外書眉／頁碼")
         layout = profile_section(arguments, "layout")
         layout_hint = ""
         if (layout.get("leavesPerPage") or 1) > 1:
             layout_hint += (f"本書係影印本：量度過，一頁通常印咗 {layout['leavesPerPage']} 葉原書，"
-                            "每葉有自己嘅書眉同葉碼——全部係家具，刪走；正文按葉嘅次序接落去。\n")
-        if layout.get("runningHeads"):
+                            + ("每葉有自己嘅書眉同葉碼；正文按葉嘅次序接落去。\n" if furniture_reviewed else
+                               "每葉有自己嘅書眉同葉碼——全部係家具，刪走；正文按葉嘅次序接落去。\n"))
+        if layout.get("runningHeads") and not furniture_reviewed:
             layout_hint += ("以下字串喺本書量度到係書眉（同一頁重複或者差唔多每頁都有）："
                             + "、".join(layout["runningHeads"][:8]) + "；出現喺正文以外就刪走。\n")
         # Switch --learned-heads: a page whose every block with text was the
@@ -13625,13 +15422,14 @@ def _proofread_page_inner(
             # No format call, so none cut off (the seal's "degraded").
             formatted, m = "", {}
         else:
+            structure_input = structure_input_record(format_input)
             formatted, m = client.ask_answering(
                 format_system,
                 (f"字同標點都已定（唔准改）：\n---\n{format_input}\n---\n{table_hint}{layout_hint}\n"
-                 "睇頁圖，加版面結構（heading／段落／list／表格），保留全部來源覆核後嘅字、數字、算式同符號。標點原封不動。")
+                 f"睇頁圖，加版面結構（heading／段落／list／表格），{keep_or_delete}。標點原封不動。")
                 if punct_locked else
                 (f"已定嘅字（唔准改）：\n---\n{format_input}\n---\n{table_hint}\n{whole_page_hint}"
-                 "睇頁圖，加返句讀同版面結構，保留全部來源覆核後嘅字、數字、算式同符號。"),
+                 f"睇頁圖，加返句讀同版面結構，{keep_or_delete}。"),
                 render_bytes, arguments.max_tokens, kind="format")
             add(m)
         formatted = strip_fence(formatted)
@@ -13644,18 +15442,77 @@ def _proofread_page_inner(
         misplaced = None
         if placeholders:
             formatted, misplaced, placement_notes = place_recovered_tables(formatted, tables)
-        # Source recovery has already removed only image-confirmed furniture;
-        # formatting has no remaining deletion exemption, for any script.
-        sanctioned = format_input
+        # After a content-recovery review, which removed only image-confirmed
+        # furniture, formatting has no remaining deletion exemption, for any
+        # script.  Without one the formatter removes the furniture, and the
+        # letters and figures it may take with it are those removable_text
+        # holds.
+        sanctioned = expanded_input
+        # A note marker of the text given that the answer left out is written
+        # back before anything is checked (restore_note_markers), as the
+        # tables are put in: its checks count a marker as a figure, which the
+        # page's footnotes may lose as furniture, and a marker is no mark of
+        # the punctuation lock.
+        markers_restored: list[dict[str, Any]] = []
+        note_blocks = note_block_texts(blocks)
+        if not silent and not misplaced:
+            formatted, markers_restored = restore_note_markers(sanctioned, formatted, note_blocks)
+        # The book's recurring n-grams are no text the answer may lack as
+        # many times as they hold a character: furniture_unexplained tests a
+        # deleted stretch against them instead.
+        removable = None if furniture_reviewed else removable_text(
+            blocks, punctuated if spans is not None else [], format_input,
+            [*profile_furniture, *book_heads],
+            [kept["figure"] for kept in figures_kept if "given" in kept])
         ok, reason = ((False, silent) if silent else (False, misplaced) if misplaced
-                      else verify_characters(sanctioned, formatted))
-        if ok and _content_fidelity.feature_losses(formatted, inventory):
-            ok, reason = False, "formatter lost or displaced an image-confirmed source feature"
+                      else verify_characters(sanctioned, formatted, removable))
+        def formatter_losses(candidate: str) -> list[str]:
+            # The inventory's features, with --content-fidelity on only.
+            if not reviewing:
+                return []
+            reviewed_maps = (content_recovery or {}).get("table_mappings", [])
+            mapped = _content_fidelity.rebind_unchanged_tables(expanded_input, candidate, reviewed_maps)
+            mapped_regions = {m["region_id"] for m in reviewed_maps}
+            # Newly reconstructed grids have no earlier confirmed cell mapping.
+            # Their ownership must be established in mandatory final review;
+            # do not reject a new valid table for lacking a pre-format mapping.
+            protected = {**inventory, "features": [f for f in inventory["features"]
+                if f.get("cell", {}).get("kind") != "grid" or f["region_id"] in mapped_regions]}
+            missing = _content_fidelity.feature_losses(candidate, protected, mapped)
+            if any(r["kind"] == "table" for r in inventory["regions"]) and not table_spans(candidate):
+                missing.append("table-structure")
+            return missing
+
+        format_feature_losses = formatter_losses(formatted) if ok else []
+        if format_feature_losses:
+            ok, reason = False, "formatter lost or displaced source features: " + ", ".join(format_feature_losses)
         # The recovered tables carry their own marks (、 separators, brackets)
         # that the block text does not, so they count as expected input.
-        lock_input = format_input
-        if ok and punct_locked and not punctuation_kept(lock_input, formatted):
-            ok, reason = False, "changed punctuation: " + punctuation_delta(lock_input, formatted)
+        lock_input = expanded_input
+        # So do the marks both engines read in a table block whose grid was
+        # refused - its text is given bare, with no punctuation pass - where
+        # the answer writes them inside its tables (table_marks_lock): the
+        # structure pass builds that table from the image, marks and all.
+        refused_marks: Counter = Counter()
+        if punct_locked and spans is not None:
+            refused_blocks = [index for index, block in enumerate(blocks)
+                              if block.get("label") == "table" and index not in table_sources
+                              and index not in absorbed_into and index not in learned_dropped
+                              and index not in to_punctuate]
+            if refused_blocks and draft2 is not None:
+                refused_marks = table_block_marks(
+                    spans, refused_blocks, punctuated,
+                    (engine_marks_merged(draft, segments, pieces, blocks),
+                     engine_b_marks_merged(draft2, segments, pieces)))
+        # The marks of REFUSED_MARKS the accepted answer's tables carry, sealed.
+        table_marks_allowed: dict[str, Counter] = {}
+
+        def locked_input(candidate: str) -> str:
+            held, table_marks_allowed[candidate] = table_marks_lock(lock_input, candidate, refused_marks)
+            return held
+
+        if ok and punct_locked and not punctuation_kept(locked_input(formatted), formatted):
+            ok, reason = False, "changed punctuation: " + punctuation_delta(locked_input(formatted), formatted)
         if ok and punctuation_density(formatted) > density_limit(arguments):
             ok = False
             reason = (f"punctuation density {punctuation_density(formatted):.1f} per 100 "
@@ -13676,8 +15533,8 @@ def _proofread_page_inner(
             # DELETED_RUN_LIMIT is not a deleted run).
             repaired = restore_merged_characters(sanctioned, formatted)
             if repaired is not None:
-                ok2r, reason2r = verify_characters(sanctioned, repaired)
-                if ok2r and _content_fidelity.feature_losses(repaired, inventory):
+                ok2r, reason2r = verify_characters(sanctioned, repaired, removable)
+                if ok2r and formatter_losses(repaired):
                     ok2r = False
                 if ok2r:
                     formatted, ok = repaired, True
@@ -13701,6 +15558,34 @@ def _proofread_page_inner(
             ok = False
             reason = ("deleted " + " / ".join(f"{len(d)} characters ({d[:18]}…)"
                                               for d in dropped[:3]))
+
+        # The text of the table blocks the structure pass was given, on the
+        # block path: each recovered or rebuilt table, and the text of each
+        # table block whose grid was refused (split_table_losses).
+        given_tables = ("\n".join([*tables, *(text for index, (block, text) in enumerate(zip(blocks, punctuated))
+                                             if block.get("label") == "table" and index not in table_sources
+                                             and index not in absorbed_into)])
+                        if spans is not None and punct_locked else "")
+        # What each answer's tables lack of the tables it was given, by answer.
+        table_lost: dict[str, str] = {}
+
+        def unexplained(candidate: str) -> str:
+            # Without a content review, what the answer deleted of the CJK it
+            # was given must be furniture by evidence, however short its runs
+            # (furniture_unexplained); deleted_runs took runs from
+            # DELETED_RUN_LIMIT characters only.  On the whole-page path
+            # REMOVABLE holds the margin blocks' own text (margin_furniture,
+            # deleted_runs' MARGIN), which is that evidence.  Body text only,
+            # as deleted_runs': what the answer's tables lack of the table
+            # blocks is kept for the table-characters-lost doubt
+            # (split_table_losses), and does not refuse the answer.
+            if removable is None:
+                return ""
+            lost = furniture_unexplained(sanctioned, candidate, removable,
+                                         furniture, [*profile_furniture, *book_heads])
+            prose_lost, table_lost[candidate] = split_table_losses(lost, sanctioned, candidate, given_tables)
+            return prose_lost
+
         gone_beside = beside_lost(formatted) if ok else ""
         if gone_beside:
             # The text beside a table rebuilt without it (beside_table) may not
@@ -13709,6 +15594,11 @@ def _proofread_page_inner(
             ok = False
             reason = (f"deleted {len(gone_beside)} characters of the text beside a rebuilt table "
                       f"({gone_beside[:18]}…)")
+        gone_furniture = unexplained(formatted) if ok else ""
+        if gone_furniture:
+            ok = False
+            reason = (f"deleted {len(gone_furniture)} character(s) outside the page's furniture "
+                      f"({gone_furniture[:18]}…)")
         if not ok:
             # Why the first answer was refused, sealed: the page's text may be
             # the retry's, and without this nobody can tell afterwards what the
@@ -13735,8 +15625,8 @@ def _proofread_page_inner(
                     + ("你上一次諗得太耐，喺 token 上限之前冇寫出答案。唔使逐個字再諗，直接對住頁圖輸出。\n"
                        if cut_off else
                        "你上一次交咗個空白答案，一個字都冇寫。直接對住頁圖輸出。\n")
-                    + ("睇頁圖，加版面結構（heading／段落／list／表格），保留全部來源覆核後嘅字、數字、算式同符號。標點原封不動。"
-                       if punct_locked else "睇頁圖，加返句讀同版面結構，保留全部來源覆核後嘅字、數字、算式同符號。"),
+                    + (f"睇頁圖，加版面結構（heading／段落／list／表格），{keep_or_delete}。標點原封不動。"
+                       if punct_locked else f"睇頁圖，加返句讀同版面結構，{keep_or_delete}。"),
                     render_bytes, arguments.max_tokens, kind="format-retry")
             else:
                 retry, m = client.ask_answering(
@@ -13751,9 +15641,12 @@ def _proofread_page_inner(
                     "重新編號咗——唔好咁做，重複嘅編號照抄。\n"
                     "如果係標點太密：你差唔多逐個字都加咗符號。返去頁圖數清楚"
                     "真係印咗幾多個，冇印就唔好加。\n"
-                    "如果係刪走咗字：本階段收到嘅文字必須保留，唔可以用格式化決定刪字。"
-                    "家具已喺來源覆核處理；表格入面嘅格"
-                    "(人名、職銜、籍貫嗰啲)係正文，唔係書眉，照留。\n\n"
+                    + ("如果係刪走咗字：本階段收到嘅文字必須保留，唔可以用格式化決定刪字。"
+                       "家具已喺來源覆核處理；表格入面嘅格"
+                       if furniture_reviewed else
+                       "如果係刪走咗字：嗰段字兩個 OCR 引擎都讀到，即係頁上真係有。"
+                       "你只准刪欄外書眉同頁碼，正文一個字（包括外文同數字）都唔准刪。表格入面嘅格")
+                    + "(人名、職銜、籍貫嗰啲)係正文，唔係書眉，照留。\n\n"
                     "重新輸出：加句讀同結構，但一個漢字都唔准加，亦唔准刪正文。",
                     render_bytes, arguments.max_tokens, kind="format-retry")
             add(m)
@@ -13763,12 +15656,16 @@ def _proofread_page_inner(
             misplaced = None
             if placeholders:
                 retry, misplaced, retry_notes = place_recovered_tables(retry, tables)
+            retry_markers: list[dict[str, Any]] = []
+            if not silent_retry and not misplaced:
+                retry, retry_markers = restore_note_markers(sanctioned, retry, note_blocks)
             ok2, reason2 = ((False, "retry: " + silent_retry) if silent_retry
                             else (False, "retry: " + misplaced) if misplaced
-                            else verify_characters(sanctioned, retry))
-            if ok2 and _content_fidelity.feature_losses(retry, inventory):
-                ok2, reason2 = False, "retry lost or displaced an image-confirmed source feature"
-            if ok2 and punct_locked and not punctuation_kept(lock_input, retry):
+                            else verify_characters(sanctioned, retry, removable))
+            retry_feature_losses = formatter_losses(retry) if ok2 else []
+            if retry_feature_losses:
+                ok2, reason2 = False, "retry lost or displaced source features: " + ", ".join(retry_feature_losses)
+            if ok2 and punct_locked and not punctuation_kept(locked_input(retry), retry):
                 ok2, reason2 = False, "retry still changed punctuation"
             if ok2 and punctuation_density(retry) > density_limit(arguments):
                 ok2, reason2 = False, "retry still over-punctuated"
@@ -13783,13 +15680,24 @@ def _proofread_page_inner(
             if gone_beside:
                 ok2, reason2 = False, ("retry still deleted the text beside a rebuilt table "
                                        f"({gone_beside[:18]}…)")
+            still_furniture = unexplained(retry) if ok2 else ""
+            if still_furniture:
+                ok2, reason2 = False, (f"retry still deleted {len(still_furniture)} character(s) outside "
+                                       f"the page's furniture ({still_furniture[:18]}…)")
             if ok2 and retry.strip():
                 formatted, ok, reason = retry, True, reason2 + " (after retry)"
-                placement_notes = retry_notes
+                placement_notes, markers_restored = retry_notes, retry_markers
             else:
                 retry_refusal = reason2 if not ok2 else "the retry answered nothing"
-                rejected_retry = retry[:4000]
-        rejected_output = None if ok else formatted[:4000]
+                rejected_retry = retry
+        rejected_output = None if ok else formatted
+        # What the accepted answer's tables lack of the table blocks it was
+        # given (unexplained): a doubt, below, not a refusal.
+        structure_table_lost = table_lost.get(formatted, "") if ok else ""
+        # The marks both engines read in a refused grid's table block that the
+        # accepted answer's tables carry beyond what it was given (table_marks_lock).
+        structure_table_marks = ("".join(table_marks_allowed.get(formatted, Counter()).elements())
+                                 if ok and punct_locked else "")
         if ok and tables and source_table_mapping_current:
             # droppedRuns reports what the formatter dropped, so it is taken
             # on the text the deletion guard passed: enforcement only puts a
@@ -13813,6 +15721,48 @@ def _proofread_page_inner(
                     format_input, formatted, [(kept["given"], kept["figure"], kept["after"]) for kept in given])
                 for kept, how in zip(given, restored):
                     kept["structure"] = how
+            # Each note marker the structure pass left out and the page has
+            # again (restore_note_markers), sealed (decision 8: the printed
+            # note labels are kept).
+            decision_changes.extend({
+                "decision": "textLoss", "rule": "note-marker-restored",
+                "contextBefore": restored["contextBefore"], "contextAfter": restored["contextAfter"],
+                "after": restored["marker"],
+                "evidence": {"givenGap": restored["gap"], **({"moved": True} if restored.get("moved") else {})}}
+                for restored in markers_restored)
+            # Each table the structure pass wrote itself, turned the
+            # benchmark's way where engine B's reading settles it, its order
+            # and its lines (orient_written_tables); the recovered tables
+            # were turned before the pass.  Sealed as the rebuilds are (D23),
+            # and droppedRuns is taken on the answer as the guard passed it:
+            # a turn breaks the answer's runs without dropping anything.
+            # Each turn is a doubt: engine B reading the table band by band
+            # gives the same counts for a table written right, and nothing
+            # else on the page checks the turn.
+            oriented, written_turns = orient_written_tables(
+                formatted, tables, draft2, page_print_direction(blocks, image_size(render_bytes)),
+                table_orientation_mode)
+            for number, (as_written, now, how) in enumerate(written_turns, 1):
+                table_orientation.append(f"structure pass table {number}: {how}")
+                table_orientation_evidence.append(table_orientation_record(
+                    as_written, now, how, render_bytes, table_orientation_mode))
+                if now != as_written:
+                    at = len(CJK(formatted[:formatted.find(as_written)]))
+                    chars = CJK(formatted)
+                    decision_changes.append({
+                        "decision": "D23", "rule": "structure-table-oriented", "block": None,
+                        "contextBefore": chars[max(0, at - 8):at],
+                        "contextAfter": chars[at + len(CJK(as_written)):at + len(CJK(as_written)) + 8],
+                        "engineA": "", "engineB": "", "after": now, "mergedOffset": None, "pageOffset": at,
+                        "evidence": {"orientation": how[:300], "asWritten": as_written}})
+                    doubts.append({"kind": "table-orientation-turned", "detail": (
+                        f"STRUCTURE TABLE TURNED: structure pass table {number} ({how.split(' ')[0]}) was turned on "
+                        "engine B's reading (its order and its lines), which reads the same for a table written "
+                        "right that engine B read band by band, several cells to a line - check the table "
+                        f"against the image: {how}")})
+            if oriented != formatted:
+                guarded = formatted if guarded is None else guarded
+                formatted = oriented
             writer_text = formatted
             if tables_missing:
                 # A table the engine structured and the checks vouched for is not
@@ -13829,18 +15779,99 @@ def _proofread_page_inner(
                 doubts.append({"kind": "table-disputed", "detail": (
                     "RECOVERED TABLE LAYOUT DISPUTED: block(s) "
                     + ", ".join(str(layout_index(blocks, table_sources[i])) for i in tables_disputed))})
-        else:
-            # Keep the latest image-reviewed checkpoint after either formatter
-            # fails.  Reconstructing from punctuated blocks or the older CJK
-            # merge would lose confirmed additions and could reapply stale
-            # source-table mappings.  Final coverage still checks this fallback.
-            writer_text = format_input
+        elif content_recovery is not None:
+            # Switch --content-fidelity: keep the latest image-reviewed
+            # checkpoint after either formatter fails.  Reconstructing from
+            # punctuated blocks or the older CJK merge would lose confirmed
+            # additions and could reapply stale source-table mappings.  Final
+            # coverage still checks this fallback.
+            writer_text = expanded_input
+            if (reviewing and any(r["kind"] == "table" for r in inventory["regions"])
+                    and not table_spans(writer_text)):
+                detail = {"code": "coverage-structure-mismatch", "path": "$.formatter",
+                          "message": "both formatter candidates rejected for table ownership; fallback has no table"}
+                fail_fidelity(writer_text, detail)
+                fidelity_doubt("formatter", "both formatter answers were rejected and the image-reviewed text "
+                                            "kept in their place has no table where the inventory found one")
             for kept in figures_kept:
                 if "given" in kept:
                     kept["structure"] = "source-recovery fallback"
             doubts.append({"kind": "structure-rejected" if punct_locked else "formatter-rejected",
                            "detail": f"FORMATTER REJECTED: {reason}; image-reviewed input preserved"
                            + (f"; retry refused: {retry_refusal}" if retry_refusal else "")})
+        elif punct_locked:
+            # The structure pass failed but the per-block punctuation held: keep
+            # it, one paragraph per block, furniture blocks left out.  A table
+            # block is not furniture here: it becomes the table recovered from it,
+            # or its own text when the table was refused - leaving it out, as this
+            # once did, deleted every table on the page where no check could see
+            # it (droppedRuns leaves table blocks out of its comparison).  The
+            # table stands in only when it holds every character both engines
+            # read in the block; otherwise the block's own text is kept and the
+            # table is recorded missing.  What only engine B read there - its
+            # reading of the folio or of a heading, which restatement places in
+            # no cell (twelve characters on one page, all misreadings) - goes
+            # with the block, and is recorded rather than dropped unseen.
+            recovered_from = {}
+            # A block a rebuilt table took in (D22) counts what its table had
+            # to hold of it (absorbed_held).
+            agreed = [absorbed_held.get(index, text)
+                      for index, text in enumerate(agreed_block_text(blocks, agreed_segments))]
+            left_out = []
+            for position, (index, table) in enumerate(zip(table_sources, tables)):
+                # A rebuilt table's region is its block and the blocks it took in (D22).
+                region = [index] + [j for j, owner in absorbed_into.items() if owner == index]
+                # With the text beside it, as the structure pass was given it.
+                beside = edge_written.get(index, ("", ""))
+                if Counter("".join(agreed[j] for j in region)) - Counter(CJK(table + "".join(beside))):
+                    tables_missing.append(position)
+                    continue
+                recovered_from[index] = "\n\n".join(part for part in (beside[0], table, beside[1]) if part)
+                extra = (Counter(CJK("".join(punctuated[j] for j in region)))
+                         - Counter(CJK(recovered_from[index])))
+                if extra:
+                    left_out.append(f"block {layout_index(blocks, index)}: {''.join(extra.elements())[:20]}")
+            # A block listing entries with leaders, one entry a paragraph
+            # (listed: engine A's lines).
+            writer_text = "\n\n".join(
+                recovered_from.get(index, text.replace("\n", "\n\n") if index in listed else text)
+                for index, (block, text) in enumerate(zip(blocks, punctuated))
+                if absorbed_into.get(index) not in recovered_from and (index in recovered_from or (CJK(text) and (
+                    block["label"] == "table" or block["label"] not in FURNITURE_LABELS))))
+            # Switch --keep-arabic-numerals: a figure written into a block
+            # this leaves out (one with no character: a contents entry's
+            # number on a line of its own) is not in the page.
+            for kept in figures_kept:
+                if kept.get("placed") in FIGURE_IN_BLOCK and not CJK(punctuated[kept["block"]]):
+                    kept["structure"] = "block left out"
+            doubts.append({"kind": "structure-rejected",
+                           "detail": f"STRUCTURE PASS REJECTED: {reason}"
+                                     + (f"; retry refused: {retry_refusal}" if retry_refusal else "")})
+            if tables_missing:
+                doubts.append({"kind": "table-missing", "detail": (
+                    "block text kept instead of the recovered table (the table lacks "
+                    "characters both engines read there): block(s) "
+                    + ", ".join(str(layout_index(blocks, table_sources[i])) for i in tables_missing))})
+            if left_out:
+                doubts.append({"kind": "table-text-left-out", "detail": (
+                    "characters only engine B read in a table block, not in its "
+                    "table, left out: " + "; ".join(left_out))})
+        else:
+            # Refuse invented characters; keep the merged text unformatted -
+            # with no block spans in this mode, there is nowhere to put the
+            # recovered tables back, so they are all recorded as missing.
+            writer_text = resolved
+            # Switch --keep-arabic-numerals: the figures the formatter was
+            # given are not in the merged text (characters only).
+            for kept in figures_kept:
+                if "given" in kept:
+                    kept["structure"] = "formatter rejected"
+            doubts.append({"kind": "formatter-rejected", "detail": f"FORMATTER REJECTED: {reason}"
+                           + (f"; retry refused: {retry_refusal}" if retry_refusal else "")})
+            tables_missing = list(range(len(tables)))
+            # The page is the merged text with no marks at all, not a page the
+            # formatter punctuated whole: that doubt no longer describes it.
+            doubts[:] = [d for d in doubts if d["kind"] != "punctuation-whole-page"]
         # Every run of dots the page keeps is 「……」 (D4).  The block passes'
         # and the whole-page formatter's are written so and sealed where they
         # are punctuated; one a structure pass wrote with another number of
@@ -13856,16 +15887,34 @@ def _proofread_page_inner(
                 blocks, [absorbed_held.get(index, text)
                          for index, text in enumerate(agreed_block_text(blocks, agreed_segments))],
                 writer_text, book_heads, book_furniture, beside_table)
+            # And what the accepted structure pass's tables lack of the table
+            # blocks it was given, beyond those (split_table_losses): the
+            # page's prose can hide a table's loss from the count above (a 兩
+            # of a merged cell left out, the prose holding 兩 too).
+            more = Counter(structure_table_lost) - Counter(table_characters)
+            unnamed = ""
+            for char in structure_table_lost:
+                if more[char] > 0:
+                    more[char] -= 1
+                    unnamed += char
+            read_by = ("engine A read (the page's only reading)" if order_text == "A"
+                       else "both engines read")
             if table_characters:
-                read_by = ("engine A read (the page's only reading)" if order_text == "A"
-                           else "both engines read")
                 doubts.append({"kind": "table-characters-lost", "detail": (
                     f"TABLE CHARACTERS NOT IN OUTPUT: {len(table_characters)} "
                     f"character(s) {read_by} in the table blocks"
                     + (" and the blocks beside a table rebuilt without them ("
                        + ", ".join(str(layout_index(blocks, j)) for j in sorted(beside_table)) + ")"
                        if beside_table else "")
-                    + f" ({table_characters[:30]})")})
+                    + f" ({table_characters[:30]})"
+                    + (f"; and {len(unnamed)} more character(s) of the table blocks the structure pass was "
+                       f"given, which its tables lack ({unnamed[:30]})" if unnamed else ""))})
+            elif unnamed:
+                doubts.append({"kind": "table-characters-lost", "detail": (
+                    f"TABLE CHARACTERS NOT IN OUTPUT: {len(unnamed)} character(s) of the table blocks the "
+                    f"structure pass was given, which its tables lack ({unnamed[:30]}) - check the table "
+                    "against the image")})
+            table_characters += unnamed
         if table_edge:
             # The table's edge text (table_edges): each table whose block's span
             # held text beside its cells, or whose restatement the rule
@@ -14004,13 +16053,12 @@ def _proofread_page_inner(
                 if unkept else "") if part)
             + " - check the numbers against the image")})
 
-    # Final full-image coverage is after table enforcement and every mechanical
-    # rewrite.  A rejected formatter fallback is still a candidate, never
-    # evidence of full-page coverage.  Unresolved critical losses fail the page
-    # explicitly and cannot be resumed as a completed seal.
-    writer_text, coverage_review = image_review(writer_text, "coverage-review")
-    if not coverage_review["complete"]:
-        raise ProofreadError("full-page coverage unresolved: " + json.dumps(coverage_review, ensure_ascii=False))
+    # Switch --content-fidelity: final full-image coverage is after table
+    # enforcement and every mechanical rewrite.  A rejected formatter fallback
+    # is still a candidate, never evidence of full-page coverage.  What it
+    # cannot settle is a doubt on the page (image_review), sealed as such.
+    if reviewing:
+        writer_text, coverage_review = image_review(writer_text, "coverage-review")
     final_tables = [writer_text[a:b] for a, b in table_spans(writer_text)]
     table_mapping_current, table_correspondence = _content_fidelity.refresh_table_mapping(tables, final_tables)
     table_mapping_current = source_table_mapping_current and table_mapping_current
@@ -14019,7 +16067,8 @@ def _proofread_page_inner(
     for evidence in table_orientation_evidence:
         evidence["status"] = ("active" if evidence.get("outputSha256") in
                               {sha256_bytes(t.encode("utf-8")) for t in final_tables} else "historical")
-        evidence["finalCoverageSha256"] = coverage_review["result_sha256"]
+        if coverage_review is not None:
+            evidence["finalCoverageSha256"] = coverage_review["result_sha256"]
     model_sites = variant_model_sites(disagreements, arguments)
     record: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -14032,9 +16081,13 @@ def _proofread_page_inner(
         "renderFile": str(job.render),
         "auditorClean": not doubts,
         "mode": mode,
-        "pageInventory": inventory,
-        "contentRecovery": content_recovery,
-        "coverageReview": coverage_review,
+        # Switch --content-fidelity: its evidence, and whether it was settled
+        # ("complete") or left a doubt ("doubt").  Absent with it off.
+        **({"contentFidelityContract": _content_fidelity.CONTRACT_VERSION,
+            "contentFidelityStatus": fidelity_status,
+            "pageInventory": inventory or None,
+            "contentRecovery": content_recovery,
+            "coverageReview": coverage_review} if fidelity_on else {}),
         "engineDisagreements": disagreements,
         "auditorReport": "; ".join(d["detail"] for d in doubts),
         "doubts": doubts,
@@ -14069,6 +16122,9 @@ def _proofread_page_inner(
         "readingsDropped": readings_lost,
         "formatterRejectedOutput": rejected_output,
         "formatterRetryReason": format_retry_reason,
+        # The text the structure pass and its retry were given
+        # (structure_input_record); None where no structure pass ran.
+        "structureInput": structure_input,
         # The retry's own refusal and answer, when it was refused as well.
         "formatterRetryRefusal": retry_refusal,
         "formatterRejectedRetry": rejected_retry,
@@ -14081,7 +16137,7 @@ def _proofread_page_inner(
                                      margin=margin_furniture(blocks),
                                      known=sorted(set(profile_furniture)), whole=resolved,
                                      prose_only=prose is not None and spans is not None)
-                        if draft2 is not None else []),
+                        if not transcribing else []),
         # Evidence, not decoration: a refused table is a page where the engine
         # found a grid we would not vouch for, and someone may want to look.
         # A merge-time loss is invisible to droppedRuns, which only compares the
@@ -14096,7 +16152,7 @@ def _proofread_page_inner(
         "engineCoverage": {
             "engineA": engine_a_characters,
             "engineB": engine_b_characters,
-            "merged": len(CJK(resolved)) if draft2 is not None else None,
+            "merged": len(CJK(resolved)) if not transcribing else None,
         },
         "tablesRecovered": len(tables),
         # Each recovered table with the block it came from (its layout index,
@@ -14114,6 +16170,10 @@ def _proofread_page_inner(
         # also for a refused table, which the formatter rebuilds
         # (table_characters_lost).
         "tableCharactersLost": table_characters,
+        # The marks the structure pass wrote in the tables it built from the
+        # image that its punctuation lock let through because both engines
+        # read them in a table block whose grid was refused (table_marks_lock).
+        "tableMarksAllowed": structure_table_marks,
         "tableOrientation": table_orientation,
         "tableOrientationEvidence": table_orientation_evidence,
         "tableMappingCurrent": table_mapping_current,
@@ -14144,8 +16204,7 @@ def _proofread_page_inner(
         "calls": summarize_calls(ledger),
     }
     record["provenance"] = {
-        "renderSha256": sha256_file(job.render),
-        "draftSha256": sha256_file(job.draft_text),
+        **sealed_inputs(job),
         **decision_provenance(arguments),
         "markdownSha256": sha256_bytes(writer_text.encode("utf-8")),
     }
@@ -14180,23 +16239,141 @@ def seal_page(job: PageJob, markdown: bytes, record: Mapping[str, Any]) -> None:
         job.out_json.write_bytes(canonical_json_bytes(record))
 
 
-class AgentTransportParser(argparse.ArgumentParser):
-    """External model routing always needs an explicit command-line choice.
+# The two engines of the default route as their runners name themselves in
+# their drafts' JSON (`engine`: run_paddleocr_vl.py, run_hunyuanocr.py), and
+# engine B's folder in a book's layout.
+ENGINE_A_NAME = "PaddleOCR-VL"
+ENGINE_B_NAME = "HunyuanOCR"
+ENGINE_B_FOLDER = "ocr-hunyuan"
+# The block labels engine B's runners write: a whole page, a second look's crop.
+ENGINE_B_LABELS = frozenset({"whole-page", "second-look"})
+ROLE_SAMPLE_PAGES = 8
+# A document of at most this many rendered pages needs no book profile for
+# two engines: calibration would have too little to measure (book_profile.py
+# skips it too: short_document_engines).
+SHORT_DOC_MAX_PAGES = 4
+MISSING_ENGINE_DOUBT = "engine-draft-missing"
 
-    Native agent sessions answer packet questions. Ambient HTTP settings must
-    not redirect a skill invocation to a different model or endpoint.
+# Set to 1 or 0 to say whether the agent running the scripts is itself the
+# local proofreading model; otherwise agent_is_local_model() works it out.
+LOCAL_AGENT_ENV = "JYUT_OCR_AGENT_IS_LOCAL_MODEL"
+# What Qwen Code exports to every shell it runs (getShellContextEnvVars in
+# its bundle, checked in 0.27.3): the model of the session running the shell.
+QWEN_CODE_MODEL_ENV = "QWEN_CODE_MODEL"
+
+
+def loopback_endpoint(endpoint: str | None) -> bool:
+    """Whether ENDPOINT's host is this machine (localhost, 127.0.0.0/8, ::1)."""
+    try:
+        host = (urllib.parse.urlsplit((endpoint or "").strip()).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def agent_is_local_model(model: str | None = None, endpoint: str | None = None,
+                         environ: Mapping[str, str] | None = None) -> tuple[bool, str]:
+    """Whether the calling agent is the local proofreading model, and why.
+
+    Such an agent must not answer packets: a packet puts the page image into
+    the agent's own context, and its questions are the ones the scripts
+    would send that same model over HTTP.  LOCAL_AGENT_ENV=1/0 decides;
+    otherwise the agent is local when it is Qwen Code (QWEN_CODE_MODEL in its
+    shell) running the model proofreading resolves to (MODEL, else
+    PROOFREAD_MODEL) served on this machine (ENDPOINT, else
+    PROOFREAD_ENDPOINT, on a loopback host)."""
+    env = os.environ if environ is None else environ
+    forced = (env.get(LOCAL_AGENT_ENV) or "").strip()
+    if forced in ("1", "0"):
+        return forced == "1", f"{LOCAL_AGENT_ENV}={forced}"
+    if forced:
+        raise ProofreadError(f"{LOCAL_AGENT_ENV} must be 1 or 0, not {forced!r}")
+    agent = (env.get(QWEN_CODE_MODEL_ENV) or "").strip()
+    model = (model or env.get("PROOFREAD_MODEL") or "").strip()
+    endpoint = (endpoint or env.get("PROOFREAD_ENDPOINT") or "").strip()
+    if agent and agent == model and loopback_endpoint(endpoint):
+        return True, (f"{QWEN_CODE_MODEL_ENV}={agent} is the proofreading model, served at {endpoint}")
+    return False, ""
+
+
+def endpoint_models_url(endpoint: str) -> str:
+    """{endpoint base}/v1/models for an OpenAI-compatible chat endpoint
+    (http://host:port/v1/chat/completions -> http://host:port/v1/models)."""
+    parts = urllib.parse.urlsplit(endpoint.strip())
+    path = parts.path.rstrip("/")
+    for suffix in ("/chat/completions", "/completions", "/v1"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path.rstrip("/") + "/v1/models", "", ""))
+
+
+def resolve_http_model(endpoint: str, model: str | None, timeout: float = 30.0) -> str:
+    """The model an HTTP run asks for: MODEL (--model, else PROOFREAD_MODEL,
+    as the parser left it), else the first id the server lists at
+    endpoint_models_url.  Never a packet label."""
+    if model and model.strip():
+        return model.strip()
+    url = endpoint_models_url(endpoint)
+    headers = {}
+    if os.environ.get("PROOFREAD_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['PROOFREAD_API_KEY']}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
+                                    timeout=min(timeout, 30.0)) as response:
+            listed = json.loads(response.read().decode("utf-8", errors="replace"))
+        ids = [entry.get("id") for entry in (listed.get("data") or []) if isinstance(entry, Mapping)]
+        first = next((str(i).strip() for i in ids if isinstance(i, str) and i.strip()), None)
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, AttributeError) as error:
+        raise ProofreadError(f"no model named for --backend http (no --model, no PROOFREAD_MODEL) and the "
+                             f"server's model list at {url} could not be read ({error}); pass --model") from error
+    if not first:
+        raise ProofreadError(f"no model named for --backend http (no --model, no PROOFREAD_MODEL) and the "
+                             f"server's model list at {url} names none; pass --model")
+    return first
+
+
+class AgentTransportParser(argparse.ArgumentParser):
+    """Which transport answers the model questions.
+
+    Packets, answered by the calling agent, are the default.  HTTP to a local
+    (or other) OpenAI-compatible server with --backend http: the endpoint is
+    --endpoint, else PROOFREAD_ENDPOINT; the model --model, else
+    PROOFREAD_MODEL, else the server's first listed model (resolve_http_model,
+    when the client is made).  When the calling agent is itself the local
+    proofreading model (agent_is_local_model), HTTP is the default and
+    packets are refused: the page images must not enter its context.
     """
 
     def parse_args(self, args=None, namespace=None):
         arguments = super().parse_args(args, namespace)
+        try:
+            local, why = agent_is_local_model(arguments.model, arguments.endpoint)
+        except ProofreadError as error:
+            self.error(str(error))
+        if arguments.backend is None:
+            arguments.backend = "http" if local else "packet"
         if arguments.backend == "http":
-            if not arguments.endpoint or not arguments.endpoint.strip():
-                self.error("--backend http requires an explicit --endpoint; PROOFREAD_ENDPOINT is not used")
-            arguments.model = arguments.model or os.environ.get("PROOFREAD_MODEL") or DEFAULT_MODEL
+            endpoint = arguments.endpoint if arguments.endpoint is not None else os.environ.get("PROOFREAD_ENDPOINT")
+            if not endpoint or not endpoint.strip():
+                self.error("--backend http needs an endpoint: pass --endpoint URL or set PROOFREAD_ENDPOINT"
+                           + (f" (the calling agent is the local proofreading model: {why})" if local else ""))
+            arguments.endpoint = endpoint.strip()
+            # None: the server's first listed model (resolve_http_model).
+            arguments.model = arguments.model or os.environ.get("PROOFREAD_MODEL") or None
         else:
+            if local:
+                self.error(f"the calling agent is the local proofreading model ({why}): --backend packet would "
+                           "put the page images into the agent's own context. Run with --backend http (the "
+                           f"default for this agent); set {LOCAL_AGENT_ENV}=0 if this agent is not that model")
             if arguments.endpoint is not None:
-                self.error("--endpoint requires explicit --backend http")
+                self.error("--endpoint requires --backend http")
             arguments.model = arguments.model or DEFAULT_MODEL
+        arguments.agent_is_local_model = local
         return arguments
 
 
@@ -14214,8 +16391,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-pair variant-form rulings (default: variant-rulings.json next "
                              "to the profile, if present)")
     parser.add_argument("--draft2-directory", type=Path,
-                        help="optional second OCR draft directory for alignment and disagreement checks; "
-                             "both drafts still require whole-image coverage checks")
+                        help=f"engine B's drafts ({ENGINE_B_NAME}) for alignment and disagreement checks (default: "
+                             "the folder the book profile's sources name, else "
+                             f"{ENGINE_B_FOLDER}/ beside the draft directory; none found is an error unless "
+                             "--single-engine)")
+    parser.add_argument("--single-engine", action="store_true",
+                        help="proofread from the draft directory alone: each page transcribed from its image, "
+                             "the one draft its hint (two engines are the default)")
+    parser.add_argument("--allow-missing-engine-b", action="store_true",
+                        help="on a two-engine run, transcribe a page whose engine B draft is missing from "
+                             "engine A's draft alone, with an engine-draft-missing doubt (default: such a page "
+                             "is not proofread and counts as failed, since engine B's OCR may still be running "
+                             "or was interrupted)")
     selector = parser.add_mutually_exclusive_group(required=False)
     selector.add_argument("--pages", help="comma-separated pages/ranges, e.g. 1,3-5")
     selector.add_argument("--first-page", type=int)
@@ -14224,24 +16411,42 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"pages processed concurrently (default {DEFAULT_WORKERS}); "
                              "packet answers may be supplied sequentially or by optional workers")
     parser.add_argument("--backend", choices=("packet", "http"),
-                        default="packet",
+                        default=None,
                         help="model transport: 'packet' (default) writes checkpoint-replay wave bundles "
                              "for the invoking agent or optional workers and exits 10 until answered; "
-                             "'http' requires an explicit --endpoint")
+                             "'http' asks an OpenAI-compatible server (--endpoint, else PROOFREAD_ENDPOINT). "
+                             "When the calling agent is the local proofreading model "
+                             f"({LOCAL_AGENT_ENV}=1, or Qwen Code's {QWEN_CODE_MODEL_ENV} equal to "
+                             "PROOFREAD_MODEL served at a loopback PROOFREAD_ENDPOINT), 'http' is the default "
+                             "and 'packet' is refused")
     parser.add_argument("--packets-dir", type=Path, default=None,
                         help="packet checkpoint directory for --backend packet "
                              "(default: <output_directory.parent>/packets)")
     parser.add_argument("--max-bundles", type=int,
                         default=int(os.environ.get("PROOFREAD_MAX_BUNDLES") or 8),
-                        help="maximum question bundle files per wave in --backend packet (default 8)")
+                        help="question bundle files per wave in --backend packet (default 8; more when "
+                             "--max-items-per-bundle needs them)")
+    parser.add_argument("--max-items-per-bundle", type=int,
+                        default=int(os.environ.get("PROOFREAD_MAX_ITEMS_PER_BUNDLE") or DEFAULT_MAX_ITEMS_PER_BUNDLE),
+                        help="questions one packet bundle holds at most (env PROOFREAD_MAX_ITEMS_PER_BUNDLE; "
+                             f"default {DEFAULT_MAX_ITEMS_PER_BUNDLE}): a wave with more than --max-bundles times "
+                             "this many is written in more bundles, so no bundle hands one answerer hundreds "
+                             "of page images")
     parser.add_argument("--table-orientation", choices=("auto", "as-printed"),
                         default=os.environ.get("PROOFREAD_TABLE_ORIENTATION", "auto"),
                         help="table orientation policy: 'auto' (default) puts vertical-column records into "
                              "logical rows; 'as-printed' keeps the printed row/column grid without transposing")
     parser.add_argument("--endpoint", default=None,
-                        help="explicit HTTP endpoint; required with --backend http (no environment fallback)")
+                        help="HTTP endpoint for --backend http (default: PROOFREAD_ENDPOINT)")
     parser.add_argument("--model", default=None,
-                        help="HTTP model or packet provenance label; PROOFREAD_MODEL applies only to explicit HTTP")
+                        help="HTTP model (default: PROOFREAD_MODEL, else the server's first model at "
+                             "{endpoint base}/v1/models) or packet provenance label")
+    parser.add_argument("--content-fidelity", choices=("off", "on"), default="off",
+                        help="content-fidelity v2: 'on' asks three more whole-page image questions per page "
+                             "(an inventory of the page, a content-recovery review before formatting, a "
+                             "coverage review of the final text); whatever they cannot settle becomes a "
+                             f"{_content_fidelity.DOUBT_KIND} doubt on the page.  Default 'off': none of the "
+                             "three is asked and pages are sealed without their record")
     parser.add_argument("--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", DEFAULT_EFFORT),
                         help=f"low|medium|xhigh, or 'none' to omit (default {DEFAULT_EFFORT})")
     parser.add_argument("--max-tokens", type=int, default=16000)
@@ -14366,6 +16571,162 @@ def parse_pages(arguments: argparse.Namespace, render_directory: Path) -> list[i
     return list(range(arguments.first_page, arguments.last_page + 1))
 
 
+def short_document_engines(pages: int) -> dict[str, Any]:
+    """The engine section of a short document (at most SHORT_DOC_MAX_PAGES
+    pages): no calibration, every disagreement adjudicated where it is.
+    book_profile.py writes it for such a document, and a two-engine run of
+    one with no profile takes it as its engine preference."""
+    return {
+        "preferEngine": "adjudicate",
+        "reason": (f"short document ({pages} page(s) <= {SHORT_DOC_MAX_PAGES}): skipping calibration; "
+                   "per-spot adjudication resolves actual disagreements directly"),
+        "stopped": "short-document fast path",
+        "decision": {"pairVotes": {}, "preferEngine": "adjudicate"},
+        "verdicts": [],
+    }
+
+
+def _engine_key(name: Any) -> str:
+    return re.sub(r"[^0-9a-z]", "", str(name or "").lower())
+
+
+def draft_engine_evidence(folder: Path, sample: int = ROLE_SAMPLE_PAGES) -> dict[str, Any]:
+    """What the drafts' JSON in FOLDER says about the engine that wrote them,
+    from its first SAMPLE pages: the engine names they give (`engine`, else
+    `ocrProfile.engine`), how many pages carry layout labels (engine A's
+    blocks: a label other than ENGINE_B_LABELS) and how many only engine B's
+    whole-page labels.  Lines with no label say nothing."""
+    names: set[str] = set()
+    layout = whole = 0
+    paths = sorted(path for path in folder.glob("page-*.json") if re.fullmatch(r"page-\d{4,}\.json", path.name))
+    for path in paths[:sample]:
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        name = record.get("engine")
+        if not (isinstance(name, str) and name) and isinstance(record.get("ocrProfile"), dict):
+            name = record["ocrProfile"].get("engine")
+        if isinstance(name, str) and name:
+            names.add(name)
+        labels = {str(line.get("blockLabel") or "") for line in record.get("lines") or []
+                  if isinstance(line, dict)} - {"", "unknown"}
+        if labels:
+            if labels - ENGINE_B_LABELS:
+                layout += 1
+            else:
+                whole += 1
+    return {"names": sorted(names), "layoutPages": layout, "wholePagePages": whole}
+
+
+def draft_role(evidence: Mapping[str, Any]) -> str | None:
+    """'A' for PaddleOCR-VL's drafts (or unnamed ones with layout labels),
+    'B' for HunyuanOCR's (or unnamed whole-page ones), the names of another
+    engine (or of several), or None when the drafts do not say."""
+    names = list(evidence.get("names") or [])
+    keys = {_engine_key(name) for name in names}
+    if keys:
+        if keys == {_engine_key(ENGINE_A_NAME)}:
+            return "A"
+        if keys == {_engine_key(ENGINE_B_NAME)}:
+            return "B"
+        return " and ".join(names)
+    if evidence.get("layoutPages") and not evidence.get("wholePagePages"):
+        return "A"
+    if evidence.get("wholePagePages") and not evidence.get("layoutPages"):
+        return "B"
+    return None
+
+
+def engine_roles_problem(drafts_a: Path, drafts_b: Path, a_name: str = "DRAFT_DIR",
+                         b_name: str = "--draft2-directory", one_engine: str = "") -> str | None:
+    """Why DRAFTS_A and DRAFTS_B cannot be engine A and engine B, or None.
+    Engine A must be PaddleOCR-VL: its layout labels drive the merge, the
+    crops, the learned running heads and the furniture; engine B HunyuanOCR.
+    Only what the drafts' JSON says counts (draft_engine_evidence): drafts
+    that do not say are taken as given.  A_NAME and B_NAME are how the
+    command names the two folders; ONE_ENGINE, how it runs one engine."""
+    role_a, role_b = draft_role(draft_engine_evidence(drafts_a)), draft_role(draft_engine_evidence(drafts_b))
+    if role_a in (None, "A") and role_b in (None, "B"):
+        return None
+    rule = (f"engine A must be {ENGINE_A_NAME} (its layout labels drive the merge, the crops and the running "
+            f"heads) and engine B {ENGINE_B_NAME}")
+    if role_a == "B" and role_b == "A":
+        return (f"engine roles swapped: {a_name} {drafts_a} holds {ENGINE_B_NAME}'s drafts and {b_name} "
+                f"{drafts_b} holds {ENGINE_A_NAME}'s; {rule} - pass {drafts_b} as {a_name} and {drafts_a} "
+                f"as {b_name}")
+    said = {"A": ENGINE_A_NAME, "B": ENGINE_B_NAME}
+    problems = []
+    if role_a not in (None, "A"):
+        problems.append(f"{a_name} {drafts_a} holds {said.get(role_a, role_a)}'s drafts, not {ENGINE_A_NAME}'s")
+    if role_b not in (None, "B"):
+        problems.append(f"{b_name} {drafts_b} holds {said.get(role_b, role_b)}'s drafts, not {ENGINE_B_NAME}'s")
+    return ("wrong engine roles: " + "; ".join(problems) + f"; {rule}"
+            + (f" (to proofread from one engine's drafts, {one_engine})" if one_engine else ""))
+
+
+def default_draft2(drafts: Path, sources: Mapping[str, Any]) -> tuple[Path | None, list[Path]]:
+    """Engine B's drafts when --draft2-directory is not given, and the folders
+    looked at, in order: the one the book profile's sources name when the
+    profile was measured on DRAFTS, then ENGINE_B_FOLDER beside DRAFTS, then
+    the profile's folder however it was measured.  A folder counts when it
+    holds page-NNNN.txt drafts and is not DRAFTS."""
+    named = sources.get("draftB")
+    named = Path(named).expanduser() if isinstance(named, str) and named else None
+    measured_a = sources.get("draftA")
+    here = isinstance(measured_a, str) and bool(measured_a) and Path(measured_a).expanduser().resolve() == drafts
+    candidates = ([named] if named and here else []) + [drafts.parent / ENGINE_B_FOLDER] + (
+        [named] if named and not here else [])
+    looked: list[Path] = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in looked:
+            continue
+        looked.append(candidate)
+        if (candidate != drafts and candidate.is_dir()
+                and any(re.fullmatch(r"page-\d{4}\.txt", path.name) for path in candidate.glob("page-*.txt"))):
+            return candidate, looked
+    return None, looked
+
+
+def page_ranges(pages: Sequence[int]) -> str:
+    """PAGES as ranges: 3-5,9."""
+    runs: list[list[int]] = []
+    for page in sorted(set(pages)):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1][1] = page
+        else:
+            runs.append([page, page])
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
+
+
+def missing_engine_b_warning(drafts2: Path, waiting: Sequence[int], selected: int) -> str:
+    """The warning for the pages of a two-engine run not proofread because
+    engine B's draft is missing (--allow-missing-engine-b)."""
+    return (f"engine B's drafts ({drafts2}) lack {len(waiting)} of the {selected} selected page(s): pages "
+            f"{page_ranges(waiting)}. Engine B's OCR may still be running, or was interrupted; two engines are "
+            "the default, so these pages are not proofread and count as failed. Finish engine B's OCR and run "
+            "the same command again, or pass --allow-missing-engine-b to transcribe them from engine A's "
+            f"draft alone (an {MISSING_ENGINE_DOUBT} doubt each), or --single-engine for one engine throughout")
+
+
+def missing_engine_doubt(job: PageJob) -> dict[str, str]:
+    """The doubt on a page of a two-engine run sealed from one engine's draft
+    because the other's is missing (job.missing_engine)."""
+    if job.missing_engine == "B":
+        detail = (f"ENGINE B DRAFT MISSING: this page has no {ENGINE_B_NAME} draft; it is transcribed from "
+                  f"engine A's ({ENGINE_A_NAME}) draft alone, with no second reading to check it against - "
+                  "check it against the image, or OCR it with engine B and proofread it again (--overwrite)")
+    else:
+        detail = (f"ENGINE A DRAFT MISSING: this page has no {ENGINE_A_NAME} draft; it is transcribed from "
+                  f"engine B's ({ENGINE_B_NAME}) draft alone, without engine A's layout and with no second "
+                  "reading to check it against - check it against the image, or OCR it with engine A and "
+                  "proofread it again (--overwrite)")
+    return {"kind": MISSING_ENGINE_DOUBT, "detail": detail}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     started_at = utc_now()
@@ -14375,14 +16736,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         pages = parse_pages(arguments, renders)
         drafts = arguments.draft_directory.expanduser().resolve()
         output = arguments.output_directory.expanduser().resolve()
-        drafts2 = (arguments.draft2_directory.expanduser().resolve()
-                   if arguments.draft2_directory else None)
         for label, path in (("render", renders), ("draft", drafts)):
             if not path.is_dir():
                 raise ProofreadError(f"{label} directory does not exist: {path}")
-        output.mkdir(parents=True, exist_ok=True)
         if arguments.workers < 1:
             raise ProofreadError("--workers must be at least 1")
+        if arguments.max_items_per_bundle < 1:
+            raise ProofreadError("--max-items-per-bundle must be at least 1")
         effort = None if arguments.reasoning_effort.lower() == "none" else arguments.reasoning_effort
         # The book profile: which engine reads THIS book better, what it
         # prints, how its pages are laid out.  Nothing about a book is assumed.
@@ -14392,18 +16752,60 @@ def main(argv: Sequence[str] | None = None) -> int:
         if profile_path.is_file():
             arguments.profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
             arguments.profile_sha = profile_fingerprint(arguments.profile_data)
-            # A profile describes one book's drafts; applied to other drafts
-            # (another book, re-OCR'd pages, engines swapped) it is wrong.
-            sources = arguments.profile_data.get("sources") or {}
-            probe = arguments.profile_data.get("probePages") or []
-            if probe and draft_digest(probe, drafts, drafts2) != sources.get("probeDraftsSha256"):
-                raise ProofreadError(
-                    f"{profile_path} was measured on drafts A={sources.get('draftA')} "
-                    f"B={sources.get('draftB')}; the probe pages' drafts under A={drafts} "
-                    f"B={drafts2} differ (another book, re-OCR'd pages, or engines swapped) - "
-                    "re-run scripts/book_profile.py for these drafts")
         elif arguments.profile:
             raise ProofreadError(f"profile does not exist: {profile_path}")
+        sources = (arguments.profile_data or {}).get("sources") or {}
+        # Engine B's drafts: two engines are the default, one only when asked.
+        if arguments.single_engine:
+            if arguments.draft2_directory is not None:
+                raise ProofreadError("--single-engine cannot be combined with --draft2-directory")
+            drafts2 = None
+        elif arguments.draft2_directory is not None:
+            drafts2 = arguments.draft2_directory.expanduser().resolve()
+            if not drafts2.is_dir():
+                raise ProofreadError(f"engine B's draft directory (--draft2-directory) does not exist: {drafts2}")
+        else:
+            drafts2, looked = default_draft2(drafts, sources)
+            if drafts2 is None:
+                raise ProofreadError(
+                    f"no engine B drafts: two OCR engines are the default (engine A {ENGINE_A_NAME} in "
+                    f"{drafts}, engine B {ENGINE_B_NAME}), and no folder of engine B's drafts was found at "
+                    + ", ".join(str(path) for path in looked)
+                    + " - pass --draft2-directory DIR, or --single-engine to proofread from "
+                      f"{drafts} alone")
+            print(f"  engine B's drafts: {drafts2} (no --draft2-directory given)", flush=True)
+        if drafts2 is not None:
+            problem = engine_roles_problem(drafts, drafts2, one_engine="pass --single-engine")
+            if problem:
+                raise ProofreadError(problem)
+        # A profile describes one book's drafts; applied to other drafts
+        # (another book, re-OCR'd pages, engines swapped) it is wrong.
+        probe = (arguments.profile_data or {}).get("probePages") or []
+        measured = sources.get("probeDraftsSha256")
+        if probe and draft_digest(probe, drafts, drafts2) != measured:
+            measured_b = sources.get("draftB")
+            measured_b = Path(measured_b).expanduser().resolve() if isinstance(measured_b, str) and measured_b else None
+            if drafts2 is None and measured_b is not None:
+                raise ProofreadError(
+                    f"{profile_path} was measured on two engines' drafts (B={measured_b}), and --single-engine "
+                    "reads one: drop --single-engine to proofread with engine B's drafts, or name a profile "
+                    "for these drafts with --profile")
+            if drafts2 is not None and draft_digest(probe, drafts2, drafts) == measured:
+                raise ProofreadError(
+                    f"engine roles swapped: {profile_path} was measured with {drafts2} as engine A and "
+                    f"{drafts} as engine B - pass {drafts2} as the draft directory and {drafts} as "
+                    "--draft2-directory")
+            if (drafts2 is not None and measured_b is not None and measured_b != drafts2
+                    and measured_b.is_dir() and draft_digest(probe, drafts, measured_b) == measured):
+                raise ProofreadError(
+                    f"{profile_path} was measured with engine B's drafts in {measured_b}, not {drafts2}: "
+                    f"pass --draft2-directory {measured_b}")
+            raise ProofreadError(
+                f"{profile_path} was measured on drafts A={sources.get('draftA')} "
+                f"B={sources.get('draftB')}; the probe pages' drafts under A={drafts} "
+                f"B={drafts2} differ (another book, or re-OCR'd pages) - "
+                "re-run scripts/book_profile.py for these drafts")
+        output.mkdir(parents=True, exist_ok=True)
         # Variant-form rulings, one per pair for the whole book: a person's,
         # or the model's in a file the variant vote wrote (variant_ruling_by).
         # A person's ruling stands over the model's for the same pair wherever
@@ -14435,17 +16837,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.variant_rulings:
             raise ProofreadError(f"variant rulings do not exist: {rulings_path}")
         arguments.variant_rulings = arguments.variant_rulings_data
+        # A short document needs no profile for two engines: the engine
+        # section book_profile.py would write for it (short_document_engines).
+        short_engines = None
         if arguments.profile_data is None and drafts2 is not None:
-            raise ProofreadError(
-                "no engine preference: which OCR engine reads a book better differs from "
-                "book to book, so measure it first - run scripts/book_profile.py "
-                f"RENDER_DIR DRAFT_DIR DRAFT2_DIR {drafts.parent / 'book-profile.json'}")
-        arguments.prefer_engine = (arguments.profile_data or {}).get("preferEngine") or "adjudicate"
+            document_pages = len(rendered_pages(renders))
+            if document_pages > SHORT_DOC_MAX_PAGES:
+                raise ProofreadError(
+                    "no engine preference: which OCR engine reads a book better differs from "
+                    f"book to book, so measure it first (a document of more than {SHORT_DOC_MAX_PAGES} "
+                    f"pages; this one has {document_pages}) - run scripts/book_profile.py "
+                    f"RENDER_DIR DRAFT_DIR DRAFT2_DIR {drafts.parent / 'book-profile.json'}, or name "
+                    "one with --profile")
+            short_engines = short_document_engines(document_pages)
+        engines_section = ((arguments.profile_data or {}).get("engines") or short_engines or {})
+        arguments.prefer_engine = ((arguments.profile_data or {}).get("preferEngine")
+                                   or (short_engines or {}).get("preferEngine") or "adjudicate")
         preference_source = (f"profile {profile_path.name}" if arguments.profile_data is not None else
+                             f"no profile: {short_engines['reason']}" if short_engines is not None else
                              "single-engine image transcription; no engine calibration")
         # When the profile could not state a preference, budget overflow and
         # unusable verdicts still need an engine: the probe's leader.
-        votes = (((arguments.profile_data or {}).get("engines") or {}).get("decision") or {}).get("pairVotes") or {}
+        votes = (engines_section.get("decision") or {}).get("pairVotes") or {}
         arguments.fallback_engine = "B" if votes.get("B", 0) > votes.get("A", 0) else "A"
         if arguments.prefer_engine in ("A", "B"):
             arguments.fallback_engine = arguments.prefer_engine
@@ -14546,26 +16959,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     packets_dir = (arguments.packets_dir.expanduser().resolve()
                    if arguments.packets_dir is not None else output.parent / "packets")
-    if arguments.backend == "packet":
-        try:
-            client: Any = PacketClient(
-                packets_dir,
-                max_bundles=arguments.max_bundles,
-                model=arguments.model,
-                effort=effort,
-                call_ledger_var=_CALL_LEDGER,
-                call_site_var=_CALL_SITE,
-            )
-        except ValueError as error:
-            print(f"ERROR {error}", file=sys.stderr)
-            return 2
-    else:
-        client = Client(arguments.endpoint, arguments.model, effort, arguments.timeout, arguments.temperature,
-                        max_inflight=arguments.max_inflight or arguments.workers,
-                        loop_detector=_loop_watch.RULE if arguments.loop_detector else None)
+    # Made once the pages are sorted, and only when one is to be proofread: a
+    # run that finds every page current asks no model, and so needs none.
+    client: Any = None
     jobs: list[PageJob] = []
     results: list[dict[str, Any]] = []
-    skipped = blocked = 0
+    skipped = blocked = legacy = 0
     run_tally: Counter = Counter()
     variant_queue: Counter = Counter()
     variant_by_model: Counter = Counter()
@@ -14577,29 +16976,54 @@ def main(argv: Sequence[str] | None = None) -> int:
         variant_by_model.update(record.get("variantRuledByModel") or [])
         doubt_pages.update({doubt.get("kind") for doubt in doubts})
 
+    unreadable = one_engine = 0
+    # Pages of a two-engine run with no engine B draft, not proofread without
+    # --allow-missing-engine-b.
+    waiting_b: list[int] = []
     for scan_page in pages:
         render = renders / f"page-{scan_page:04d}.png"
         draft_text = drafts / f"page-{scan_page:04d}.txt"
         draft_json = drafts / f"page-{scan_page:04d}.json"
-        if not render.is_file() or not draft_text.is_file():
-            results.append({"scanPage": scan_page, "status": "failed",
-                            "error": "missing render or draft"})
-            blocked += 1
-            continue
         d2 = (drafts2 / f"page-{scan_page:04d}.txt") if drafts2 else None
-        job = PageJob(scan_page, render, draft_text,
-                      draft_json if draft_json.is_file() else None,
-                      d2 if (d2 and d2.is_file()) else None,
-                      output / f"page-{scan_page:04d}.json",
-                      output / f"page-{scan_page:04d}.md")
-        expect = {"renderSha256": sha256_file(render), "draftSha256": sha256_file(draft_text),
-                  **decision_provenance(arguments)}
+        has_a, has_b = draft_text.is_file(), bool(d2 and d2.is_file())
+        if not render.is_file() or not (has_a or has_b):
+            missing = [what for what, there in (("render", render.is_file()), ("engine A's draft", has_a),
+                                                 *((("engine B's draft", has_b),) if drafts2 else ()))
+                       if not there]
+            results.append({"scanPage": scan_page, "status": "failed",
+                            "error": "missing " + " and ".join(missing)})
+            unreadable += 1
+            continue
+        out_json, out_md = output / f"page-{scan_page:04d}.json", output / f"page-{scan_page:04d}.md"
+        if has_a:
+            # Engine B's draft missing on a two-engine run: engine A's alone.
+            job = PageJob(scan_page, render, draft_text, draft_json if draft_json.is_file() else None,
+                          d2 if has_b else None, out_json, out_md,
+                          missing_engine="B" if drafts2 is not None and not has_b else None)
+        else:
+            # Engine A's draft missing: engine B's alone, without a layout.
+            job = PageJob(scan_page, render, d2, None, None, out_json, out_md, missing_engine="A")
+        expect = {**sealed_inputs(job), **decision_provenance(arguments)}
         valid, reason = validate_completion(job, expect)
+        if job.missing_engine == "B" and not arguments.allow_missing_engine_b and not (
+                valid and not arguments.overwrite):
+            # A page sealed from engine A alone stays current; one not sealed
+            # yet waits for engine B's draft.
+            waiting_b.append(scan_page)
+            results.append({"scanPage": scan_page, "status": "failed",
+                            "error": "missing engine B's draft (engine B's OCR still running or interrupted?); "
+                                     "--allow-missing-engine-b transcribes it from engine A's draft alone"})
+            continue
+        one_engine += job.missing_engine is not None
         if valid and not arguments.overwrite:
             skipped += 1
             record = json.loads(job.out_json.read_text(encoding="utf-8"))
             entry = {"scanPage": scan_page, "status": "skipped-current",
                      "auditorClean": record.get("auditorClean")}
+            if reason != "current":
+                # Sealed by the old skill before some of its rules (LEGACY_ABSENT_KEYS).
+                legacy += 1
+                entry["legacy"] = reason
             doubts = record.get("doubts") or []
             entry["doubts"] = sorted({doubt["kind"] for doubt in doubts})
             results.append(entry)
@@ -14614,7 +17038,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         jobs.append(job)
 
-    completed = failed = pending_pages = 0
+    if waiting_b:
+        print("WARNING " + missing_engine_b_warning(drafts2, waiting_b, len(pages)), file=sys.stderr, flush=True)
+
+    if jobs and arguments.backend == "packet":
+        try:
+            client = PacketClient(
+                packets_dir,
+                max_bundles=arguments.max_bundles,
+                max_items_per_bundle=arguments.max_items_per_bundle,
+                model=arguments.model,
+                effort=effort,
+                call_ledger_var=_CALL_LEDGER,
+                call_site_var=_CALL_SITE,
+                request_config=packet_request_config(arguments),
+            )
+        except ValueError as error:
+            print(f"ERROR {error}", file=sys.stderr)
+            return 2
+    elif jobs:
+        try:
+            client = Client(arguments.endpoint, arguments.model, effort, arguments.timeout, arguments.temperature,
+                            max_inflight=arguments.max_inflight or arguments.workers,
+                            loop_detector=_loop_watch.RULE if arguments.loop_detector else None)
+        except ProofreadError as error:
+            print(f"ERROR {error}", file=sys.stderr)
+            return 2
+        # The model the seals record (proofreadModel) and the report names.
+        arguments.model = getattr(client, "model", None) or arguments.model
+
+    completed = pending_pages = 0
+    # A page with no render, or with no draft of either engine, cannot be
+    # read; one with no engine B draft waits for it (waiting_b).
+    failed = unreadable + len(waiting_b)
     research_queue: list[dict[str, Any]] = []
     call_totals: dict[str, Counter] = {}
     if jobs:
@@ -14664,9 +17120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 add_tally(record, record.get("doubts") or [])
                 for kind, row in (record.get("calls") or {}).items():
                     total = call_totals.setdefault(kind, Counter())
-                    total.update({k: v for k, v in row.items() if isinstance(v, (int, float))
-                                  and k != "maxCompletion"})
-                    total["maxCompletion"] = max(total["maxCompletion"], row.get("maxCompletion", 0))
+                    for key, value in row.items():
+                        if key == "maxCompletion":
+                            total[key] = (None if total.get(key, 0) is None or value is None
+                                          else max(total.get(key, 0), value))
+                        elif value is None:
+                            total[key] = None
+                        elif isinstance(value, (int, float)) and total.get(key, 0) is not None:
+                            total[key] += value
                 research = [a for a in record["adjudications"] if a.get("needs_research")]
                 research_queue.extend(
                     {
@@ -14748,7 +17209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                       f"clean={record['auditorClean']}  "
                       f"adjudicated={len(record['adjudications'])}  "
                       f"calls={results[-1]['calls']}  "
-                      f"reasoning={record['usage']['reasoning_tokens']:,}", flush=True)
+                      f"reasoning={record['usage']['reasoning_tokens'] if record['usage']['reasoning_tokens'] is not None else 'unknown'}", flush=True)
 
     # A table printed across pages: the pages above are sealed one by one, and
     # nothing that sees one page can join a table the page break cut.  The
@@ -14784,6 +17245,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     results.sort(key=lambda r: r["scanPage"])
     wall = time.monotonic() - started
+    # Exit 1 with nothing pending, 10 with answers pending and nothing failed,
+    # 11 with both: pending waves are never hidden behind a failed page.
+    if pending_pages > 0:
+        exit_status = EXIT_PACKETS_PENDING_WITH_FAILURES if (failed or blocked) else EXIT_PACKETS_PENDING
+    else:
+        exit_status = 1 if (failed or blocked) else 0
+    answered_by = client.answered_by_summary() if isinstance(client, PacketClient) else {}
     report = {
         "reportSchemaVersion": SCHEMA_VERSION,
         "startedAt": started_at, "finishedAt": utc_now(),
@@ -14795,9 +17263,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "model": arguments.model,
         "reasoningEffort": effort, "workers": arguments.workers,
         "tableOrientation": arguments.table_orientation,
+        "exitStatus": exit_status,
         "counts": {"requested": len(pages), "completed": completed,
                    "pending": pending_pages,
-                   "skippedCurrent": skipped, "blocked": blocked, "failed": failed},
+                   "skippedCurrent": skipped, "legacy": legacy, "blocked": blocked, "failed": failed,
+                   # Pages of a two-engine run with one engine's draft only
+                   # (an engine-draft-missing doubt on each).
+                   "oneEngine": one_engine,
+                   # Of the failed: pages not proofread for want of engine
+                   # B's draft (--allow-missing-engine-b).
+                   "engineBMissing": len(waiting_b)},
+        "singleEngine": drafts2 is None,
+        "draftDirectories": {"A": str(drafts), "B": str(drafts2) if drafts2 is not None else None},
         "pages": results,
         # Items the model judged unresolvable from glyph shape alone -
         # proper nouns needing external lookup. The runner has no tools, so
@@ -14906,6 +17383,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "tableStitchDecisions": stitched.get("decisions", []),
         "tableStitchPagesRewritten": stitched.get("pagesRewritten", []),
         **({"packetWave": wave_summary} if wave_summary is not None else {}),
+        # Packet answers replayed in this run, by the model apply_packet_answers.py
+        # recorded as answering them (--answered-by; "unrecorded" when none was).
+        **({"packetAnsweredBy": answered_by} if isinstance(client, PacketClient) else {}),
     }
     report_path = (arguments.report.expanduser().resolve() if arguments.report
                    else output.parent / "proofread-run.json")
@@ -14914,11 +17394,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"  requested {len(pages)} | completed {completed} | pending {pending_pages} | "
           f"skipped {skipped} | blocked {blocked} | failed {failed}", flush=True)
+    if legacy:
+        print(f"  {legacy} skipped page(s) are legacy seals, accepted as sealed (made before some "
+              "of the rules they would be decided by now); see the report", flush=True)
+    if one_engine:
+        print(f"  {one_engine} page(s) had one engine's draft only: transcribed from the other's, with an "
+              f"{MISSING_ENGINE_DOUBT} doubt each (counts.oneEngine)", flush=True)
+    if waiting_b:
+        print("  NOT PROOFREAD (counts.engineBMissing): " + missing_engine_b_warning(drafts2, waiting_b, len(pages)),
+              flush=True)
+    if answered_by:
+        print("  [packets] answers replayed, by answering model: "
+              + ", ".join(f"{model} {n}" for model, n in sorted(answered_by.items())), flush=True)
     if wave_summary is not None:
         print(f"  [packets] PENDING: {wave_summary['pending']} request(s) across "
               f"{len(wave_summary['bundles'])} bundle(s) in {wave_summary['waveDir']}", flush=True)
         print(f"  [packets] after subagents write answers-*.json, run: {wave_summary['applyCommand']}",
               flush=True)
+        if failed or blocked:
+            print(f"  [packets] exit {exit_status}: answers are pending AND {failed} page(s) failed and "
+                  f"{blocked} were blocked (see the report's pages): answer this wave and run the same "
+                  "command again; the failed and blocked pages need their own fix", flush=True)
     if doubt_pages:
         print("  pages with doubts, by kind: "
               + ", ".join(f"{kind} {n}" for kind, n in doubt_pages.most_common()), flush=True)
@@ -14931,11 +17427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"  {len(research_queue)} item(s) need external research "
               f"(proper nouns unresolvable from glyphs) - see researchQueue", flush=True)
     print(f"  report: {report_path}", flush=True)
-    if failed or blocked:
-        return 1
-    if pending_pages > 0:
-        return EXIT_PACKETS_PENDING
-    return 0
+    return exit_status
 
 
 if __name__ == "__main__":

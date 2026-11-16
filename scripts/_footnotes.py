@@ -2,27 +2,40 @@
 finalize step, operating on the repaired book while page markers are still in
 place.
 
-Key design rules:
-- Matching is scoped per page (with a 1-page cross-page lookback for an orphan
-  call at the end of page p-1 whose note is printed on page p), using page
-  markers to locate page boundaries.
-- A note is a line whose text opens with a note number
-  (_ocr_markdown.NOTE_LINE_RE); a call is a note number anywhere else on the
-  page outside HTML blocks, $...$ inline math, or another note's own text.
-- Greedy partial pairing: every key on a page whose calls and notes match in
-  count (len(calls[k]) == len(notes[k]) >= 1) is paired, even if another note
-  or call on the same page is unpaired or sits inside an HTML table.  Unpaired
-  or skipped items stay exactly as printed and are recorded in `left` for
-  doubts.md.
-- Preserving printed labels by default (`renumber=False`): each paired footnote
-  uses its printed numeric value `k` (e.g. `②④⓪` -> `[^240]`, `⑤²` -> `[^52]`,
-  `①` -> `[^1]`) so numeric footnote identity matches the source page.  If a
-  later page repeats an already-used numeric label (such as per-page `①`
-  numbering across a multi-page book) and `renumber=False`, the repeated label
-  is left as printed (`①`) rather than minting a non-numeric suffix or
-  colliding with the earlier `[^1]:` definition.  Passing `renumber=True`
+The rules follow the benchmark's footnote rules (jyut-ocr-bench
+INSTRUCTIONS.md, 腳註; docs/scoring.md, #7): a call is written `[^L]` where
+its number is printed, its note `[^L]: body`; labels are unique in the
+document; only the calls and notes the pages print are written, and a call
+or a note whose partner is not on the page stays as printed.
+
+- Matching is per page, using page markers to locate page boundaries.  A
+  note is a line whose text opens with a note number (_note_markers'
+  NOTE_HEAD_RE); a call is a note number anywhere else on the page outside
+  HTML blocks, $...$ inline math, or a note's own text.
+- Pairing per key: every key on a page whose calls and notes match in count
+  pairs the k-th call with the k-th note in reading order (two notes printed
+  with the same number on one page are two footnotes), even if another note
+  or call on the same page is unpaired or sits inside an HTML table.
+  Unpaired or skipped items stay exactly as printed and are recorded in
+  `left` for doubts.md.
+- Across a page break only a note that clearly runs over: an unpaired call
+  at the end of page p-1's calls and an unpaired note of the same number at
+  the head of page p's notes, when the call before it has the number before
+  its own (see _run_over).  Each such pair is listed in the report's
+  `crossPage`; any other call or note without its partner on its page stays
+  as printed.
+- Labels keep the printed number by default (`renumber=False`): `②④⓪` ->
+  `[^240]`, `⑤²` -> `[^52]`, `①` -> `[^1]`.  A label must be unique in the
+  document, so when a printed number is used again (per-page `①` numbering,
+  two notes numbered `①` on one page) the later footnote's label is the
+  number, a hyphen and the use's ordinal: the second `①` is `[^1-2]`, the
+  third `[^1-3]`, the same label on the call and on its definition.  A label
+  that the text already holds as footnote syntax this step does not write
+  (an engine's orphan `[^2]`) is skipped the same way.  `renumber=True`
   (`finish_book.py --renumber-footnotes`) numbers all paired footnotes
-  sequentially `1, 2, 3, ...` across the whole document.
+  sequentially `1, 2, 3, ...` across the whole document instead.
+- Definitions stay where the notes are printed (the page foot); moving them
+  after their calls' blocks is finish_book.py's opt-in --relocate-footnotes.
 - Footnote separator rule (`---`): removed above a page's foot-note block only
   when all notes on that page were converted into `[^L]:` definitions.
 """
@@ -34,7 +47,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
-from _note_markers import NOTE_HEAD_RE as NOTE, iter_note_markers, marker_key, math_context
+from _note_markers import NOTE_CIRCLED, NOTE_HEAD_RE as NOTE, iter_note_markers, marker_key, math_context
 from _ocr_markdown import (
     FOOTNOTE_CALL_RE,
     FOOTNOTE_HEAD_RE,
@@ -49,6 +62,7 @@ from _ocr_markdown import (
 
 # A $...$ pair on a line: math, where no renderer reads a footnote.
 MATH = re.compile(r"\$[^$\n]+\$")
+CIRCLED = re.compile(rf"[{NOTE_CIRCLED}]")
 # A line that opens an HTML block (CommonMark: a block-level tag, or a line
 # that is one whole tag), which runs to the next blank line.  Not a line that
 # opens with <sup>1</sup> and text (a paragraph), nor a comment.
@@ -92,7 +106,113 @@ class _PageScan:
     notes: dict[str, list[Spot]] = field(default_factory=lambda: defaultdict(list))
     odd: dict[str, list[Spot]] = field(default_factory=dict)
     unread_notes: list[Spot] = field(default_factory=list)
-    extra_why: list[dict[str, Any]] = field(default_factory=list)
+    # Every call and note read on the page, in reading order, with its key
+    # ("" for a number of no value); `calls` and `notes` lose what pairs.
+    read_calls: list[tuple[Spot, str]] = field(default_factory=list)
+    read_notes: list[tuple[Spot, str]] = field(default_factory=list)
+    # The lines holding a note's own text: line -> where that text starts.
+    note_text: dict[int, int] = field(default_factory=dict)
+
+
+def _order(k: str) -> tuple[int, str]:
+    return len(k), k
+
+
+def _scan(lines: list[str], html: set[int], page: int | None, marker: int, end: int) -> _PageScan:
+    """The calls, notes and odd numbers of one page (MARKER, END)."""
+    scan = _PageScan(page=page, marker=marker, end=end)
+    calls: dict[str, list[Spot]] = defaultdict(list)
+    notes: dict[str, list[Spot]] = defaultdict(list)
+    odd: dict[str, list[Spot]] = {"html": [], "math": [], "inside": []}
+    for n in range(marker + 1, end):
+        body = line_body(lines[n])
+        note = None if n in html else NOTE.match(body)
+        if note and math_context(body, note.start("number"), note.end("number")):
+            note = None
+        own = 0
+        if note:
+            k = key(note.group("number"))
+            spot = (n, note.start("number"), note.end())
+            notes[k].append(spot)
+            scan.read_notes.append((spot, k))
+            own = scan.note_text[n] = note.end()
+        elif n not in html and (head := FOOTNOTE_HEAD_RE.match(body)):
+            # A definition this step does not write ([^a]: ...): its text
+            # is a note's text, where no number is a call.
+            own = scan.note_text[n] = head.end()
+        found: list[tuple[int, int]] = []
+        # Footnote syntax with a label that is no number ([^1-2], [^a]) is
+        # no call: nothing inside it is read as one.
+        syntax = [ref.span() for ref in FOOTNOTE_CALL_RE.finditer(body)]
+        for m in iter_note_markers(body, own):
+            if any(s < m.start() < e for s, e in syntax):
+                continue
+            spot = (n, m.start(), m.end())
+            found.append(m.span())
+            if n in html:
+                odd["html"].append(spot)
+            elif n in scan.note_text:
+                odd["inside"].append(spot)
+            elif math_context(body, m.start(), m.end()) or any(
+                s < m.end() and m.start() < e and not m.start() <= s < e <= m.end()
+                for s, e in (pair.span() for pair in MATH.finditer(body))
+            ):
+                odd["math"].append(spot)
+            else:
+                k = key(m.group())
+                calls[k].append(spot)
+                scan.read_calls.append((spot, k))
+        if n in html or n in scan.note_text:
+            continue
+        # A note-number glyph inside $...$ math that no marker covers is no
+        # call; it is named in case the page's notes do not pair.
+        for pair in MATH.finditer(body):
+            if not any(s < pair.end() and pair.start() < e for s, e in found):
+                odd["math"] += [(n, c.start(), c.end()) for c in CIRCLED.finditer(body, pair.start(), pair.end())]
+    scan.unread_notes = notes.pop("", [])
+    scan.odd = {"unread": calls.pop("", []) + scan.unread_notes, **odd}
+    scan.calls, scan.notes = calls, notes
+    return scan
+
+
+def _run_over(before: _PageScan, after: _PageScan, preceding: dict[Spot, str]) -> list[tuple[Spot, Spot, str]]:
+    """Pair the notes that clearly run over from page BEFORE to page AFTER,
+    and take them out of the two pages' unpaired calls and notes.
+
+    A note on AFTER pairs with a call on BEFORE only when all of these hold:
+    it opens AFTER's notes (every note before it on AFTER pairs this way
+    too), and it is the only note of its number on AFTER, which has no call
+    of it; the call is the only call of that number on BEFORE, which has no
+    note of it, and it comes after every call BEFORE pairs on the page; and
+    the numbering runs on: the call read before it in the book (PRECEDING,
+    call spot -> the previous call's key) has the number before its own, so
+    a note numbered 1, where a page's or a chapter's numbering starts, never
+    pairs across a page.  Anything else stays as printed: a call whose note
+    is not on its page, or a note whose call is not, is listed in `left`
+    (the benchmark keeps the half a page prints and makes up no other)."""
+    if before.page is None or after.page is None:
+        return []
+    last = max((spot for spot, k in before.read_calls if k and k not in before.calls), default=None)
+    found: list[tuple[Spot, Spot, str]] = []
+    for spot, k in sorted(after.read_notes):
+        calls = before.calls.get(k, []) if k else []
+        if (
+            not k
+            or after.notes.get(k) != [spot]
+            or after.calls.get(k)
+            or before.notes.get(k)
+            or len(calls) != 1
+            or (last is not None and calls[0] < last)
+            or not preceding.get(calls[0])
+            or int(preceding[calls[0]]) != int(k) - 1
+        ):
+            break
+        found.append((calls[0], spot, k))
+        last = calls[0]
+    for _, _, k in found:
+        before.calls.pop(k)
+        after.notes.pop(k)
+    return found
 
 
 def _around(lines: list[str], n: int, s: int, e: int) -> str:
@@ -104,13 +224,12 @@ def _why(
     calls: dict[str, list[Spot]],
     notes: dict[str, list[Spot]],
     odd: dict[str, list[Spot]],
-    extra_why: list[dict[str, Any]],
     lines: list[str],
 ) -> list[dict[str, Any]]:
     """Build diagnostic reasons for any remaining unpaired calls, notes, or odd
     markers on a page."""
     why: list[dict[str, Any]] = []
-    for k in sorted(set(calls) | set(notes), key=lambda k: (len(k), k)):
+    for k in sorted(set(calls) | set(notes), key=_order):
         c_spots = calls.get(k, [])
         n_spots = notes.get(k, [])
         if not c_spots and not n_spots:
@@ -124,7 +243,6 @@ def _why(
             why += [{"kind": "note", "number": k, "text": line_body(lines[n])[:30]} for n, _, _ in n_spots]
         elif len(c_spots) != len(n_spots):
             why.append({"kind": "count", "number": k, "calls": len(c_spots), "notes": len(n_spots)})
-    why += extra_why
     why += [
         {"kind": kind, "number": line_body(lines[n])[s:e], "text": _around(lines, n, s, e)}
         for kind, spots in odd.items()
@@ -138,213 +256,152 @@ def convert(text: str, *, renumber: bool = False) -> tuple[str, dict[str, Any]]:
     """Convert paired printed notes in annotated Markdown `text` into Markdown
     footnotes (`[^L]` and `[^L]: `), returning `(converted_text, report)`.
 
-    When `renumber=False` (default), each paired footnote preserves its printed
-    numeric label `k` (e.g. `[^240]`).  When `renumber=True`, paired footnotes
-    are numbered sequentially `1, 2, 3, ...` across the document.
+    When `renumber=False` (default), each paired footnote keeps its printed
+    numeric label `k` (e.g. `[^240]`), and a printed label used again gets
+    `k-2`, `k-3`, ... so that labels are unique.  When `renumber=True`,
+    paired footnotes are numbered sequentially `1, 2, 3, ...` across the
+    document.  The report counts the footnotes, the pages written, the rules
+    removed and the labels changed for uniqueness (`relabelled`), lists the
+    pairs made across a page break (`crossPage`) and, for each page with
+    something left as printed, why (`left`).
     """
     lines = split_lines(text)
     markers, _ = find_page_markers(lines)
     html = _html(lines)
     starts = [m.line_index for m in markers]
+    scans = [
+        _scan(lines, html, page, marker, end)
+        for page, marker, end in zip([None, *(m.page for m in markers)], [-1, *starts], [*starts, len(lines)])
+    ]
 
-    page_scans: list[_PageScan] = []
-    for page, marker, end in zip([None, *(m.page for m in markers)], [-1, *starts], [*starts, len(lines)]):
-        calls: dict[str, list[Spot]] = defaultdict(list)
-        notes: dict[str, list[Spot]] = defaultdict(list)
-        odd: dict[str, list[Spot]] = {"html": [], "math": [], "inside": []}
-        for n in range(marker + 1, end):
-            body = line_body(lines[n])
-            note = None if n in html else NOTE.match(body)
-            if note and math_context(body, note.start("number"), note.end("number")):
-                note = None
-            if note:
-                notes[key(note.group("number"))].append((n, note.start("number"), note.end()))
-            for m in iter_note_markers(body, note.end() if note else 0):
-                spot = (n, m.start(), m.end())
-                if n in html:
-                    odd["html"].append(spot)
-                elif note:
-                    odd["inside"].append(spot)
-                elif math_context(body, m.start(), m.end()) or any(
-                    s < m.end() and m.start() < e and not m.start() <= s < e <= m.end()
-                    for s, e in (pair.span() for pair in MATH.finditer(body))
-                ):
-                    odd["math"].append(spot)
-                else:
-                    calls[key(m.group())].append(spot)
-        unread_calls = calls.pop("", [])
-        unread_notes = notes.pop("", [])
-        odd = {"unread": unread_calls + unread_notes, **odd}
-        page_scans.append(
-            _PageScan(
-                page=page,
-                marker=marker,
-                end=end,
-                calls=calls,
-                notes=notes,
-                odd=odd,
-                unread_notes=unread_notes,
-            )
-        )
-
-    # Candidate pairs: (call_spot, note_spot, key_str, call_page_idx, note_page_idx)
+    # Candidate pairs: (call_spot, note_spot, key, call_page_idx, note_page_idx)
     candidates: list[tuple[Spot, Spot, str, int, int]] = []
 
-    # Step 1: Greedy same-page pairing for every key where len(calls[k]) == len(notes[k]) >= 1.
-    for idx, ps in enumerate(page_scans):
-        for k in sorted(set(ps.calls) & set(ps.notes), key=lambda k: (len(k), k)):
-            if len(ps.calls[k]) == len(ps.notes[k]) >= 1:
-                if not renumber and len(ps.calls[k]) > 1:
-                    # Two footnotes on the same page cannot share the same numeric [^k]: label
-                    # without renumbering; keep them as printed unless renumber=True.
-                    ps.extra_why.append({
-                        "kind": "duplicate_label", "number": k,
-                        "calls": len(ps.calls[k]), "notes": len(ps.notes[k]),
-                    })
-                    continue
-                for c_spot, n_spot in zip(ps.calls.pop(k), ps.notes.pop(k)):
-                    candidates.append((c_spot, n_spot, k, idx, idx))
+    # Step 1: on each page, every key whose calls and notes match in count,
+    # the k-th call with the k-th note.
+    for idx, scan in enumerate(scans):
+        for k in sorted(set(scan.calls) & set(scan.notes), key=_order):
+            if len(scan.calls[k]) == len(scan.notes[k]):
+                candidates += [(c, n, k, idx, idx) for c, n in zip(scan.calls.pop(k), scan.notes.pop(k))]
 
-    # Step 2: 1-page cross-page orphan lookback (unpaired single call on page p-1,
-    # unpaired single note of the same key on page p with no call on page p).
-    for idx in range(1, len(page_scans)):
-        prev_ps = page_scans[idx - 1]
-        curr_ps = page_scans[idx]
-        for k in sorted(list(curr_ps.notes.keys()), key=lambda k: (len(k), k)):
-            if (
-                len(curr_ps.notes[k]) == 1
-                and not curr_ps.calls.get(k)
-                and len(prev_ps.calls.get(k, [])) == 1
-                and not prev_ps.notes.get(k)
-            ):
-                c_spot = prev_ps.calls.pop(k)[0]
-                n_spot = curr_ps.notes.pop(k)[0]
-                candidates.append((c_spot, n_spot, k, idx - 1, idx))
+    # Step 2: a note that clearly runs over from the page before (_run_over).
+    read = [item for scan in scans for item in scan.read_calls]
+    preceding = {spot: k for (spot, _), (_, k) in zip(read[1:], read)}
+    for idx in range(1, len(scans)):
+        candidates += [(c, n, k, idx - 1, idx) for c, n, k in _run_over(scans[idx - 1], scans[idx], preceding)]
 
     candidates.sort(key=lambda item: (item[0], item[1]))
 
-    # Collect pre-existing [^label] / [^label]: markers outside candidate spans so
-    # assigned labels never collide with untouched footnote syntax.
-    candidate_CallNote_spans: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    # Footnote syntax this step does not write keeps its label: `taken`, or
+    # `cited` for a reference inside a definition's own text (a note citing
+    # another), which may share its label with a footnote of its own page.
+    # Only a definition's text is no call: a definition the text holds, or a
+    # note this step converts.  A note left as printed stays a plain line, so
+    # a reference in its text is a call like any other and its label taken.
+    spans: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for c_spot, n_spot, _, _, _ in candidates:
-        candidate_CallNote_spans[c_spot[0]].append((c_spot[1], c_spot[2]))
-        candidate_CallNote_spans[n_spot[0]].append((n_spot[1], n_spot[2]))
-
-    def _overlaps_candidate(line_no: int, s: int, e: int) -> bool:
-        return any(cs < e and s < ce for cs, ce in candidate_CallNote_spans.get(line_no, ()))
-
+        spans[c_spot[0]].append((c_spot[1], c_spot[2]))
+        spans[n_spot[0]].append((n_spot[1], n_spot[2]))
+    converted = {n_spot[0] for _, n_spot, _, _, _ in candidates}
     taken: set[str] = set()
-    for n, line in enumerate(lines):
-        body = line_body(line)
-        if m_head := FOOTNOTE_HEAD_RE.match(body):
-            if not _overlaps_candidate(n, m_head.start(), m_head.end()):
-                taken.add(m_head.group("label"))
-        for m_call in FOOTNOTE_CALL_RE.finditer(body):
-            if not _overlaps_candidate(n, m_call.start(), m_call.end()):
-                taken.add(m_call.group("label"))
+    cited: dict[str, set[int]] = defaultdict(set)
+    for idx, scan in enumerate(scans):
+        printed = {spot[0] for spot, _ in scan.read_notes} - converted
+        for n in range(scan.marker + 1, scan.end):
+            for m in FOOTNOTE_CALL_RE.finditer(line_body(lines[n])):
+                if any(s < m.end() and m.start() < e for s, e in spans.get(n, ())):
+                    continue
+                if n in scan.note_text and m.start() >= scan.note_text[n] and n not in printed:
+                    cited[m.group("label")].add(idx)
+                else:
+                    taken.add(m.group("label"))
 
-    # Assign labels and record any skipped duplicate-label candidates back onto their pages.
-    accepted: list[tuple[Spot, Spot, str]] = []
-    used_labels: list[str] = []
-    used_set: set[str] = set()
-    pages_with_writes: set[int] = set()
+    accepted: list[tuple[Spot, Spot, str, int, int]] = []
+    used: set[str] = set()
+
+    def free(label: str, pages: set[int] = frozenset()) -> bool:
+        return label not in used and label not in taken and cited.get(label, set()) <= pages
+
+    relabelled = 0
     seq_label = 0
-
     for c_spot, n_spot, k, c_idx, n_idx in candidates:
         if renumber:
             seq_label += 1
-            while str(seq_label) in taken or str(seq_label) in used_set:
+            while not free(str(seq_label)):
                 seq_label += 1
             lbl = str(seq_label)
-        else:
-            if k in taken or k in used_set:
-                # Preserve printed numbers on both call and note rather than
-                # colliding with an earlier [^k]: definition.
-                cn, cs, ce = c_spot
-                page_scans[n_idx].notes[k].append(n_spot)
-                if c_idx == n_idx:
-                    page_scans[c_idx].calls[k].append(c_spot)
-                page_scans[n_idx].extra_why.append(
-                    {
-                        "kind": "duplicate_label",
-                        "number": line_body(lines[cn])[cs:ce],
-                        "text": _around(lines, cn, cs, ce),
-                    }
-                )
-                continue
+        elif free(k, {c_idx, n_idx}):
             lbl = k
-
-        accepted.append((c_spot, n_spot, lbl))
-        used_labels.append(lbl)
-        used_set.add(lbl)
-        pages_with_writes.add(c_idx)
-        pages_with_writes.add(n_idx)
+        else:
+            # The printed number is used already: the number and the use's
+            # ordinal, the same on the call and on its definition.
+            use = 2
+            while not free(f"{k}-{use}"):
+                use += 1
+            lbl = f"{k}-{use}"
+            relabelled += 1
+        accepted.append((c_spot, n_spot, lbl, c_idx, n_idx))
+        used.add(lbl)
 
     # Remove the foot-note separator rule (---) on pages that had at least one
     # note converted AND have zero unconverted notes remaining on the page.
-    notes_converted_per_page: Counter[int] = Counter()
-    for _, n_spot, _ in accepted:
-        for idx, ps in enumerate(page_scans):
-            if ps.marker < n_spot[0] < ps.end:
-                notes_converted_per_page[idx] += 1
-                break
-
+    notes_converted = {n_idx for _, _, _, _, n_idx in accepted}
     rules = 0
-    for idx, ps in enumerate(page_scans):
-        remaining_notes = sum(len(v) for v in ps.notes.values()) + len(ps.unread_notes)
-        if notes_converted_per_page[idx] > 0 and remaining_notes == 0:
-            rule = foot_notes(lines, ps.end)
-            if ps.marker < rule < ps.end and THEMATIC_BREAK_RE.fullmatch(line_body(lines[rule])):
+    for idx, scan in enumerate(scans):
+        remaining_notes = sum(len(v) for v in scan.notes.values()) + len(scan.unread_notes)
+        if idx in notes_converted and remaining_notes == 0:
+            rule = foot_notes(lines, scan.end)
+            if scan.marker < rule < scan.end and THEMATIC_BREAK_RE.fullmatch(line_body(lines[rule])):
                 gone = rule + 1
-                while gone < ps.end and is_blank(lines[gone]):
+                while gone < scan.end and is_blank(lines[gone]):
                     gone += 1
                 lines[rule:gone] = [""] * (gone - rule)
                 rules += 1
 
     # Build `left` diagnostics for pages with any remaining unpaired/odd items.
     left: list[dict[str, Any]] = []
-    for idx, ps in enumerate(page_scans):
-        # Suppress redundant call/note entry when already explained by duplicate_label on same page.
-        dup_spots = set()
-        if ps.extra_why:
-            for k in list(ps.calls.keys()):
-                if ps.calls[k] and ps.notes.get(k) and len(ps.calls[k]) == len(ps.notes[k]):
-                    ps.calls.pop(k, None)
-                    ps.notes.pop(k, None)
-                    dup_spots.add(k)
-        why = _why(
-            ps.calls,
-            ps.notes,
-            {kind: spots for kind, spots in ps.odd.items() if spots},
-            ps.extra_why,
-            lines,
-        )
+    for scan in scans:
+        why = _why(scan.calls, scan.notes, {kind: spots for kind, spots in scan.odd.items() if spots}, lines)
         if why:
-            left.append({"page": ps.page, "why": why})
+            left.append({"page": scan.page, "why": why})
 
     edits: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
-    for (n, s, e), (note_line, number, head), lbl in accepted:
+    for (n, s, e), (note_line, number, head), lbl, _, _ in accepted:
         edits[n].append((s, e, f"[^{lbl}]"))
         edits[note_line].append((number, head, f"[^{lbl}]: "))
 
-    for n, spans in edits.items():
+    for n, spans_on_line in edits.items():
         body = line_body(lines[n])
         ending = lines[n][len(body) :]
-        for s, e, new in sorted(spans, reverse=True):
+        for s, e, new in sorted(spans_on_line, reverse=True):
             body = body[:s] + new + body[e:]
         lines[n] = body + ending
 
     out = "".join(lines)
-    heads = Counter(m.group("label") for line in split_lines(out) if (m := FOOTNOTE_HEAD_RE.match(line_body(line))))
-    refs = Counter(m.group("label") for m in FOOTNOTE_CALL_RE.finditer(out)) - heads
-    assert all(heads[lbl] == refs[lbl] == 1 for lbl in used_labels), (
+    # Never a definition without its call, nor a label defined or called
+    # twice (a reference inside a definition's text is no call).
+    heads: Counter[str] = Counter()
+    refs: Counter[str] = Counter()
+    for line in split_lines(out):
+        body = line_body(line)
+        if head := FOOTNOTE_HEAD_RE.match(body):
+            heads[head.group("label")] += 1
+        else:
+            refs.update(m.group("label") for m in FOOTNOTE_CALL_RE.finditer(body))
+    assert all(heads[lbl] == refs[lbl] == 1 for _, _, lbl, _, _ in accepted), (
         "a footnote written without its call, or twice"
     )
-    written_pages = [page_scans[idx].page for idx in sorted(pages_with_writes)]
+    written_pages = {idx for _, _, _, c_idx, n_idx in accepted for idx in (c_idx, n_idx)}
     return out, {
         "footnotes": len(accepted),
         "pagesWritten": len(written_pages),
         "rulesRemoved": rules,
         "renumbered": renumber,
+        "relabelled": relabelled,
+        "crossPage": [
+            {"callPage": scans[c_idx].page, "notePage": scans[n_idx].page, "label": lbl}
+            for _, _, lbl, c_idx, n_idx in accepted
+            if c_idx != n_idx
+        ],
         "left": left,
     }

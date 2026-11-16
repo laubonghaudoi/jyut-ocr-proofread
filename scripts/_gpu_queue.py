@@ -8,6 +8,14 @@ visibility aliases. Explicit external endpoints have their own scheduler.
 Tickets are ordered under a stable guard flock and stay locked while live.
 Owned children inherit the ticket fd: a killed parent cannot admit another job
 while its child still holds the lease. Never explicitly LOCK_UN that shared fd.
+
+A local model can own the GPU from outside the queue (OCR_PHASE_RELEASE_CMD
+names how to stop it, in the machine config).  Then a lease is only granted
+inside an open hand-over window of scripts/run_ocr_phase.py: the runner's
+OCR_PHASE_WINDOW names the window, whose owner holds the window lock in the
+hand-over state folder.  Anywhere else acquire() defers (LocalModelOwnsGPU, a
+GPUQueueTimeout, so the runners exit 75 with nothing loaded) instead of loading
+a model into a full GPU.  OCR_PHASE_SWAP=never turns this off.
 """
 from __future__ import annotations
 
@@ -34,6 +42,90 @@ class GPUQueueTimeout(Exception):
 
 class GPUQueueCancelled(GPUQueueError):
     """The shared owner lost its clients before obtaining the GPU."""
+
+
+class LocalModelOwnsGPU(GPUQueueTimeout):
+    """A configured local model holds the GPU and no hand-over window is open."""
+
+
+TENANT_ENV = "OCR_PHASE_RELEASE_CMD"
+WINDOW_ENV = "OCR_PHASE_WINDOW"
+SWAP_ENV = "OCR_PHASE_SWAP"
+LOCAL_MODEL_MESSAGE = "GPU belongs to the local model; run through run_ocr_phase.py"
+# A runner's last word when it deferred for that reason: its exit 75 does not
+# mean "run the same command again" here, which would only defer again.
+LOCAL_MODEL_SUMMARY = (f"  NOT RUN: {LOCAL_MODEL_MESSAGE}, not the same command again "
+                       f"({TENANT_ENV} is set and no hand-over window is open; exit 75)")
+
+
+def handover_directory() -> Path:
+    """The hand-over's private state folder (window lock, status, logs)."""
+    explicit = os.environ.get("OCR_PHASE_STATE_DIR")
+    if explicit:
+        return Path(explicit).expanduser().absolute()
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    return (state / "jyut-ocr" / "handover").expanduser().absolute()
+
+
+def open_window_id(directory: Path | None = None) -> str | None:
+    """The ID of the hand-over window that is open now, or None.
+
+    A window is open while its owner holds window.lock; window.json names it.
+    A lock nobody holds means the owner is gone, whatever window.json says."""
+    directory = handover_directory() if directory is None else directory
+    try:
+        fd = os.open(directory / "window.lock", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            return None
+        try:
+            with open(directory / "window.json", encoding="utf-8") as handle:
+                window = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        return window.get("id") if isinstance(window, dict) and isinstance(window.get("id"), str) else None
+    finally:
+        os.close(fd)
+
+
+def check_local_model() -> None:
+    """Raise LocalModelOwnsGPU when a configured local model owns the GPU and
+    this process is not inside the open hand-over window."""
+    if not os.environ.get(TENANT_ENV, "").strip():
+        return
+    if os.environ.get(SWAP_ENV, "").strip().lower() == "never":
+        return
+    window = os.environ.get(WINDOW_ENV, "").strip()
+    if window and window == open_window_id():
+        return
+    raise LocalModelOwnsGPU(LOCAL_MODEL_MESSAGE)
+
+
+def live_ticket_count(root: Path | str) -> int:
+    """Live tickets under every resource of the queue ROOT: jobs that hold or
+    wait for a lease there, including a lease a GPU child inherited.  Unlocked
+    tickets are reaped on the way.  A guard that stays busy counts as one."""
+    root = Path(root)
+    try:
+        directories = [path for path in root.iterdir()
+                       if path.is_dir() and len(path.name) == 64]
+    except FileNotFoundError:
+        return 0
+    total = 0
+    for directory in directories:
+        probe = GPUQueue._at(directory)
+        try:
+            with probe._guard(wait_until=time.monotonic() + 1.0):
+                total += len(probe._live_tickets())
+        except (GPUQueueTimeout, GPUQueueError, OSError):
+            total += 1
+    return total
 
 
 def _nonnegative_seconds(value: str) -> float:
@@ -94,6 +186,13 @@ class GPUQueue:
         self.wait_seconds = 0.0
         self.acquired = False
         self.status = "not-requested"
+
+    @classmethod
+    def _at(cls, directory: Path) -> GPUQueue:
+        """A queue object for an existing resource folder, for inspection only."""
+        probe = cls.__new__(cls)
+        probe.directory = directory
+        return probe
 
     @property
     def pass_fds(self) -> tuple[int, ...]:
@@ -163,9 +262,18 @@ class GPUQueue:
         return live
 
     def acquire(self, timeout: float | None = None,
-                phase_deadline: float | None = None, cancel_event=None) -> GPUQueue:
+                phase_deadline: float | None = None, cancel_event=None,
+                local_model_guard: bool = True) -> GPUQueue:
+        """Wait for the lease.  LOCAL_MODEL_GUARD False is for the hand-over
+        wrapper itself, which takes the lease before it opens its window."""
         if self.fd is not None or self.status != "not-requested":
             raise GPUQueueError("lease objects cannot be acquired twice")
+        if local_model_guard:
+            try:
+                check_local_model()
+            except LocalModelOwnsGPU:
+                self.status = "deferred-local-model"
+                raise
         if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
             raise GPUQueueError("queue timeout must be finite and >= 0")
         if phase_deadline is not None and not math.isfinite(phase_deadline):

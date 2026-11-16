@@ -1,0 +1,153 @@
+{
+ "book": "陳總司令言論集",
+ "bookId": "jinleon",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/jinleon/jinleon.pdf",
+  "sha256": "5c00c29cb6a8b581572a09b792c9fff222f931f515d5ca3d17c9c4b3b4243798",
+  "pages": 488,
+  "copiedFrom": "~/Documents/GitHub/jyut-ocr/NLC416-08jh006915-8284_陳總司令言論集.pdf",
+  "renderSha256": {
+   "9": "5f7c4b73c711a292aec680c3e09092c48e6ba754da968df5de6232f9e3c3e624",
+   "10": "1865afe06a8f13d59e13a7eb88d1c80415399393ff3ac7c935f8efd9835c820e",
+   "64": "d29a45bb04aff876fd5d4587ae0d59a234528716d8cbbd004ae60a7aed9017ae",
+   "96": "32050a982f8470121c961f0dcea92e0563ab6a25f3dcdcf85a2ec4c6c9b39ed4",
+   "103": "7114f4896d03598622173def11c76ed275d1e8d918d8cee0f90c2ac5d19bbee4",
+   "119": "28400978b74d668e3bac5b13d953ff24eac04a44e9953101f2f358d63bdc88ae",
+   "125": "f5ff9d9785d96f1aac90f0a21f02b4d707d1aa22d850e29a7bda3abb43ea4224"
+  },
+  "renderSha256From": "sha256 of jyut-ocr-corpus/jinleon/renders/page-000N.png (survey_pdf.py, 300 dpi), 2026-09-27"
+ },
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "new-style-punctuation",
+  "middle-dot-full-stop",
+  "table-of-contents",
+  "arabic-entry-numbers",
+  "speech-collection",
+  "1-bit-scan-220ppi",
+  "library-seal",
+  "running-heads"
+ ],
+ "notCovered": [
+  "tables",
+  "charts",
+  "circle marks (圈點)",
+  "horizontal layout",
+  "simplified han"
+ ],
+ "assertions": [
+  {
+   "id": "golden-9-h1",
+   "page": 9,
+   "type": "golden_page",
+   "value": "jinleon/page-0009.md",
+   "provenance": "human",
+   "note": "user golden (canvas '言論集 Golden' (artifact C8VZu95CsBrmGCMax6Dg6P), 2026-09-28): the table of contents - 12-14 (end of 第五集) without a dot after the number, then the 第六集 國廿二年 heading (larger type; ### as a heading inside the contents, below the book's #, the contents' ## and the text's ## 集) and entries 1.-9. with the printed dot. The running head 陳總司令言論集 目錄 and the folio 八 are not text. Printed forms: 吿, 勗 (勗/朂 ruled acceptable 2026-09-28), 禦 and 與 (inked heavily; read by the stroke that shows and by sense). 國廿二年 prints no 民; entry 14 prints 第一四集團軍軍 as is.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 1,
+     "minMarkRecall": 75.0,
+     "minMarkPrecision": 94.7,
+     "maxStructureErrors": 0,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    },
+    "phase3": {
+     "maxErrors": 2,
+     "minMarkRecall": 54.2,
+     "minMarkPrecision": 72.2,
+     "maxStructureErrors": 12,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "golden-10-h2",
+   "page": 10,
+   "type": "golden_page",
+   "value": "jinleon/page-0010.md",
+   "provenance": "human",
+   "note": "user golden (same canvas, accepted unchanged 2026-09-28): ## 第一集, ### 1 對十一師敎導營訓話, the date line, the preface (italic-like type, ends with a hollow 。) and the body to 實心努 (continued on p.11). The body's full stop is a solid centred dot, written U+00B7 ·; ，；：？ as printed. Running foot 陳總司令言論集 第一集, folio 一 and the library seal 北京圖書館藏 are not text (seals are not scored). Printed forms: 敎 晋 莅 囘 黄 麽.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 92.7,
+     "minMarkPrecision": 92.7,
+     "maxStructureErrors": 0,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    },
+    "phase3": {
+     "maxErrors": 2,
+     "minMarkRecall": 90.2,
+     "minMarkPrecision": 92.5,
+     "maxStructureErrors": 0,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "absent-10-h3",
+   "page": 10,
+   "type": "absent",
+   "value": "丶",
+   "provenance": "regression",
+   "note": "engine B (HunyuanOCR v1.0 and v1.5) reads nearly every printed ， on this page as the radical 丶; the page prints no 丶."
+  },
+  {
+   "id": "consistent-64-1",
+   "page": 64,
+   "type": "contains",
+   "value": "勞動階級底",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 勞動階級底 (意大利的勞動階級底知識: 動 heavily inked (重 + 力), read by sense; 勞動階級 five more times on the page); the delivered output writes 勞勩階級底 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-064-laodong-zz.png; #26"
+  },
+  {
+   "id": "consistent-96-2",
+   "page": 96,
+   "type": "contains",
+   "value": "陳修爵當團",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 陳修爵當團 (陳修爵當團長 (engine B 爵, engine A 街)); the delivered output writes 陳修街當團 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-096-chenxiujue-1.png; #26"
+  },
+  {
+   "id": "consistent-96-3",
+   "page": 96,
+   "type": "contains",
+   "value": "向陳修爵說",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 向陳修爵說 (故意笑向陳修爵說); the delivered output writes it right today (向陳修爵說); crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-096-chenxiujue-2.png; #26"
+  },
+  {
+   "id": "consistent-96-4",
+   "page": 96,
+   "type": "contains",
+   "value": "陳修爵聽",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 陳修爵聽 (」陳修爵聽着); the delivered output writes it right today (陳修爵聽); crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-096-chenxiujue-3.png; #26"
+  },
+  {
+   "id": "consistent-119-5",
+   "page": 119,
+   "type": "contains",
+   "value": "犧牲個人",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 犧牲個人 (生死關頭，犧牲個人利權: the left of 犧 is inked solid, read by sense (engine A 犧, engine B 蟻)); the delivered output writes 蟻牲個人 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-119-xisheng.png; #26"
+  },
+  {
+   "id": "consistent-125-6",
+   "page": 125,
+   "type": "contains",
+   "value": "先行整頓",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 先行整頓 (團體先行整頓。: 整 printed faint and broken, read by its 敕/正 shape and sense); the delivered output writes 先行幣頓 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-125-zhengdun.png; #26"
+  },
+  {
+   "id": "consistent-103-7",
+   "page": 103,
+   "type": "contains",
+   "value": "總理誕辰",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 總理誕辰 (慶祝 總理誕辰 (a respect space before 總理)); the delivered output writes 總理朌辰 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/jinleon-103-danchen.png; #26"
+  }
+ ]
+}

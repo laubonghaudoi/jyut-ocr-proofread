@@ -54,8 +54,12 @@ import proofread_pages as pp  # noqa: E402
 SCHEMA_VERSION = 2
 DEFAULT_PROBE_PAGES = 8
 DEFAULT_MAX_CROPS = 160
-SHORT_DOC_MAX_PAGES = 4
+# proofread_pages.py takes the same short-document engine section when a
+# two-engine document this short has no profile (short_document_engines).
+SHORT_DOC_MAX_PAGES = pp.SHORT_DOC_MAX_PAGES
 MIN_DECIDED = 16
+# Parallel model calls without --workers, and over HTTP without PROOFREAD_MAX_INFLIGHT.
+DEFAULT_WORKERS = 4
 WILSON_Z = 1.96
 WILSON_Z_INTERIM = 3.0
 INTERIM_EVERY = 32
@@ -246,7 +250,7 @@ def calibrate_engines(
     queue = list(items)
     crops_dir.mkdir(parents=True, exist_ok=True)
     verdicts: list[dict[str, Any]] = []
-    usage: Counter = Counter()
+    usage_calls: list[dict[str, Any]] = []
     stopped = "all eligible substitutions on the probe pages read"
 
     def run(index_item: tuple[int, Mapping[str, Any]]) -> dict[str, Any]:
@@ -280,9 +284,7 @@ def calibrate_engines(
         with cf.ThreadPoolExecutor(max(1, workers)) as pool:
             for result in pp.in_context(pool, run, batch):
                 verdicts.append(result["record"])
-                for key, value in (result["metrics"] or {}).items():
-                    if isinstance(value, (int, float)):
-                        usage[key] += value
+                usage_calls.append(result["metrics"] or {})
         position = end
         preference, _ = decide_preference(pair_votes(verdicts), minimum, WILSON_Z_INTERIM)
         if preference in ("A", "B"):
@@ -326,7 +328,7 @@ def calibrate_engines(
             for engine in ("A", "B")
         },
         "verdicts": verdicts,
-        "usage": dict(usage),
+        "usage": pp.aggregate_usage(usage_calls),
     }
 
 
@@ -627,8 +629,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         choices=("packet", "http"),
-        default="packet",
-        help="packet (default: emit wave bundles for session subagents) or http (OpenAI chat endpoint)",
+        default=None,
+        help="packet (default: emit wave bundles for session subagents) or http (OpenAI chat endpoint: "
+             "--endpoint, else PROOFREAD_ENDPOINT); http is the default, and packet refused, when the "
+             "calling agent is the local proofreading model (proofread_pages.agent_is_local_model)",
     )
     parser.add_argument(
         "--packets-dir",
@@ -666,16 +670,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workers",
         type=int,
-        default=4,
-        help="parallel model calls; match the server's --max-concurrency",
+        default=None,
+        help=f"parallel model calls; match the server's --max-concurrency (default: with --backend http "
+             f"PROOFREAD_MAX_INFLIGHT when set, else {DEFAULT_WORKERS})",
     )
     parser.add_argument("--no-inflight-cap", action="store_true")
     parser.add_argument(
         "--endpoint", default=None,
-        help="explicit HTTP endpoint; required with --backend http (no environment fallback)"
+        help="HTTP endpoint for --backend http (default: PROOFREAD_ENDPOINT)"
     )
     parser.add_argument("--model", default=None,
-                        help="HTTP model or packet provenance label; PROOFREAD_MODEL applies only to explicit HTTP")
+                        help="HTTP model (default: PROOFREAD_MODEL, else the server's first model at "
+                             "{endpoint base}/v1/models) or packet provenance label")
     parser.add_argument(
         "--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", pp.DEFAULT_EFFORT)
     )
@@ -706,7 +712,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     return profile_book(build_parser().parse_args(argv))
 
 
+def default_workers(backend: str | None) -> int:
+    """--workers when none is given: over HTTP the server's concurrency as env.sh
+    records it (PROOFREAD_MAX_INFLIGHT, which proofread_pages.py --max-inflight
+    also reads), else DEFAULT_WORKERS.  Packets keep DEFAULT_WORKERS."""
+    value = os.environ.get("PROOFREAD_MAX_INFLIGHT", "").strip()
+    if backend != "http" or not value:
+        return DEFAULT_WORKERS
+    try:
+        workers = int(value)
+    except ValueError:
+        workers = 0
+    if workers < 1:
+        raise ValueError(f"PROOFREAD_MAX_INFLIGHT must be a whole number of 1 or more, not {value!r}")
+    return workers
+
+
 def profile_book(arguments: argparse.Namespace) -> int:
+    if getattr(arguments, "workers", None) is None:
+        try:
+            arguments.workers = default_workers(getattr(arguments, "backend", None))
+        except ValueError as error:
+            print(f"ERROR {error}", file=sys.stderr)
+            return 2
     renders = arguments.render_directory.expanduser().resolve()
     drafts = arguments.draft_directory.expanduser().resolve()
     drafts2 = arguments.draft2_directory.expanduser().resolve()
@@ -737,16 +765,28 @@ def profile_book(arguments: argparse.Namespace) -> int:
             max_bundles=arguments.max_bundles,
             model=arguments.model or "agent-packet",
             effort=effort,
+            # What decides the answers; not this script's bytes, so editing
+            # it does not orphan the answers already given.
+            request_config={
+                "stage": "book-profile",
+                "learned_heads": arguments.learned_heads,
+                "doubled_notation": not arguments.no_doubled_notation,
+            },
         )
     else:
-        client = pp.Client(
-            arguments.endpoint,
-            arguments.model,
-            effort,
-            arguments.timeout,
-            arguments.temperature,
-            **({} if arguments.no_inflight_cap else {"max_inflight": max(1, arguments.workers)}),
-        )
+        try:
+            # No model named: the server's first listed one (pp.resolve_http_model).
+            client = pp.Client(
+                arguments.endpoint,
+                arguments.model,
+                effort,
+                arguments.timeout,
+                arguments.temperature,
+                **({} if arguments.no_inflight_cap else {"max_inflight": max(1, arguments.workers)}),
+            )
+        except pp.ProofreadError as error:
+            print(f"ERROR {error}", file=sys.stderr)
+            return 2
 
     crops_root = profile_path.with_name(profile_path.stem + "-crops")
     run_stamp = "packet" if arguments.backend == "packet" else time.strftime("%Y%m%dT%H%M%S")
@@ -793,7 +833,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
             and (previous.get("sources") or {}).get("probeDraftsSha256") == digest
             and previous.get("backend") == arguments.backend
             and previous.get("endpoint") == (arguments.endpoint if arguments.backend == "http" else None)
-            and previous.get("model") == arguments.model
+            and previous.get("model") == client.model
         ):
             engines = previous.get("engines")
             print("  engines: reused from the existing profile", flush=True)
@@ -801,16 +841,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
     packet_pending = False
     if engines is None:
         if len(candidates) <= SHORT_DOC_MAX_PAGES and not arguments.force_calibrate_engines:
-            engines = {
-                "preferEngine": "adjudicate",
-                "reason": (
-                    f"short document ({len(candidates)} page(s) <= {SHORT_DOC_MAX_PAGES}): "
-                    "skipping calibration; per-spot adjudication resolves actual disagreements directly"
-                ),
-                "stopped": "short-document fast path",
-                "decision": {"pairVotes": {}, "preferEngine": "adjudicate"},
-                "verdicts": [],
-            }
+            engines = pp.short_document_engines(len(candidates))
         elif not pages:
             engines = {
                 "preferEngine": "adjudicate",
@@ -897,7 +928,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
         "generatedAt": pp.utc_now(),
         "backend": arguments.backend,
         "endpoint": arguments.endpoint if arguments.backend == "http" else None,
-        "model": client.model if arguments.backend == "packet" else arguments.model,
+        "model": client.model,
         "reasoningEffort": effort,
         "sources": {
             "renders": str(renders),

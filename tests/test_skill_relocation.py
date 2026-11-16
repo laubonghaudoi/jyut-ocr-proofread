@@ -78,7 +78,7 @@ class RelocatedSkillTests(unittest.TestCase):
 
     def test_cli_help_imports_without_original_checkout_or_custom_agents(self) -> None:
         for filename in ("survey_pdf.py", "book_profile.py", "proofread_pages.py", "repair_book.py",
-                         "apply_packet_answers.py", "validate_review_evidence.py"):
+                         "apply_packet_answers.py", "audit_ocr_markdown.py"):
             with self.subTest(script=filename):
                 result = self.run_command([sys.executable, str(self.skill / "scripts" / filename), "--help"])
                 self.assertIn("usage:", result.stdout)
@@ -92,8 +92,12 @@ class RelocatedSkillTests(unittest.TestCase):
         (renders / "page-0001.png").write_bytes(png)
         (drafts / "page-0001.txt").write_text("", encoding="utf-8")
         (book / "book-profile.json").write_text('{"preferEngine":"adjudicate"}', encoding="utf-8")
+        # --content-fidelity on: with it off (the default) a page no engine
+        # read anything on is sealed blank without a packet question.
+        # One engine's drafts: --single-engine since two engines became the
+        # default (user decision 2, 2026-11-14).
         invocation = [sys.executable, str(self.skill / "scripts/proofread_pages.py"), str(renders), str(drafts),
-                      str(output), "--workers", "1"]
+                      str(output), "--workers", "1", "--content-fidelity", "on", "--single-engine"]
         self.run_command(invocation, expected=10)
         wave = book / "packets/wave-01"
         bundle = json.loads((wave / "bundle-01.json").read_text())
@@ -102,7 +106,10 @@ class RelocatedSkillTests(unittest.TestCase):
         self.assertEqual(Path(item["image_path"]), renders / "page-0001.png")
         self.assertEqual(item["image_sha256"], hashlib.sha256(png).hexdigest())
         # This is a synthetic protocol reply, not a model accuracy trial.
-        blank = {"schema_version": 1, "page_state": "blank", "regions": [], "features": [],
+        request = json.loads(item["user_text"])
+        blank = {"schema_version": 2, "contract_version": request["contract_version"],
+                 "source_image_sha256": request["source_image_sha256"],
+                 "page_state": "blank", "regions": [], "features": [], "issues": [],
                  "evidence": "The fixture is an all-white image with no printed content."}
         Path(bundle["expected_answers_file"]).write_text(json.dumps({"answers": [{
             "request_id": item["request_id"], "answer": json.dumps(blank)}]}), encoding="utf-8")

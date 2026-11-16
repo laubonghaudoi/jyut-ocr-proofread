@@ -1,2 +1,4 @@
-# Core PDF/raster helpers; OCR weights and runtime are pinned in runtime/ocr-lock.json.
+# Core venv (JYUT_OCR_PYTHON): PDF/raster helpers.  The OCR weights, the
+# llama.cpp runtime and PaddleOCR-VL's own environment are pinned in
+# runtime/ocr-lock.json.
 Pillow>=10.4,<13

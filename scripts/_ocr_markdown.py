@@ -5,7 +5,6 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections import Counter
 from dataclasses import dataclass
-import fnmatch
 import hashlib
 import json
 import os
@@ -16,11 +15,6 @@ from typing import Iterable, Sequence
 
 import _tables
 from _note_markers import NOTE_CIRCLED, NOTE_LINE_RE
-from validate_release_evidence import (
-    _artifact_path as release_artifact_path,
-    _load_json as load_release_plan_json,
-    validate_plan,
-)
 
 
 PAGE_MARKER_RE = re.compile(
@@ -34,7 +28,6 @@ ATX_HEADING_CAPTURE_RE = re.compile(
 TITLE_NOTE_TERMINAL_STARS_RE = re.compile(
     r"(?<!\*)(?P<stars>\*{1,2})(?=(?:[ \t]*(?:（[^）]*）|\([^)]*\)))?[ \t]*$)"
 )
-TITLE_NOTE_DEFINITION_RE = re.compile(r"^(?P<stars>\*{1,2})[ \t]+(?P<text>\S.*)$")
 LIST_ITEM_RE = re.compile(r"^(?P<indent>[ \t]*)(?:[-+*]|\d+[.)])[ \t]+\S")
 TABLE_RE = re.compile(r"^[ \t]*\|.*\|[ \t]*$")
 FENCE_RE = _tables.FENCE_RE
@@ -68,19 +61,6 @@ class MarkerBoundary:
     kind: str
     previous_line: int | None
     next_line: int | None
-
-
-@dataclass(frozen=True)
-class ReleasePlanInventory:
-    """Validated release artifacts captured from one stable plan snapshot."""
-
-    plan_path: Path
-    plan_sha256: str
-    active_paths: tuple[Path, ...]
-    active_sha256: tuple[str, ...]
-    classified_paths: tuple[Path, ...]
-    classified_sha256: tuple[str, ...]
-    discovery_globs: tuple[str, ...]
 
 
 def split_lines(text: str) -> list[str]:
@@ -263,15 +243,6 @@ def mask_nonrendered_markdown(
     return masked
 
 
-def parse_atx_heading(body: str) -> tuple[int, str] | None:
-    """Return an ATX heading's level and text, excluding optional closing marks."""
-
-    match = ATX_HEADING_CAPTURE_RE.fullmatch(body)
-    if match is None:
-        return None
-    return len(match.group("marks")), match.group("text").rstrip()
-
-
 def _terminal_title_note_match(heading_text: str) -> re.Match[str] | None:
     """Return a title-note marker match, excluding full Markdown emphasis."""
 
@@ -292,13 +263,6 @@ def _terminal_title_note_match(heading_text: str) -> re.Match[str] | None:
     return match
 
 
-def terminal_title_note_stars(heading_text: str) -> str | None:
-    """Return a terminal one- or two-star editorial title-note marker."""
-
-    match = _terminal_title_note_match(heading_text)
-    return match.group("stars") if match else None
-
-
 def terminal_title_note_heading_marker(body: str) -> tuple[str, int] | None:
     """Return a heading's title-note marker and zero-based source column."""
 
@@ -313,13 +277,6 @@ def terminal_title_note_heading_marker(body: str) -> tuple[str, int] | None:
         marker_match.group("stars"),
         heading_match.start("text") + marker_match.start("stars"),
     )
-
-
-def title_note_definition_marker(body: str) -> str | None:
-    """Return the one- or two-star marker starting a title-note definition."""
-
-    match = TITLE_NOTE_DEFINITION_RE.match(body)
-    return match.group("stars") if match else None
 
 
 def preferred_newline(lines: Sequence[str], index: int) -> str:
@@ -406,17 +363,18 @@ def is_structural_line(line: str) -> bool:
 def foot_notes(lines: Sequence[str], end: int) -> int:
     """Where the foot notes that end LINES[:END] start, or END when none.
 
-    Includes lines before END opening with a note number (NOTE_LINE_RE), blank
-    lines between them, and an optional printed rule (THEMATIC_BREAK_RE) right
-    above them so a `join` boundary can carry foot-of-page notes past the end
-    of the split paragraph.
+    Includes lines before END opening with a note number (NOTE_LINE_RE) or
+    with a footnote definition's head (`[^1-2]: `, the label _footnotes.py
+    gives a printed number used again), blank lines between them, and an
+    optional printed rule (THEMATIC_BREAK_RE) right above them so a `join`
+    boundary can carry foot-of-page notes past the end of the split paragraph.
     """
     start, index = end, end - 1
     while index >= 0:
         body = line_body(lines[index])
         if not body.strip():
             index -= 1
-        elif NOTE_LINE_RE.match(body):
+        elif NOTE_LINE_RE.match(body) or (body.startswith("[^") and FOOTNOTE_HEAD_RE.match(body)):
             start, index = index, index - 1
         else:
             if start < end and THEMATIC_BREAK_RE.fullmatch(body):
@@ -1295,603 +1253,3 @@ def paths_refer_to_same_file(first: Path, second: Path) -> bool:
 
     # Conservatively reject case-only aliases even on a case-sensitive volume.
     return portable_name(first) == portable_name(second)
-
-
-def load_validated_release_plan(plan_path: Path) -> ReleasePlanInventory:
-    """Validate and strictly parse one unchanged release-plan snapshot."""
-
-    try:
-        sealed_plan = plan_path.resolve(strict=True)
-    except FileNotFoundError as error:
-        raise ValueError(f"release plan does not exist: {plan_path}") from error
-    if not sealed_plan.is_file():
-        raise ValueError(f"release plan is not a regular file: {plan_path}")
-
-    before_validation = file_sha256(sealed_plan)
-    report = validate_plan(sealed_plan)
-    after_validation = file_sha256(sealed_plan)
-    if before_validation != after_validation:
-        raise ValueError("release plan changed while it was being validated")
-    if not report["ok"]:
-        details = "; ".join(str(error) for error in report["errors"])
-        raise ValueError(f"release plan validation failed: {details}")
-
-    plan = load_release_plan_json(sealed_plan)
-    after_parse = file_sha256(sealed_plan)
-    if after_parse != after_validation:
-        raise ValueError("release plan changed between validation and strict parsing")
-    if not isinstance(plan, dict):
-        raise ValueError("release plan root must be a JSON object")
-    raw_artifacts = plan.get("artifacts")
-    if not isinstance(raw_artifacts, list):
-        raise ValueError("release plan artifacts must be an array")
-    discovery = plan.get("discovery")
-    if not isinstance(discovery, dict) or not isinstance(
-        discovery.get("globs"), list
-    ):
-        raise ValueError("release plan discovery.globs must be an array")
-
-    base = sealed_plan.parent.resolve(strict=True)
-    classified_paths: list[Path] = []
-    classified_sha256: list[str] = []
-    active_paths: list[Path] = []
-    active_sha256: list[str] = []
-    for index, artifact in enumerate(raw_artifacts):
-        if not isinstance(artifact, dict):
-            raise ValueError(f"release plan artifacts[{index}] must be an object")
-        path = release_artifact_path(
-            base,
-            artifact.get("path"),
-            f"release plan artifacts[{index}].path",
-        )
-        classified_paths.append(path)
-        declared_sha256 = artifact.get("sha256")
-        if not isinstance(declared_sha256, str):
-            raise ValueError(
-                f"release plan artifacts[{index}].sha256 must be a string"
-            )
-        current_sha256 = file_sha256(path)
-        if current_sha256 != declared_sha256:
-            raise ValueError(
-                f"release artifact changed after plan validation: {path}"
-            )
-        classified_sha256.append(declared_sha256)
-        if (
-            artifact.get("classification") == "include"
-            and artifact.get("lifecycle") == "active"
-            and artifact.get("validation") == "pass"
-        ):
-            active_paths.append(path)
-            active_sha256.append(declared_sha256)
-
-    globs = discovery["globs"]
-    if not all(isinstance(pattern, str) for pattern in globs):
-        raise ValueError("release plan discovery.globs must contain only strings")
-    if file_sha256(sealed_plan) != after_parse:
-        raise ValueError("release plan changed while artifact closure was parsed")
-    return ReleasePlanInventory(
-        plan_path=sealed_plan,
-        plan_sha256=after_parse,
-        active_paths=tuple(active_paths),
-        active_sha256=tuple(active_sha256),
-        classified_paths=tuple(classified_paths),
-        classified_sha256=tuple(classified_sha256),
-        discovery_globs=tuple(globs),
-    )
-
-
-def release_plan_snapshot_problems(
-    inventory: ReleasePlanInventory,
-) -> list[str]:
-    """Detect plan or classified-evidence drift from a validated snapshot."""
-
-    problems: list[str] = []
-    if not inventory.plan_path.is_file():
-        problems.append(f"release plan disappeared: {inventory.plan_path}")
-    elif file_sha256(inventory.plan_path) != inventory.plan_sha256:
-        problems.append("release plan changed after validation")
-    for path, expected in zip(
-        inventory.classified_paths, inventory.classified_sha256, strict=True
-    ):
-        if not path.is_file():
-            problems.append(f"classified release artifact disappeared: {path}")
-        elif file_sha256(path) != expected:
-            problems.append(
-                f"classified release artifact changed after validation: {path}"
-            )
-    return problems
-
-
-def release_plan_discovery_matches(
-    inventory: ReleasePlanInventory, candidate: Path
-) -> tuple[str, ...]:
-    """Return discovery globs that would classify a not-yet-created path."""
-
-    # Resolve the parent but preserve the final directory-entry name.  A
-    # dangling symlink does not satisfy ``Path.exists()``, yet writing through
-    # it can make the symlink itself become a regular-file discovery match.
-    lexical_candidate = candidate.parent.resolve(strict=False) / candidate.name
-    try:
-        relative = lexical_candidate.relative_to(inventory.plan_path.parent)
-    except ValueError:
-        return ()
-    parts = relative.parts
-
-    def matches(pattern: str) -> bool:
-        # A trailing separator asks pathlib for directories only.  Generated
-        # output and receipt paths are files, so such a glob cannot select one.
-        if pattern.endswith(os.sep):
-            return False
-        pattern_parts = Path(pattern).parts
-
-        def visit(pattern_index: int, path_index: int) -> bool:
-            if pattern_index == len(pattern_parts):
-                return path_index == len(parts)
-            current = pattern_parts[pattern_index]
-            if current == "**":
-                if pattern_index + 1 == len(pattern_parts):
-                    # ``base.glob('prefix/**')`` selects descendants and the
-                    # prefix directory, but not a file at the prefix itself.
-                    return path_index < len(parts)
-                return visit(pattern_index + 1, path_index) or (
-                    path_index < len(parts)
-                    and visit(pattern_index, path_index + 1)
-                )
-            if path_index >= len(parts):
-                return False
-            direct = fnmatch.fnmatchcase(parts[path_index], current)
-            portable = fnmatch.fnmatchcase(
-                parts[path_index].casefold(), current.casefold()
-            )
-            return (direct or portable) and visit(
-                pattern_index + 1, path_index + 1
-            )
-
-        return visit(0, 0)
-
-    return tuple(pattern for pattern in inventory.discovery_globs if matches(pattern))
-
-
-def _receipt_path(receipt_path: Path, target_path: Path) -> str:
-    """Store a path relative to the receipt so a project tree can be moved."""
-
-    return os.path.relpath(target_path.resolve(), receipt_path.resolve().parent)
-
-
-def build_assembly_receipt(
-    receipt_path: Path,
-    *,
-    annotated_path: Path,
-    boundary_manifest_path: Path,
-    release_plan_path: Path,
-    output_path: Path,
-    output_text: str,
-    upstream_paths: Sequence[Path] = (),
-) -> dict[str, object]:
-    """Build a hash receipt for every input that makes a final OCR artefact."""
-
-    named_inputs = [
-        ("annotated", annotated_path),
-        ("boundary-manifest", boundary_manifest_path),
-        ("release-plan", release_plan_path),
-        *(("upstream", path) for path in upstream_paths),
-    ]
-
-    seen: list[tuple[Path, str]] = []
-    inputs: list[dict[str, str]] = []
-    for role, path in named_inputs:
-        duplicate_role = next(
-            (
-                previous_role
-                for previous_path, previous_role in seen
-                if paths_refer_to_same_file(path, previous_path)
-            ),
-            None,
-        )
-        if duplicate_role is not None:
-            raise ValueError(
-                f"duplicate assembly input {path}: already recorded as "
-                f"{duplicate_role}"
-            )
-        if paths_refer_to_same_file(path, output_path):
-            raise ValueError(f"assembly input must differ from output: {path}")
-        if paths_refer_to_same_file(path, receipt_path):
-            raise ValueError(f"assembly input must differ from receipt: {path}")
-        seen.append((path, role))
-        inputs.append(
-            {
-                "role": role,
-                "path": _receipt_path(receipt_path, path),
-                "sha256": file_sha256(path),
-            }
-        )
-
-    if paths_refer_to_same_file(receipt_path, output_path):
-        raise ValueError("receipt path must differ from output path")
-
-    return {
-        "schema_version": 2,
-        "inputs": inputs,
-        "output": {
-            "path": _receipt_path(receipt_path, output_path),
-            "sha256": hashlib.sha256(output_text.encode("utf-8")).hexdigest(),
-        },
-    }
-
-
-def write_assembly_receipt(path: Path, receipt: dict[str, object]) -> None:
-    """Write a deterministic UTF-8 JSON receipt."""
-
-    rendered = json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(rendered)
-
-
-def _json_object_mapping(
-    value: object, *, context: str, expected_keys: set[str]
-) -> dict[str, object]:
-    if not isinstance(value, _JsonObject):
-        raise ValueError(f"{context} must be a JSON object")
-    result: dict[str, object] = {}
-    for key, item in value:
-        if key in result:
-            raise ValueError(f"duplicate {context} key: {key!r}")
-        result[key] = item
-    if set(result) != expected_keys:
-        expected = ", ".join(sorted(expected_keys))
-        raise ValueError(f"{context} must contain exactly: {expected}")
-    return result
-
-
-def _receipt_record(
-    value: object, *, context: str, include_role: bool
-) -> dict[str, str]:
-    expected_keys = {"path", "sha256"}
-    if include_role:
-        expected_keys.add("role")
-    record = _json_object_mapping(
-        value, context=context, expected_keys=expected_keys
-    )
-    for key in expected_keys:
-        if not isinstance(record[key], str) or not record[key]:
-            raise ValueError(f"{context} {key!r} must be a non-empty string")
-    digest = record["sha256"]
-    if not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError(f"{context} has an invalid SHA-256 digest")
-    return {key: str(record[key]) for key in expected_keys}
-
-
-def _load_assembly_receipt(
-    receipt_path: Path,
-) -> tuple[int, list[dict[str, str]], dict[str, str]]:
-    """Load and validate receipt schema before any trust decision is made."""
-
-    with receipt_path.open("r", encoding="utf-8") as handle:
-        raw = json.load(handle, object_pairs_hook=_JsonObject)
-    root = _json_object_mapping(
-        raw,
-        context="assembly receipt root",
-        expected_keys={"schema_version", "inputs", "output"},
-    )
-    schema_version = root["schema_version"]
-    if (
-        not isinstance(schema_version, int)
-        or isinstance(schema_version, bool)
-        or schema_version not in {1, 2}
-    ):
-        raise ValueError("assembly receipt schema_version must be integer 1 or 2")
-
-    raw_inputs = root["inputs"]
-    if not isinstance(raw_inputs, list) or isinstance(raw_inputs, _JsonObject):
-        raise ValueError("assembly receipt inputs must be a JSON array")
-    records = [
-        _receipt_record(item, context=f"assembly input {index}", include_role=True)
-        for index, item in enumerate(raw_inputs, 1)
-    ]
-    output = _receipt_record(
-        root["output"], context="assembly output", include_role=False
-    )
-
-    roles = [record["role"] for record in records]
-    allowed_roles = {"annotated", "boundary-manifest", "upstream"}
-    if schema_version == 2:
-        allowed_roles.add("release-plan")
-    unexpected_roles = sorted(set(roles) - allowed_roles)
-    if unexpected_roles:
-        raise ValueError(
-            "assembly receipt has invalid input role(s): "
-            + ", ".join(unexpected_roles)
-        )
-    required_roles = ["annotated", "boundary-manifest"]
-    if schema_version == 2:
-        required_roles.append("release-plan")
-    for required in required_roles:
-        if roles.count(required) != 1:
-            raise ValueError(
-                f"assembly receipt must contain exactly one {required!r} input"
-            )
-    return schema_version, records, output
-
-
-def _resolve_receipt_path(receipt_path: Path, recorded_path: str) -> Path:
-    path = Path(recorded_path)
-    if not path.is_absolute():
-        path = receipt_path.resolve().parent / path
-    return path.resolve()
-
-
-def _normalized_path(path: Path) -> str:
-    return unicodedata.normalize(
-        "NFC", os.path.normcase(str(path.resolve(strict=False)))
-    ).casefold()
-
-
-def _release_plan_receipt_problems(
-    receipt_path: Path,
-    records: Sequence[dict[str, str]],
-    output: dict[str, str],
-) -> list[tuple[str, str]]:
-    """Revalidate a v2 plan and bind receipt upstreams to its active closure."""
-
-    problems: list[tuple[str, str]] = []
-    by_role: dict[str, list[Path]] = {}
-    for record in records:
-        by_role.setdefault(record["role"], []).append(
-            _resolve_receipt_path(receipt_path, record["path"])
-        )
-    plan_path = by_role["release-plan"][0]
-    try:
-        inventory = load_validated_release_plan(plan_path)
-    except (OSError, UnicodeError, ValueError) as error:
-        return [
-            (
-                "assembly-receipt-release-plan-invalid",
-                f"current release plan is invalid: {error}",
-            )
-        ]
-
-    annotated_path = by_role["annotated"][0]
-    boundary_path = by_role["boundary-manifest"][0]
-
-    def active_matches(path: Path) -> list[Path]:
-        return [
-            candidate
-            for candidate in inventory.active_paths
-            if paths_refer_to_same_file(path, candidate)
-        ]
-
-    if len(active_matches(annotated_path)) != 1:
-        problems.append(
-            (
-                "assembly-receipt-annotated-not-active",
-                "receipt annotated input is not exactly one active included "
-                "release-plan artifact",
-            )
-        )
-    if len(active_matches(boundary_path)) != 1:
-        problems.append(
-            (
-                "assembly-receipt-boundary-not-active",
-                "receipt boundary manifest is not exactly one active included "
-                "release-plan artifact",
-            )
-        )
-
-    recorded_output = _resolve_receipt_path(receipt_path, output["path"])
-    for role, generated in (
-        ("assembly output", recorded_output),
-        ("assembly receipt", receipt_path.resolve()),
-    ):
-        if any(
-            paths_refer_to_same_file(generated, artifact)
-            for artifact in inventory.classified_paths
-        ):
-            problems.append(
-                (
-                    "assembly-receipt-generated-path-classified",
-                    f"{role} aliases a classified release-plan artifact: {generated}",
-                )
-            )
-
-    expected_upstreams = [
-        path
-        for path in inventory.active_paths
-        if not paths_refer_to_same_file(path, annotated_path)
-        and not paths_refer_to_same_file(path, boundary_path)
-    ]
-    actual_upstreams = by_role.get("upstream", [])
-    if [_normalized_path(path) for path in actual_upstreams] != [
-        _normalized_path(path) for path in expected_upstreams
-    ]:
-        problems.append(
-            (
-                "assembly-receipt-release-plan-closure-mismatch",
-                "receipt upstream paths do not exactly match the ordered active "
-                "release-plan closure after annotated/boundary exclusions",
-            )
-        )
-    return problems
-
-
-def assembly_receipt_verified_break_lines(receipt_path: Path) -> frozenset[int]:
-    """Return paragraph/structural break lines proven by sealed assembly inputs.
-
-    Invalid receipt schema remains a hard error.  Missing or stale assembly inputs
-    return no exemptions here and are reported with richer diagnostics by
-    :func:`assembly_receipt_problems`.
-    """
-
-    schema_version, records, output = _load_assembly_receipt(receipt_path)
-    if schema_version != 2:
-        return frozenset()
-    records_by_role = {
-        role: next(record for record in records if record["role"] == role)
-        for role in ("annotated", "boundary-manifest")
-    }
-    annotated_record = records_by_role["annotated"]
-    boundary_record = records_by_role["boundary-manifest"]
-    annotated_path = _resolve_receipt_path(receipt_path, annotated_record["path"])
-    boundary_path = _resolve_receipt_path(receipt_path, boundary_record["path"])
-    output_path = _resolve_receipt_path(receipt_path, output["path"])
-    if _release_plan_receipt_problems(receipt_path, records, output):
-        return frozenset()
-    if not all(
-        path.is_file() for path in (annotated_path, boundary_path, output_path)
-    ):
-        return frozenset()
-    try:
-        if (
-            file_sha256(annotated_path) != annotated_record["sha256"]
-            or file_sha256(boundary_path) != boundary_record["sha256"]
-            or file_sha256(output_path) != output["sha256"]
-        ):
-            return frozenset()
-        with annotated_path.open("r", encoding="utf-8", newline="") as handle:
-            annotated_text = handle.read()
-        boundaries = load_boundary_manifest(boundary_path)
-        rebuilt, break_lines = apply_boundary_contract_with_break_lines(
-            annotated_text, boundaries
-        )
-        if output_path.read_bytes() != rebuilt.encode("utf-8"):
-            return frozenset()
-    except (OSError, UnicodeError, ValueError):
-        return frozenset()
-    return break_lines
-
-
-def assembly_receipt_problems(
-    receipt_path: Path,
-    *,
-    expected_output_path: Path,
-    required_input_paths: Sequence[Path] = (),
-    page_manifest_path: Path | None = None,
-) -> list[tuple[str, str]]:
-    """Verify a final output and every recorded input against a hash receipt.
-
-    ``required_input_paths`` seals interpretation files supplied to the final
-    audit, such as a notation policy or source-exception ledger.  Otherwise a
-    new unrecorded exception file could change the audit result after the
-    release candidate was finalized.  When ``page_manifest_path`` is present,
-    its per-page marker policy is also checked against the sealed annotated
-    input, closing the gap between render provenance and Markdown coverage.
-    """
-
-    schema_version, records, output = _load_assembly_receipt(receipt_path)
-
-    problems: list[tuple[str, str]] = []
-    if schema_version == 1:
-        problems.append(
-            (
-                "assembly-receipt-release-plan-missing",
-                "legacy v1 receipt has no dedicated release-plan input; "
-                "re-finalize with a validated release plan",
-            )
-        )
-    else:
-        problems.extend(
-            _release_plan_receipt_problems(receipt_path, records, output)
-        )
-    recorded_output = _resolve_receipt_path(receipt_path, output["path"])
-    if recorded_output != expected_output_path.resolve():
-        problems.append(
-            (
-                "assembly-output-mismatch",
-                f"receipt output is {recorded_output}, not audited target "
-                f"{expected_output_path.resolve()}",
-            )
-        )
-
-    seen_paths: list[Path] = []
-    paths_by_role: dict[str, list[Path]] = {}
-    for record in records:
-        path = _resolve_receipt_path(receipt_path, record["path"])
-        if any(paths_refer_to_same_file(path, previous) for previous in seen_paths):
-            raise ValueError(f"assembly receipt repeats input path: {path}")
-        seen_paths.append(path)
-        paths_by_role.setdefault(record["role"], []).append(path)
-        if not path.is_file():
-            problems.append(
-                (
-                    "assembly-input-missing",
-                    f"recorded {record['role']} input is missing: {path}",
-                )
-            )
-            continue
-        if file_sha256(path) != record["sha256"]:
-            problems.append(
-                (
-                    "assembly-input-changed",
-                    f"recorded {record['role']} input changed after finalization: {path}",
-                )
-            )
-
-    for required_path in required_input_paths:
-        resolved_required = required_path.resolve()
-        if not any(
-            paths_refer_to_same_file(resolved_required, recorded_path)
-            for recorded_path in seen_paths
-        ):
-            problems.append(
-                (
-                    "assembly-audit-input-unsealed",
-                    "final-audit interpretation input is not sealed by the "
-                    f"assembly receipt: {resolved_required}",
-                )
-            )
-
-    if not expected_output_path.is_file():
-        problems.append(
-            ("assembly-output-missing", f"final output is missing: {expected_output_path}")
-        )
-    elif file_sha256(expected_output_path) != output["sha256"]:
-        problems.append(
-            (
-                "assembly-output-changed",
-                f"final output changed after receipt creation: {expected_output_path}",
-            )
-        )
-
-    annotated_path = paths_by_role["annotated"][0]
-    boundary_path = paths_by_role["boundary-manifest"][0]
-    if page_manifest_path is not None and annotated_path.is_file():
-        problems.extend(
-            page_manifest_marker_coverage_problems(
-                page_manifest_path, annotated_path=annotated_path
-            )
-        )
-    if any(
-        paths_refer_to_same_file(recorded_output, input_path)
-        for input_path in seen_paths
-    ):
-        raise ValueError("assembly receipt output aliases a recorded input")
-    if (
-        annotated_path.is_file()
-        and boundary_path.is_file()
-        and expected_output_path.is_file()
-    ):
-        try:
-            with annotated_path.open(
-                "r", encoding="utf-8", newline=""
-            ) as handle:
-                annotated_text = handle.read()
-            current_boundaries = load_boundary_manifest(boundary_path)
-            rebuilt = apply_boundary_contract(annotated_text, current_boundaries)
-            current_output = expected_output_path.read_bytes()
-        except (OSError, UnicodeError, ValueError) as error:
-            problems.append(
-                (
-                    "assembly-rebuild-failed",
-                    f"could not rebuild final from current annotated and boundary "
-                    f"inputs: {error}",
-                )
-            )
-        else:
-            if current_output != rebuilt.encode("utf-8"):
-                problems.append(
-                    (
-                        "assembly-final-stale",
-                        "final output is not the exact result of applying the current "
-                        "boundary manifest to the current annotated input",
-                    )
-                )
-    return problems

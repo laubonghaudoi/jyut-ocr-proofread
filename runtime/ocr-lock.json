@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "model": {
     "repo": "ggml-org/HunyuanOCR-GGUF",
     "revision": "8e070c9ad79e4ca97a9b4daa2f1ce17e8759afb1",
@@ -10,7 +10,120 @@
   },
   "runtime": {
     "repo": "https://github.com/ggml-org/llama.cpp.git",
-    "commit": "67a17c17caa95742186f8b1ecadd1b5abd6d5ebb",
-    "target": "llama-server"
+    "tag": "b10969",
+    "commit": "391fac16460f15233a7740550d858ac96df3419d",
+    "target": "llama-server",
+    "release_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10969/",
+    "prebuilt": [
+      {
+        "name": "llama-b10969-bin-ubuntu-cuda-13.3-x64.tar.gz",
+        "size": 149124791,
+        "sha256": "5298e68fce6f2e4879143fe098dc3af60df462ef1f8e2d0c28338db77e7416d8",
+        "system": "Linux",
+        "machine": "x86_64",
+        "device": "cuda",
+        "cuda": "13.3",
+        "min_driver": "580",
+        "runtime_bundle": {"name": "cudart-llama-b10969-bin-ubuntu-cuda-13.3-x64.tar.gz", "size": 410248739, "sha256": "caa9db3c77fc5ebf6924e60966c1144d3e3ef8580d8d76cd0117e87fa5258316"}
+      },
+      {
+        "name": "llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz",
+        "size": 168792380,
+        "sha256": "1919075ac4118f72ba2d5c59bffb10ef2367ef2d2d58bf2b69426c5d35d810fd",
+        "system": "Linux",
+        "machine": "x86_64",
+        "device": "cuda",
+        "cuda": "12.8",
+        "min_driver": "570.26",
+        "runtime_bundle": {"name": "cudart-llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz", "size": 594373397, "sha256": "01ccf6324612ffaad4bd942da9531f98fd9638d23a5b6226b17825b0461b5383"}
+      },
+      {
+        "name": "llama-b10969-bin-ubuntu-cuda-13.3-arm64.tar.gz",
+        "size": 144964805,
+        "sha256": "17dce32c05e612a2ce63809262ac000bf683ab129c95aef52f3703170be1acee",
+        "system": "Linux",
+        "machine": "aarch64",
+        "device": "cuda",
+        "cuda": "13.3",
+        "min_driver": "580",
+        "runtime_bundle": {"name": "cudart-llama-b10969-bin-ubuntu-cuda-13.3-arm64.tar.gz", "size": 518392954, "sha256": "1010f5876204e4227cbc1e1b8462dbd0984b58a22c859f0da44b94842ac22708"}
+      },
+      {"name": "llama-b10969-bin-ubuntu-x64.tar.gz", "size": 16845032, "sha256": "6bffedea73f638db186d48113aee84478157743a68812f5d6de9da610f1b5092", "system": "Linux", "machine": "x86_64", "device": "cpu"},
+      {"name": "llama-b10969-bin-ubuntu-arm64.tar.gz", "size": 13469485, "sha256": "a3be0935ecac3ef18e23ce99e83cb6bf3200a07c06585111326e10faccf3b808", "system": "Linux", "machine": "aarch64", "device": "cpu"},
+      {"name": "llama-b10969-bin-macos-arm64.tar.gz", "size": 11149693, "sha256": "61390a8acf93126860471f3430ad0f790f17df369122154753169d2ce27a3827", "system": "Darwin", "machine": "arm64", "device": "metal"},
+      {"name": "llama-b10969-bin-macos-x64.tar.gz", "size": 11199990, "sha256": "85f346d1a9baaaba53b36339575e25111c3768824e42cc2c0f1aedaf14cb01cd", "system": "Darwin", "machine": "x86_64", "device": "cpu"}
+    ]
+  },
+  "paddle": {
+    "python": "3.12",
+    "paddle_version": "3.3.1",
+    "packages": [
+      {"name": "paddlex-3.7.2-py3-none-any.whl", "size": 2239708, "sha256": "f1678bf650bbaccfd8f0d4e49d0ae631b4685c829fdae6e802ccd90d4fcb9a7f", "url": "https://files.pythonhosted.org/packages/40/52/9bbb9cd5f4fbbbefc7391c7d1ee61df8d511017a31e6933f6744b063fdab/paddlex-3.7.2-py3-none-any.whl", "distribution": "paddlex", "version": "3.7.2"},
+      {
+        "name": "paddleocr-3.7.0-py3-none-any.whl",
+        "size": 146750,
+        "sha256": "c0f0a81ad4112727f30c6fcf986ac0ef6a120d31ee0991a01fae0357ee32d338",
+        "url": "https://files.pythonhosted.org/packages/d2/79/2ade66cf72074a3d2a013e2ba1f256d6116fec797b908fc1b4f9c320d8c4/paddleocr-3.7.0-py3-none-any.whl",
+        "distribution": "paddleocr",
+        "version": "3.7.0",
+        "extras": ["doc-parser"]
+      }
+    ],
+    "cpu_wheels": [
+      {"name": "paddlepaddle-3.3.1-cp312-cp312-manylinux1_x86_64.whl", "size": 194839332, "sha256": "9016fc497213e1101261684321fbb31ef5960019ef39cb07ded27bc70e2a9858", "url": "https://files.pythonhosted.org/packages/a0/03/f59f706902aad55a1f216c98fc55187945d6ccda6fdeccd226928bcc06c6/paddlepaddle-3.3.1-cp312-cp312-manylinux1_x86_64.whl", "distribution": "paddlepaddle", "system": "Linux", "machine": "x86_64"},
+      {"name": "paddlepaddle-3.3.1-cp312-cp312-macosx_11_0_arm64.whl", "size": 104546703, "sha256": "d7827d867503b502a881c718e3743d9b91648a62d01f93bcd5ba3d7846de5ab5", "url": "https://files.pythonhosted.org/packages/3b/97/62d061b4700a7020506f4db80c4721100b5b2fa0709f4e999c38dc7e2293/paddlepaddle-3.3.1-cp312-cp312-macosx_11_0_arm64.whl", "distribution": "paddlepaddle", "system": "Darwin", "machine": "arm64"}
+    ],
+    "gpu_wheels": {
+      "distribution": "paddlepaddle-gpu",
+      "trust": "trust-on-first-use",
+      "note": "Paddle's own index publishes no hashes: sizes are pinned here, and the installer records the SHA-256 of its first download in setup-state.json (trustOnFirstUse) and refuses a later download that differs.",
+      "wheels": [
+        {"index": "cu130", "machine": "x86_64", "name": "paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "size": 1977887266, "sha256": null, "url": "https://paddle-whl.cdn.bcebos.com/stable/cu130/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "min_driver": "580", "min_compute_capability": "7.5"},
+        {"index": "cu129", "machine": "x86_64", "name": "paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "size": 2867121389, "sha256": null, "url": "https://paddle-whl.cdn.bcebos.com/stable/cu129/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "min_driver": "575.51.03", "min_compute_capability": "7.0"},
+        {"index": "cu129", "machine": "aarch64", "name": "paddlepaddle_gpu-3.3.1-cp312-cp312-linux_aarch64.whl", "size": 253879827, "sha256": null, "url": "https://paddle-whl.cdn.bcebos.com/stable/cu129/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_aarch64.whl", "min_driver": "575.51.03", "min_compute_capability": "7.0"},
+        {"index": "cu126", "machine": "x86_64", "name": "paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "size": 2021398367, "sha256": null, "url": "https://paddle-whl.cdn.bcebos.com/stable/cu126/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "min_driver": "560.28.03", "min_compute_capability": "7.0", "max_compute_capability": "9.0"},
+        {"index": "cu118", "machine": "x86_64", "name": "paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "size": 1383660875, "sha256": null, "url": "https://paddle-whl.cdn.bcebos.com/stable/cu118/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp312-cp312-linux_x86_64.whl", "min_driver": "520.61.05", "min_compute_capability": "7.0", "max_compute_capability": "9.0"}
+      ]
+    },
+    "models": [
+      {
+        "role": "vl",
+        "repo": "PaddlePaddle/PaddleOCR-VL-1.6",
+        "name": "PaddleOCR-VL-1.6",
+        "revision": "c5630abae1d940eafe0697512a0325494b02ab42",
+        "files": [
+          {"name": "LICENSE", "size": 11376, "sha256": "b8c4d7deccd236af023af1c88c4d4e8f0fc2f41914e0fb23a3ec9678fb5a8456"},
+          {"name": "README.md", "size": 21424, "sha256": "d6c5b77a660577f6e18021defccd835bdc93a8c6538f5a479d597f3e94288abf"},
+          {"name": "added_tokens.json", "size": 25381, "sha256": "f59f889088e0fe21c523e7cf121bb6dca3b0bb148cb7159fbb4572c74dfc5644"},
+          {"name": "chat_template.jinja", "size": 1474, "sha256": "2f27812dab7f333e471884e0c803d807f11953d5453140dfb1aaba234f872bc8"},
+          {"name": "config.json", "size": 2059, "sha256": "ce7f4565f8b1db78532ad5d1b9ebe55c2139d49bd4cb04778b580a08a598f171"},
+          {"name": "configuration_paddleocr_vl.py", "size": 8104, "sha256": "753dd93654c3a9c8c85a3eaee1e3092dd12591b0f2dce0305e1abfb7a41ff160"},
+          {"name": "generation_config.json", "size": 133, "sha256": "a6701d78ab3b4d972307cdec3b69d4c13f46e0d5140514f50ab7d84259324b94"},
+          {"name": "image_processing_paddleocr_vl.py", "size": 25032, "sha256": "a4fa521b9cb16e207f94b7f2d16427771776dfc634420d319fc4916ee58049ec"},
+          {"name": "inference.yml", "size": 43, "sha256": "1587aece2d6442366efce34161d5f7d5f67f09ebfbf043168e5fade892c2780e"},
+          {"name": "model.safetensors", "size": 1917255968, "sha256": "85a479d506a11e724e7285d395c551be69f41dbc16b6342d3cacfb189aed71db"},
+          {"name": "modeling_paddleocr_vl.py", "size": 103889, "sha256": "c5013dff57ca8b87dc1de64d0fd839a44313de09d230a4fb2d08289d2cad5111"},
+          {"name": "preprocessor_config.json", "size": 641, "sha256": "111872ab1e8bb7fd040ac5087bfced7ab8f011f02139b088cba294964c3b1d0e"},
+          {"name": "processing_paddleocr_vl.py", "size": 12253, "sha256": "e29cb1e5f275f2bd3ce051bd5c9983a33894e693b2823a0e13d4c07c8c4f9e13"},
+          {"name": "processor_config.json", "size": 137, "sha256": "1568858960a9760c54431dae693a6152e601ff55cdf6d2eab97a4a99958faea0"},
+          {"name": "special_tokens_map.json", "size": 1151, "sha256": "d3a125c03103deb2acaf7730791bdbbf196f620e5a2213b664511ff9b4b25bab"},
+          {"name": "tokenizer.json", "size": 11189060, "sha256": "c8a215a59183d0d0781adc33bacd3ce6162716f7fd568fb30234a74d69803a7d"},
+          {"name": "tokenizer.model", "size": 1614363, "sha256": "34ef7db83df785924fb83d7b887b6e822a031c56e15cff40aaf9b982988180df"},
+          {"name": "tokenizer_config.json", "size": 186947, "sha256": "1f979337347cc0cb72a6282d8a23ed183539aa81a87a906f022aee2bab83c7c5"}
+        ]
+      },
+      {
+        "role": "layout",
+        "repo": "PaddlePaddle/PP-DocLayoutV3",
+        "name": "PP-DocLayoutV3",
+        "revision": "7b48a7566925fa464281f930c58eee04fe2c862a",
+        "files": [
+          {"name": "README.md", "size": 12077, "sha256": "8483bc2af32658aae3d38ddec2b7186f94f925481b70ae9e9034daaf80e6b9e1"},
+          {"name": "inference.json", "size": 1196890, "sha256": "2b68367c5b312a03de5a6e1642c597c8f95165a7e40cd59c6700cf4a5042f4fd"},
+          {"name": "inference.pdiparams", "size": 130806572, "sha256": "70bd316b0582769ec968829fd1feb1a6a58b7c941b938327e551b6b12b45c137"},
+          {"name": "inference.yml", "size": 1482, "sha256": "506fcfac13b3b546ae40d7886b44126420f392adb694e3f8bb6a6286a1f90fdc"}
+        ]
+      }
+    ]
   }
 }

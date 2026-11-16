@@ -1,0 +1,271 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "跑一本書：由 PDF 到 Markdown",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-skill-run-20261114-222403/skill-run.html",
+    "legend": {
+      "entries": {
+        "backend": {
+          "label": "腳本"
+        },
+        "database": {
+          "label": "交畀用戶"
+        },
+        "messagebus": {
+          "label": "OCR 引擎"
+        },
+        "security": {
+          "label": "GPU 交接"
+        },
+        "cloud": {
+          "label": "本機模型"
+        },
+        "external": {
+          "label": "當前 agent"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "script",
+      "label": "腳本"
+    },
+    {
+      "id": "ocr",
+      "label": "OCR 引擎"
+    },
+    {
+      "id": "proof",
+      "label": "校對者／交接"
+    }
+  ],
+  "mainPath": [
+    "render",
+    "hunyuan",
+    "paddle",
+    "second",
+    "profile",
+    "proofread",
+    "finish"
+  ],
+  "nodes": [
+    {
+      "id": "render",
+      "lane": "script",
+      "col": 0,
+      "type": "backend",
+      "icon": "start",
+      "label": "出圖",
+      "sublabel": "survey_pdf.py"
+    },
+    {
+      "id": "draft",
+      "lane": "script",
+      "col": 2,
+      "type": "database",
+      "label": "未校對草稿",
+      "sublabel": "X-draft.md 即刻交"
+    },
+    {
+      "id": "profile",
+      "lane": "script",
+      "col": 3,
+      "type": "backend",
+      "label": "量度本書",
+      "sublabel": "book_profile.py"
+    },
+    {
+      "id": "proofread",
+      "lane": "script",
+      "col": 4,
+      "type": "backend",
+      "label": "逐頁校對",
+      "sublabel": "proofread_pages.py＋接表"
+    },
+    {
+      "id": "finish",
+      "lane": "script",
+      "col": 5,
+      "type": "database",
+      "icon": "success",
+      "label": "定稿交付",
+      "sublabel": "finish_book.py：X.md＋疑點",
+      "tag": "跟評測輸出規則"
+    },
+    {
+      "id": "hunyuan",
+      "lane": "ocr",
+      "col": 1,
+      "type": "messagebus",
+      "label": "HunyuanOCR",
+      "sublabel": "引擎 B：整頁讀法"
+    },
+    {
+      "id": "paddle",
+      "lane": "ocr",
+      "col": 2,
+      "type": "messagebus",
+      "label": "PaddleOCR-VL",
+      "sublabel": "引擎 A：版面區塊"
+    },
+    {
+      "id": "second",
+      "lane": "ocr",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Hunyuan 補讀",
+      "sublabel": "補 B 漏咗嘅區塊"
+    },
+    {
+      "id": "handover",
+      "lane": "proof",
+      "col": 1,
+      "type": "security",
+      "label": "GPU 交接",
+      "sublabel": "run_ocr_phase.py"
+    },
+    {
+      "id": "local",
+      "lane": "proof",
+      "col": 4,
+      "type": "cloud",
+      "label": "本機模型",
+      "sublabel": "--backend http"
+    },
+    {
+      "id": "agent",
+      "lane": "proof",
+      "col": 5,
+      "type": "external",
+      "label": "當前 agent（預設）",
+      "sublabel": "--backend packet"
+    }
+  ],
+  "edges": [
+    {
+      "id": "render-hunyuan",
+      "from": "render",
+      "to": "hunyuan",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "hunyuan-draft",
+      "from": "hunyuan",
+      "to": "draft",
+      "label": "讀完即出",
+      "role": "branch",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "id": "hunyuan-paddle",
+      "from": "hunyuan",
+      "to": "paddle",
+      "variant": "emphasis"
+    },
+    {
+      "id": "paddle-second",
+      "from": "paddle",
+      "to": "second",
+      "variant": "emphasis"
+    },
+    {
+      "id": "second-profile",
+      "from": "second",
+      "to": "profile",
+      "label": "兩份底稿",
+      "variant": "emphasis"
+    },
+    {
+      "id": "profile-proofread",
+      "from": "profile",
+      "to": "proofread",
+      "variant": "emphasis"
+    },
+    {
+      "id": "proofread-finish",
+      "from": "proofread",
+      "to": "finish",
+      "label": "全部封頁",
+      "variant": "emphasis"
+    },
+    {
+      "id": "proofread-agent",
+      "from": "proofread",
+      "to": "agent",
+      "label": "exit 10 出題",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "proofread-local",
+      "from": "proofread",
+      "to": "local",
+      "label": "HTTP 問答",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "handover-hunyuan",
+      "from": "handover",
+      "to": "hunyuan",
+      "label": "窗口內跑兩個引擎",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "handover-local",
+      "from": "handover",
+      "to": "local",
+      "label": "停／開返",
+      "variant": "dashed",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "邊個校對",
+      "items": [
+        "預設：當前 agent 睇裁圖答 packet 題，apply_packet_answers.py 交答案再重跑",
+        "可選：本機模型，腳本經 HTTP 直接問，圖唔入 agent 嘅 context",
+        "agent 本身就係本機模型（例如 Qwen Code）：一定 http，拒絕 packet"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "GPU 交接（本機模型佔住 GPU 先用）",
+      "items": [
+        "env.sh 有 OCR_PHASE_RELEASE_CMD：前景跑 run_ocr_phase.py -- ocr_book.py",
+        "停模型前等其他 client 做完；閒置 session 收 503 加 Retry-After",
+        "75 預算用完、76 GPU 忙：照 RESULT 行嘅 next call 再叫"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "輸出規則（跟評測）",
+      "items": [
+        "只刪書眉、頁碼呢類頁面家具；圖表入面嘅字照轉，預設唔抽圖",
+        "註腳 [^n] 留原位，重用嘅原印號改 [^n-2]",
+        "直排表由右至左嘅直欄變成由上至下嘅行；跨頁續表合併",
+        "印出嘅 * 寫 \\*，。。照留，冇頁碼分隔"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "交付",
+      "items": [
+        "X-draft.md、進度稿，最後 X.md 同 X-doubts.md 放喺 PDF 隔籬",
+        "clean_book.py --all 清走工作目錄",
+        "單引擎（例如 Intel Mac）係明確例外：--single-engine"
+      ]
+    }
+  ]
+}

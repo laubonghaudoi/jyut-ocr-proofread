@@ -1,0 +1,281 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "逐頁校對：proofread_pages.py 每一頁做乜",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-skill-page-20261114-222403/skill-page.html",
+    "legend": {
+      "entries": {
+        "external": {
+          "label": "校對者答題"
+        },
+        "frontend": {
+          "label": "開關先問（預設關）"
+        },
+        "backend": {
+          "label": "腳本（唔靠模型）"
+        },
+        "security": {
+          "label": "例外"
+        },
+        "database": {
+          "label": "封頁同疑點"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "model",
+      "label": "校對者（agent 或本機模型）"
+    },
+    {
+      "id": "script",
+      "label": "腳本"
+    },
+    {
+      "id": "exc",
+      "label": "例外",
+      "variant": "exception"
+    }
+  ],
+  "mainPath": [
+    "start",
+    "merge",
+    "adjudicate",
+    "punct",
+    "format",
+    "guard",
+    "seal"
+  ],
+  "nodes": [
+    {
+      "id": "inventory",
+      "lane": "model",
+      "col": 1,
+      "type": "frontend",
+      "label": "整頁清點",
+      "sublabel": "睇原圖列出區域",
+      "tag": "--content-fidelity on"
+    },
+    {
+      "id": "adjudicate",
+      "lane": "model",
+      "col": 2,
+      "type": "external",
+      "label": "裁決分歧",
+      "sublabel": "睇裁圖揀讀法"
+    },
+    {
+      "id": "punct",
+      "lane": "model",
+      "col": 3,
+      "type": "external",
+      "label": "加標點",
+      "sublabel": "逐段，唔准改字"
+    },
+    {
+      "id": "format",
+      "lane": "model",
+      "col": 4,
+      "type": "external",
+      "label": "補讀＋排版",
+      "sublabel": "段落、標題、表格"
+    },
+    {
+      "id": "coverage",
+      "lane": "model",
+      "col": 5,
+      "type": "frontend",
+      "label": "整頁覆核",
+      "sublabel": "對原圖查漏",
+      "tag": "--content-fidelity on"
+    },
+    {
+      "id": "start",
+      "lane": "script",
+      "col": 0,
+      "type": "backend",
+      "icon": "start",
+      "label": "兩份底稿",
+      "sublabel": "引擎 A＋引擎 B"
+    },
+    {
+      "id": "merge",
+      "lane": "script",
+      "col": 1,
+      "type": "backend",
+      "label": "對齊兩份底稿",
+      "sublabel": "一致嘅字唔問"
+    },
+    {
+      "id": "guard",
+      "lane": "script",
+      "col": 4,
+      "type": "backend",
+      "label": "字元守門",
+      "sublabel": "verify_characters"
+    },
+    {
+      "id": "seal",
+      "lane": "script",
+      "col": 5,
+      "type": "database",
+      "icon": "success",
+      "label": "封頁",
+      "sublabel": "page-NNNN.md＋.json"
+    },
+    {
+      "id": "blank",
+      "lane": "exc",
+      "col": 0,
+      "type": "security",
+      "label": "空白頁",
+      "sublabel": "唔問，封空頁"
+    },
+    {
+      "id": "single",
+      "lane": "exc",
+      "col": 1,
+      "type": "security",
+      "label": "只有一份底稿",
+      "sublabel": "對住原圖轉錄"
+    },
+    {
+      "id": "doubt",
+      "lane": "exc",
+      "col": 4,
+      "type": "database",
+      "label": "記疑點",
+      "sublabel": "用退返嘅版本"
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-merge",
+      "from": "start",
+      "to": "merge",
+      "variant": "emphasis"
+    },
+    {
+      "id": "inventory-merge",
+      "from": "inventory",
+      "to": "merge",
+      "label": "開關開：先清點",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "merge-adjudicate",
+      "from": "merge",
+      "to": "adjudicate",
+      "label": "唔同先問",
+      "variant": "emphasis"
+    },
+    {
+      "id": "adjudicate-punct",
+      "from": "adjudicate",
+      "to": "punct",
+      "variant": "emphasis"
+    },
+    {
+      "id": "punct-format",
+      "from": "punct",
+      "to": "format",
+      "variant": "emphasis"
+    },
+    {
+      "id": "format-guard",
+      "from": "format",
+      "to": "guard",
+      "label": "核字",
+      "variant": "emphasis"
+    },
+    {
+      "id": "guard-seal",
+      "from": "guard",
+      "to": "seal",
+      "label": "過關",
+      "variant": "emphasis"
+    },
+    {
+      "id": "format-coverage",
+      "from": "format",
+      "to": "coverage",
+      "label": "開關開",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "coverage-seal",
+      "from": "coverage",
+      "to": "seal",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "start-blank",
+      "from": "start",
+      "to": "blank",
+      "label": "都冇字",
+      "variant": "dashed",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "merge-single",
+      "from": "merge",
+      "to": "single",
+      "label": "得一份",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "guard-doubt",
+      "from": "guard",
+      "to": "doubt",
+      "label": "重試都唔過",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "doubt-seal",
+      "from": "doubt",
+      "to": "seal",
+      "label": "照封",
+      "variant": "dashed",
+      "role": "branch"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "內容完整性 v2（--content-fidelity on，預設關）",
+      "items": [
+        "用戶要求先開：每頁多三條整頁題，清點、排版前補讀、最後覆核",
+        "定唔到就記疑點照封，唔當失敗；清點答空白唔會清空嗰頁",
+        "覆核改嘅字記入 decisionChanges；表格 placeholder 保留"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "其他例外",
+      "items": [
+        "兩個引擎次序對唔上：成頁用偏好引擎嘅讀法",
+        "缺引擎 B 底稿：唔封，等 OCR 讀完再跑同一條命令",
+        "packet 同 http 經同一套驗證，答錯格式唔會寫入正文"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "全部頁封好之後",
+      "items": [
+        "proofread_pages.py 自動接跨頁表格",
+        "finish_book.py 修書、組裝、寫疑點清單、做最後審核"
+      ]
+    }
+  ]
+}

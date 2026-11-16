@@ -260,12 +260,14 @@ def _math_base(char: str) -> bool:
     return not han and unicodedata.category(char)[0] in {"L", "N"}
 
 
-def math_context(text: str, start: int, end: int) -> bool:
+def math_context(text: str, start: int, end: int, *, figure_base: bool = True) -> bool:
     """Withhold a marker beside a plausible mathematical base/operator.
 
     Non-Han letters, numbers, combining marks on those bases and signed
     exponents are treated conservatively.  A citation following a non-Han word
     may remain unresolved; a Chinese sentence anchor is not thereby math.
+    FIGURE_BASE False: a number before the marker is no base (a year or a
+    page range with its note call, 1990①); an operator beside it still is.
     """
     raw = text[start:end]
     if raw.startswith("[^"):
@@ -280,4 +282,6 @@ def math_context(text: str, start: int, end: int) -> bool:
         return False
     while left and unicodedata.category(left[-1]).startswith("M"):
         left = left[:-1]
+    if left and not figure_base and unicodedata.category(left[-1]).startswith("N"):
+        return False
     return bool(left and (left[-1] in ")]" or _math_base(left[-1])))

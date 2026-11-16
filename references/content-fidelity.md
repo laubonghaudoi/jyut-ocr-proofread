@@ -1,6 +1,23 @@
 # 內容完整性與評測回歸
 
-喺雙底稿同漏、表格／註腳／原印項號遺失，或者根據評測修改技能時讀本頁。原圖係文字依據；評測只幫手定位失效機制。
+喺雙底稿同漏、表格／註腳／原印項號遺失、用戶要求開 `--content-fidelity on`，或者根據評測修改技能時讀本頁。原圖係文字依據；評測只幫手定位失效機制。
+
+## 開關：`--content-fidelity on`（預設關）
+
+`proofread_pages.py` 預設唔問下面三條整頁題，頁面照封、冇呢份紀錄。用戶要求先加 `--content-fidelity on`；冇 A／B 比較，唔使自己決定開唔開。開咗每頁多三條睇整頁原圖嘅題（A 套嘅 bundle 會多咗 `page-inventory`、`content-recovery`、`coverage-review`，每頁至少多睇三次整頁圖）：
+
+1. **整頁清點（page-inventory）**：連引擎話空白嘅頁都問；列出區域、要保留嘅數字／外文／算式／註號（features）同疑點（issues）。
+2. **排版前補讀（content-recovery）**：對住清點同原圖補返漏咗嘅內容，改動要精確定位。
+3. **最後覆核（coverage-review）**：對住最後文字逐區核 coverage，表格要逐張映射。
+
+佢哋點處理定唔到嘅嘢：
+
+- 答案唔合契約，可以要求改一次（綁錯 hash、抄錯 contract 版本呢類可以改）；改完都唔得，或者覆核唔係 complete，嗰頁**照封**，記 `content-fidelity-unresolved` 疑點（`contentFidelityStatus: doubt`），唔當失敗頁，亦唔繼續問嗰頁後面嘅題。
+- 清點答「空白」而引擎讀到字（或者讀到冇漢字嘅西文、數字），唔會清空嗰頁：照合併或者照圖轉錄，記疑點。
+- 補讀同覆核每個改動記入封存頁 JSON 嘅 `decisionChanges`（`decision: contentFidelity`，`rule` 係 `content-recovery`／`coverage-review`，`evidence.adopted` 講有冇採用）；覆核唔完整而又會蝕 feature 或者清空內容嘅改動唔採用。
+- 表格 placeholder（`⟦Tn⟧`）喺格式化期間保留，唔會俾補讀當字刪。
+- 縫埋咗嘅跨頁表格頁（`tableStitch`）同帶住疑點封嘅頁，`finish_book.py` 照樣驗得過。
+- 續跑：開住嘅 run 唔收冇呢份紀錄嘅封存頁（報 blocked，要 `--overwrite`），但開關出現之前封好、v2 紀錄完整嘅頁照收（見下面〈完整性契約 v2〉最尾）；關住嘅 run 兩種都收。
 
 ## 先分清失效階段
 
@@ -14,6 +31,24 @@
 - 對冇底稿嘅區域亦要睇原尺寸或清晰裁圖；裁圖失位、空白或者缺第二引擎唔係「原頁冇內容」。漢字零字頁仍可能有數字或外文。
 - 圖像確認嘅補讀綁定目前原頁、候選文字及精確位置；模糊、定位不唯一或證據過期就記疑點。唔用另一頁、語意、常用語或連續編號補字。
 - 定稿前再以完整原頁核對 coverage，包括兩底稿共同有但一齊認錯嘅字；區域清單同裁圖補讀本身唔代替逐頁文字覆核。
+
+## 完整性契約 v2
+
+開關開咗先有呢份證據。現行證據用 `schema_version: 2` 同 `contract_version: "content-fidelity-v2"`。
+`regions` 包括家具及插圖；`features` 只記交付內容嘅每次出現。家具數字、頁碼、印章文字寫喺所屬 region 嘅 `evidence`，唔放入 features。違反時報具體欄位，唔靜默刪除。
+
+表格 feature 嘅 `cell` 二選一：
+
+- `kind: "labels"`：`row_label`、`column_label` 都係完整可見標籤格文字，包括細字同附加年限。空標籤唔係萬用匹配，簡稱或 substring 唔代替完整標籤。
+- `kind: "grid"`：提供 `table_region_id`、從零開始嘅 `row`／`col`、原圖總格網 `rows`／`cols`，以及 `rowspan`／`colspan`。無表頭同合併格用呢條路；未能定位就記 ownership 疑點。
+
+所有表格區域覆核都須提供 `table_mappings`，包括全中文、冇數字 features 嘅表格；逐個來源 table region 對應修改後候選嘅 `table_index`（從零起計）、`source_rows`／`source_cols`、`orientation` 同圖像證據。`identity` 保持原格網，`transpose` 只喺 `auto` 有圖像依據時可用。驗證器檢查格位後計算 `result_sha256`，綁定套用 edits 後嘅實際內容；模型毋須自行計算 hash，如有提供則必須吻合。同樣文字放錯格或另一張表唔會通過。
+
+疑點用 `issues: [{id, region_id, kind, evidence}]` 表示。`kind` 可用 reading、crop、coverage、ownership、furniture；全頁範圍未明時 `region_id` 可為 null。覆核用 `resolutions: [{issue_id, status, evidence}]` 逐項回覆，status 係 resolved、unresolved 或 excluded。確認只涉及排除家具嘅疑點可關閉；正文疑字、未知範圍裁切、格位未解仍阻止完成。單寫 `verdict: "complete"` 唔會解除疑點。
+
+覆核必須綁定 `source_image_sha256`、`inventory_sha256`、`candidate_sha256` 同契約版本。答案入面抄錯呢啲 hash 或者版本，算契約錯誤，可以用嗰一次修正請求改；已封存嘅證據屬於另一幅圖或者已經過期，就唔收，唔用格式修正掩蓋。inventory 同每次 review 各最多一個契約修正請求，保存原回答 SHA-256、錯誤 code 同欄位 path；真正視覺未解唔反覆問至得到 complete，記疑點。被拒嘅表格候選同原因保留，退回純文字底稿亦唔會繞過格位驗證。
+
+舊 v1 證據可歷史讀取，但唔可以標成 v2 已核驗，亦唔沿用舊完成封條冒充新契約。開關出現之前，技能每頁都行 v2 三問，嗰啲封條有完整 v2 記錄、冇 `contentFidelity` 開關 key；`--content-fidelity on` 續跑睇證據本身，唔睇有冇呢個 key：證據核驗得過就當 current，核驗唔過先重做。完全冇 v2 記錄嘅頁，on 續跑照舊唔當 current。續跑時沿用已封存、身份一致嘅回答；改候選或契約須另開請求修訂。
 
 ## 註號與字面符號
 

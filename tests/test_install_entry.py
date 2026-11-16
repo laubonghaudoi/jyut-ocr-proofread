@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -102,6 +103,77 @@ class InstallEntryTest(unittest.TestCase):
             self.assertEqual(install.main(["--env-only"]), 2)
         self.assertIn("ACTION REQUIRED", stderr.getvalue())
         self.assertNotIn('"status": "ready"', stderr.getvalue())
+
+    def test_every_agent_gets_the_background_prepare_route_and_a_foreground_test(self):
+        """install.md gives every agent (not only one that is the local model:
+        the phase-E review's E-R9) the long download in the background with
+        --prepare-only, a marker line that says when it ended, and the setup
+        test in the foreground after it; SKILL.md 三 points there.  The
+        documented command, run with a stand-in install.sh that ends as
+        --prepare-only does (its JSON, status pending-smoke, exit 2), leaves
+        that marker last in its log, directly and wrapped in nohup."""
+        text = (ROOT / "references" / "install.md").read_text(encoding="utf-8")
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        bullet = text[text.index("**下載長過 shell 上限（任何 agent，唔止上面講嘅本機模型）**"):]
+        bullet = bullet[:bullet.index("\n\nFingerprint ")]
+        for words in ("agent 唔理係咪本機模型都分三步", "`run_in_background`", "`is_background`", "`nohup sh -c",
+                      "`[prepare] exit=N`", '`"status": "pending-smoke"`', "`./install.sh --env-only`，**唔准放背景**",
+                      "`./install.sh --env-only --check`", "唔好喺背景跑會試跑或者交接嘅命令"):
+            self.assertIn(words, bullet)
+        self.assertIn("長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑",
+                      skill.split("\n## 三、", 1)[1].split("\n## ", 1)[0])
+        self.assertIn("--prepare-only", {o for a in install.build_parser()._actions for o in a.option_strings})
+        command = bullet.split("跑 `", 1)[1].split("`；冇背景 tool", 1)[0]
+        self.assertTrue(command.startswith("./install.sh --env-only --prepare-only > "), command)
+        with tempfile.TemporaryDirectory(prefix="prepare route ") as directory:
+            folder = Path(directory)
+            stand_in = folder / "install.sh"
+            stand_in.write_text("#!/bin/sh\nprintf '{\\n  \"status\": \"pending-smoke\"\\n}\\n'\nexit 2\n")
+            stand_in.chmod(0o755)
+            environment = dict(os.environ, TMPDIR=directory)
+            log = folder / "jyut-ocr-prepare.log"
+            subprocess.run(["sh", "-c", command], cwd=folder, env=environment, check=True, timeout=30)
+            self.assertEqual(log.read_text().splitlines()[-1], "[prepare] exit=2")
+            self.assertIn('"status": "pending-smoke"', log.read_text())
+            log.unlink()
+            wrapped = "nohup sh -c '" + command + "' >/dev/null 2>&1 &"
+            subprocess.run(["sh", "-c", wrapped], cwd=folder, env=environment, check=True, timeout=30)
+            for _ in range(200):
+                if log.is_file() and log.read_text().endswith("[prepare] exit=2\n"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(log.read_text().splitlines()[-1], "[prepare] exit=2")
+
+    def test_rule_set_b_takes_the_server_concurrency_from_env_sh(self):
+        """Rule set B's book profile and phase 3 ask the local model over
+        HTTP as many requests at once as its server runs.  Nothing gave that
+        number (the phase-E review's E-R10): the installer's
+        --local-model-concurrency N writes it to env.sh as
+        PROOFREAD_MAX_INFLIGHT, which proofread_pages.py --max-inflight (and
+        book_profile.py --workers over HTTP) take as their default.  So the
+        run sheet's steps 3 and 4 add --workers N / --max-inflight N only
+        without the key, and 一 B has the agent ask the person for N before
+        the run rather than guess it."""
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        text = (ROOT / "references" / "install.md").read_text(encoding="utf-8")
+        sets = skill.split("\n## 一、", 1)[1].split("\n## ", 1)[0]
+        run = skill.split("\n## 四、", 1)[1].split("\n## ", 1)[0]
+        steps = {line[:2]: line for line in run.splitlines() if line[:2] in ("3.", "4.")}
+        self.assertIn("B 套加 `--backend http`，冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--workers N`", steps["3."])
+        self.assertIn("B 套加 `--backend http`（冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--max-inflight N`）", steps["4."])
+        self.assertIn("冇 `PROOFREAD_MAX_INFLIGHT`（server 一次跑幾多個請求）就開工前問用戶，唔好估", sets)
+        self.assertNotIn("N 係 server 嘅並行數", skill)
+        self.assertIn("| `--local-model-concurrency` |", text)
+        self.assertIn("--local-model-concurrency 4", text)
+        self.assertIn("安裝器寫入 `PROOFREAD_MAX_INFLIGHT`", text)
+        self.assertIn("--local-model-concurrency N writes it",
+                      (ROOT / "env.sh.example").read_text(encoding="utf-8"))
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import proofread_pages
+        with patch.dict(os.environ, {"PROOFREAD_MAX_INFLIGHT": "3"}):
+            arguments = proofread_pages.build_parser().parse_args(
+                ["r", "d", "o", "--backend", "http", "--endpoint", "http://127.0.0.1:9/v1/chat/completions"])
+        self.assertEqual(arguments.max_inflight, 3)
 
 
 if __name__ == "__main__":

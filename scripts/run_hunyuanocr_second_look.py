@@ -32,8 +32,9 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_hunyuanocr as hy  # noqa: E402
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, add_queue_arguments  # noqa: E402
-from _phase_budget import EXIT_INCOMPLETE, Budget, exit_on_sigterm  # noqa: E402
+from _gpu_queue import (  # noqa: E402
+    GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU, add_queue_arguments)
+from _phase_budget import EXIT_INCOMPLETE, Budget, StartupExpired, exit_on_sigterm  # noqa: E402
 
 SCHEMA_VERSION = 2
 SECOND_LOOK_LABEL = "second-look"
@@ -246,17 +247,73 @@ def write_pair(json_path: Path, text_path: Path, json_bytes: bytes, text_bytes: 
         os.replace(sj, json_path)
 
 
-def tool_sha256(model: Path | None, mmproj: Path | None, binary: Path | None = None) -> str:
+def file_hashes(model: Path | None, mmproj: Path | None,
+                binary: Path | None = None) -> dict[str, str | None]:
+    return {label: hy.sha256_file(path) if path is not None and path.is_file() else None
+            for label, path in (("model", model), ("mmproj", mmproj), ("binary", binary))}
+
+
+def tool_sha256(model: Path | None, mmproj: Path | None, binary: Path | None = None,
+                hashes: Mapping[str, str | None] | None = None) -> str:
+    """Code and file hashes, recorded with each second look; not compared."""
+    if hashes is None:
+        hashes = file_hashes(model, mmproj, binary)
     combined = hashlib.sha256()
     combined.update(
         b"run_hunyuanocr_second_look.py\0" + Path(__file__).resolve().read_bytes()
     )
     for filename in ("run_hunyuanocr.py", "_hunyuan_shared.py", "_gpu_queue.py", "_phase_budget.py"):
         combined.update(filename.encode() + b"\0" + Path(__file__).with_name(filename).read_bytes())
-    for label, path in (("model", model), ("mmproj", mmproj), ("binary", binary)):
-        if path is not None and path.is_file():
-            combined.update(f"\0{label}\0".encode() + hy.sha256_file(path).encode())
+    for label in ("model", "mmproj", "binary"):
+        if hashes.get(label) is not None:
+            combined.update(f"\0{label}\0".encode() + str(hashes[label]).encode())
     return combined.hexdigest()
+
+
+def look_identity(arguments: argparse.Namespace,
+                  hashes: Mapping[str, str | None]) -> dict[str, Any]:
+    """What decides whether a page's second look is still current: the model,
+    the runtime (the llama-server binary, as in run_hunyuanocr's
+    draft_identity), the request settings (engine B's fixed profile and max
+    tokens) and the unread threshold.  Code hashes and the deployment (mode,
+    slots, context, device, endpoint URL) are recorded with it but not
+    compared."""
+    runtime = None
+    if arguments.endpoint:
+        model = {"endpointModel": arguments.endpoint_model,
+                 "endpointRevision": arguments.endpoint_revision}
+    else:
+        model = {"modelSha256": hashes.get("model"), "mmprojSha256": hashes.get("mmproj")}
+        runtime = {"binarySha256": hashes.get("binary")}
+    settings = dict(hy.OCR_PROFILE, maxTokens=arguments.max_tokens)
+    return {"engine": hy.ENGINE, "model": model, **({"runtime": runtime} if runtime else {}),
+            "settings": settings, "unreadShare": UNREAD_SHARE}
+
+
+def second_look_is_current(earlier: Mapping[str, Any], draft_a: str, identity_sha: str,
+                           reread_profile: Mapping[str, Any]) -> tuple[bool, str | None]:
+    """(current, legacy note) for a page's recorded second look.
+
+    A look recorded before identitySha256 existed is current when it read the
+    same engine A draft with the same unread threshold and, if it recorded its
+    profile, the same max tokens and endpoint model; it is reported as legacy.
+    """
+    if not earlier or earlier.get("engineADraftSha256") != draft_a:
+        return False, None
+    if "identitySha256" in earlier:
+        current = (earlier.get("schemaVersion") == SCHEMA_VERSION
+                   and earlier["identitySha256"] == identity_sha)
+        return current, None
+    if earlier.get("schemaVersion") not in (1, SCHEMA_VERSION) or earlier.get("unreadShare") != UNREAD_SHARE:
+        return False, None
+    profile = earlier.get("profile")
+    if profile is None:
+        return True, "older runner's second look; same engine A draft and threshold"
+    if not isinstance(profile, Mapping) or any(
+            profile.get(key) != reread_profile.get(key)
+            for key in ("maxTokens", "endpointModel", "endpointRevision")):
+        return False, None
+    return True, "written before second-look identity was recorded; same request settings"
 
 
 def extract_ocr_text(result: Any) -> str:
@@ -270,6 +327,19 @@ def extract_ocr_text(result: Any) -> str:
             if isinstance(message, Mapping) and isinstance(message.get("content"), str):
                 return message["content"]
     raise hy.PageOCRFailure("unexpected OCR response payload shape")
+
+
+def incomplete_finish(result: Any) -> str | None:
+    """The finish reason of a response that says it did not end with "stop";
+    None for a complete one, or one (a plain string) that says nothing."""
+    if not isinstance(result, Mapping):
+        return None
+    choices = result.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, Mapping) or "finish_reason" not in choice:
+        return None
+    reason = choice["finish_reason"]
+    return None if reason == "stop" else str(reason)
 
 
 def crop_png(render: Path, box: Sequence[float], directory: Path) -> Path:
@@ -408,7 +478,10 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         "need --model, --mmproj and --llama-server (or HUNYUAN_* environment variables), "
                         "or --endpoint for an already-running server"
                     )
-        tool = tool_sha256(arguments.model, arguments.mmproj, arguments.llama_server)
+        hashes = file_hashes(arguments.model, arguments.mmproj, arguments.llama_server)
+        tool = tool_sha256(arguments.model, arguments.mmproj, arguments.llama_server, hashes)
+        identity = look_identity(arguments, hashes)
+        identity_sha = hy.profile_sha256(identity)
         reread_profile = {
             "executionProfile": execution, "serverMode": arguments.server_mode,
             "serverSlots": arguments.server_slots, "ctxSize": arguments.ctx_size,
@@ -423,7 +496,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
 
     results: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
-    skipped = blocked = 0
+    skipped = blocked = legacy = 0
     recurring, total_pages = recurring_blocks(drafts_a)
     for scan_page in pages:
         json_b, text_b = hy.output_paths(output, scan_page)
@@ -443,14 +516,15 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
             continue
         draft_a = hy.sha256_bytes(raw_a)
         earlier = record.get("secondLook") or {}
-        if (
-            earlier.get("schemaVersion") == SCHEMA_VERSION
-            and earlier.get("toolSha256") == tool
-            and earlier.get("engineADraftSha256") == draft_a
-            and earlier.get("profileSha256") == reread_profile_sha
-        ):
+        current, legacy_note = second_look_is_current(
+            earlier if isinstance(earlier, dict) else {}, draft_a, identity_sha, reread_profile)
+        if current:
             skipped += 1
-            results.append({"scanPage": scan_page, "status": "skipped-current"})
+            entry: dict[str, Any] = {"scanPage": scan_page, "status": "skipped-current"}
+            if legacy_note:
+                legacy += 1
+                entry["legacy"] = legacy_note
+            results.append(entry)
             continue
         lines = own_lines(record)
         groups = unread_groups(
@@ -477,9 +551,16 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
     budget = Budget()
     own_server = server is None
     lease: GPUQueue | None = None
-    queue_deferred = False
+    queue_deferred = local_model_deferred = False
+    # The phase deadline came while the model loaded: (seconds it loaded,
+    # seconds of the budget left when this run began to load it).
+    load_expired: tuple[float, float] | None = None
+    # When the server answered with the model loaded (time.time()), for
+    # ocr_book.py's load measurement (run_hunyuanocr.py's modelReadyAt).
+    model_ready_at: float | None = None
     try:
         if own_server and any(page["groups"] for page in pending):
+            left_at_load = budget.remaining()
             try:
                 if not budget.allows_next_page():
                     raise GPUQueueTimeout("phase deadline reached before model loading")
@@ -540,6 +621,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         parallel=arguments.server_slots,
                         device=arguments.device,
                         lease_fds=lease.pass_fds,
+                        ready_deadline=budget.deadline,
                     )
                 else:
                     server = hy.HunyuanServer(
@@ -551,8 +633,23 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         arguments.ctx_size,
                         arguments.endpoint_model,
                     )
+                model_ready_at = time.time()
+            except StartupExpired as error:
+                # Out of time while the model loaded: not a queue wait (see
+                # run_hunyuanocr.py), so the summary says the budget is too small.
+                load_expired = (error.waited, left_at_load or 0.0)
+                deferred += len(pending)
+                results.extend(
+                    {"scanPage": page["scanPage"], "status": "deferred",
+                     "reason": "time budget ran out while the model was loading"}
+                    for page in pending
+                )
+                print(f"  time budget reached while HunyuanOCR was loading ({error}): {len(pending)} "
+                      "page(s) left for the next call", flush=True)
+                pending = []
             except GPUQueueTimeout as error:
                 queue_deferred = True
+                local_model_deferred = isinstance(error, LocalModelOwnsGPU)
                 deferred += len(pending)
                 results.extend(
                     {"scanPage": page["scanPage"], "status": "deferred", "reason": str(error)}
@@ -595,6 +692,11 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                         try:
                             raw_response = server.ocr(crop, arguments.max_tokens, page_limit)
                             text = extract_ocr_text(raw_response)
+                            # The page runner keeps a cut-off page reading; a
+                            # cut-off crop reading is a loop, not a block.
+                            finish = incomplete_finish(raw_response)
+                            if finish is not None:
+                                raise hy.PageOCRFailure(f"incomplete response: finish_reason={finish}")
                         except (hy.PageOCRFailure, RuntimeError, OSError) as error:
                             left = budget.remaining()
                             if left is not None and left <= 1.0:
@@ -638,6 +740,8 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                 second_look = {
                     "schemaVersion": SCHEMA_VERSION,
                     "toolSha256": tool,
+                    "identity": identity,
+                    "identitySha256": identity_sha,
                     "profile": reread_profile,
                     "profileSha256": reread_profile_sha,
                     "engineADraftSha256": page["draftA"],
@@ -708,6 +812,8 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
         "engineADirectory": str(drafts_a),
         "outputDirectory": str(output),
         "toolSha256": tool,
+        "identity": identity,
+        "identitySha256": identity_sha,
         "profile": reread_profile,
         "profileSha256": reread_profile_sha,
         "unreadShare": UNREAD_SHARE,
@@ -715,6 +821,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
             "requested": len(pages),
             "completed": completed,
             "skippedCurrent": skipped,
+            "legacy": legacy,
             "blocked": blocked,
             "failed": failed,
             "deferred": deferred,
@@ -723,6 +830,8 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
         },
         "pages": results,
     }
+    if model_ready_at is not None:
+        report["modelReadyAt"] = round(model_ready_at, 3)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_bytes(hy.canonical_json_bytes(report, pretty=True))
     print(
@@ -731,10 +840,20 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
         flush=True,
     )
     print(f"  report: {report_path}", flush=True)
+    if local_model_deferred:
+        print(LOCAL_MODEL_SUMMARY, flush=True)
     if deferred and queue_deferred and not failed and not blocked:
         return EXIT_INCOMPLETE
     if deferred and completed:
         return EXIT_INCOMPLETE
+    if deferred and load_expired is not None:
+        waited, left = load_expired
+        print(f"ERROR the time budget is too small for HunyuanOCR's model load: {left:.0f}s of it were left "
+              f"when the load began, and the server was still loading after {waited:.0f}s, so no page was "
+              "done. Raise the budget (OCR_PHASE_MAX_SECONDS, below the tool call's time limit; raise both "
+              "together) well above the load; the same call with the same budget ends the same way.",
+              file=sys.stderr)
+        return 1
     if deferred:
         print(
             "ERROR the time budget ran out before a single page was done. "

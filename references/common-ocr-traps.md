@@ -1,6 +1,6 @@
 # 常見 OCR 陷阱
 
-長文、雜訊多、表格多、或者語義可疑時讀呢份 reference。
+長文、雜訊多、表格多、或者語義可疑時讀呢份 reference。用嘅人係睇圖嘅校對者：A 套答 packet 題嘅 agent、人手轉錄嘅 writer（`structured-workflow.md`），同對住 `doubts.md` 核書嘅用戶。B 套（本機模型校對）嘅 agent 喺對話入面唔讀頁圖：呢度講嘅核圖由流程問模型，定唔到嘅寫入 `doubts.md` 交用戶。
 
 ## 高信心錯字
 
@@ -29,7 +29,58 @@
 - 同一系列各冊可以用唔同半形／全形政策；唔好將上一本 notation policy 複製過去。
 - 日期矛盾、重複字、文句不通、未閉引號／括號先放大核圖。若原書確實如此，原樣保留，唔為語意或符號平衡改書。
 - 原書用 `□` 表示破損時保留 `□`；唔由人名、日期或上下文猜補。
-- 記錄 scan 同視覺依據；若適用嘅 deterministic gate 需要機械接受來源異常，先按 `release-gate.md` 建 exact-location source exception。Exception 只承認原書異常，唔係忽略未核對 audit issue，亦唔單憑來源符號升級成 `release`。
+- 記錄 scan 同視覺依據；若適用嘅 deterministic gate 需要機械接受來源異常，先按下面嘅 notation policy／source exception 格式建 exact-location 記錄。Exception 只承認原書異常，唔係忽略未核對 audit issue，亦唔單憑來源符號升級 profile。
+
+### Notation policy 同 source exception
+
+將「凡例嘅完整文字解釋」同「audit 需要嘅逐符號授權」分開保存：前者可以係詳細 project-local 記錄，後者用嚴格 `notation-policy.json`。每個 key 都只授權自己嗰種符號；例如凡例明確證明 `□` 同 `〔?〕` 係來源標記，可以寫：
+
+```json
+{
+  "white_square": {
+    "meaning": "source-illegible",
+    "scan_page": 7,
+    "note": "凡例明定每個空方框代表一個不可辨字。"
+  },
+  "explicit_uncertain_marker": {
+    "meaning": "source-uncertain",
+    "scan_page": 7,
+    "note": "凡例明定六角括號內問號表示編者存疑。"
+  }
+}
+```
+
+支援嘅 key 係 `ascii_square_brackets`、`fullwidth_square_brackets`、`lenticular_brackets`、`angle_brackets`、`white_square`、`rectangle` 同 `explicit_uncertain_marker`；每條 record 必須恰好有 `meaning`、`scan_page`、`note`。ASCII `[]` 只接受 `source-editorial`；其他 key 接受嘅 `source-apparatus`、`source-editorial`、`source-uncertain`、`source-damage`、`source-illegible` 或 `source-omission` 組合由 audit schema 限定。未聲明嘅 `□`、`▭`、`〔?〕` 會 fail closed；聲明其中一種唔會順便放行另一種。
+
+Policy 只喺 final audit 使用；annotated mode 唔會用 policy 豁免命中，傳入 policy 亦會報 `notation-policy-requires-final`。先清走真正 OCR confidence markup，再由 final mode 按 exact policy 接受來源 notation。未有可靠凡例證據就唔好建立 policy；residual scan 有命中唔代表一定要刪，逐項分類後先決定。
+
+Audit 會對 `“”`、`‘’`、`「」`、`『』`、`（）`、`［］`、`〈〉`、`《》`、`【】`、`〔〕` 做 stack 檢查。命中先回 PDF；確認係 OCR 錯就修，確認原書如此就寫 exact-location exception：
+
+```json
+{
+  "exceptions": [
+    {
+      "code": "unmatched-opening-delimiter",
+      "line": 1284,
+      "column": 9,
+      "delimiter": "「",
+      "text": "原書呢一整行只有「開引號而未閉合。",
+      "scan_page": 297,
+      "note": "普通圖同放大 crop 都見到原書未印閉引號。"
+    }
+  ]
+}
+```
+
+支援嘅 code 係 `unmatched-opening-delimiter`、`unmatched-closing-delimiter` 同 `misnested-closing-delimiter`。`line` 同 `column` 都由 1 起計，column 以 Unicode character 計；佢哋連同 `delimiter`、`text` 必須同目前 final Markdown 完全一致，而且一條 exception 只承認一個 issue。位置、內容或 issue 一改變，audit 會報 `stale-source-exception`，避免舊白名單永久遮住新錯。
+
+Exception 由 marker-free provisional final 建立，唔可以先寫白名單再搵位置迎合：先唔傳 exceptions 跑一次 final audit，逐個 delimiter issue 記 exact line／column／delimiter／text 同所屬 scan；由另一位 reviewer 打開對應 individual original／full-resolution render，確認係 source-as-printed，先寫 exceptions 再跑 final audit，要求 accepted set exact 等於已核 visual set。之後文字或 boundary 有任何漂移就重做；舊 exception 唔可以靠相似字串移位繼承。
+
+```bash
+python3 scripts/audit_ocr_markdown.py final.md --mode final \
+  --notation-policy notation-policy.json \
+  --source-exceptions source-exceptions.json
+```
 
 ## 平行篇章互校
 
@@ -41,7 +92,7 @@
 
 - 目錄同正文兩邊都「勉強讀得通」仍可能係 OCR 漏字，尤其名稱、日期同固定稱謂。先同時核對兩邊頁圖；已啟用長目錄對賬 gate 時，涉及語義嘅異文須由第二位 reviewer challenge，唔好單靠字串差異封成 source variant。
 - 圈號、註號、重複來源標籤等 routine apparatus 省略可以另行分類；呢個分類唔可以套用到名稱、日期、數字或正文實詞。
-- 目錄末端印刷頁碼／參照容易漏抽、黐入題名、跨欄錯序或被正文頁碼覆蓋。逐 scan 核對原樣參照；長目錄對賬 gate 再按 `release-gate.md` 做 inventory 同 100% 獨立視覺 audit。TOC transcription 同 body mapping 分開，永遠唔改目錄原字去迎合正文。
+- 目錄末端印刷頁碼／參照容易漏抽、黐入題名、跨欄錯序或被正文頁碼覆蓋。逐 scan 核對原樣參照；長目錄對賬 gate 再按 `structured-workflow.md` 嘅〈對賬長目錄〉做 inventory 同 100% 獨立視覺 audit。TOC transcription 同 body mapping 分開，永遠唔改目錄原字去迎合正文。
 
 ## 官職、人名、套語
 

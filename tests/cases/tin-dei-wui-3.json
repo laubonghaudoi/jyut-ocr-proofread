@@ -1,0 +1,88 @@
+{
+ "book": "天地会（三）",
+ "bookId": "tin-dei-wui-3",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/liksi/文獻/天地会 3 (中国人民大学清史研究所, 中国第一历史档案馆同编).pdf",
+  "sha256": "b3a0e0ecee4065ecea0da478e45f062707c988eed5251225bd5f164d81b638e0",
+  "pages": 493,
+  "titleFrom": "the title page, scan 2: 天地会 above （三）, series 清史资料丛刊, 中国人民大学清史研究所 and 中国第一历史档案馆; 中国人民大学出版社 1982",
+  "renderSha256": {
+   "74": "b9770b57fe3825593dc17d06ff8cccdbe52d29ec89519655d339ad6bef11b7d6",
+   "76": "4d241f92c0a0d530f530598c3acb57fd364dfed7c5e1331f2bb5d295be422dfe",
+   "136": "74fca635b9c6f6cf013b35016c7a748ff7f22af7cd1c2c7cda308a200e802d74",
+   "302": "37de6f798b1e344e5061e4dbdd74dd420cbdcdfa93424d8e8d137f7f4cb626a5",
+   "2": "0fdf3657d4c0fd3ca3f9442452a8e3038cd48fc50c9903b4223c73281100fe00"
+  },
+  "renderSha256From": "sha256 of jyut-ocr-corpus/tin-dei-wui-3/renders/page-NNNN.png (survey_pdf.py, pdftoppm 300 dpi), measured 2026-10-13; equal to provenance.renderSha256 of the sealed proofread pages"
+ },
+ "traits": [
+  "horizontal-ltr",
+  "simplified-han",
+  "modern-typesetting",
+  "1982",
+  "qing-archive-documents",
+  "memorial-titles-with-date-lines",
+  "table-of-contents",
+  "leader-dots",
+  "1-bit-scan-295ppi",
+  "stock-phrase-仰祈圣鉴事"
+ ],
+ "notCovered": [
+  "vertical layout",
+  "traditional han",
+  "footnotes",
+  "tables",
+  "figures"
+ ],
+ "assertions": [
+  {
+   "id": "consistent-74-1",
+   "page": 74,
+   "type": "contains",
+   "value": "仰祈圣鉴",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 仰祈圣鉴 (为恭折复奏，仰祈圣鉴事。); the delivered output writes 仰祈圣监 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw3-074-shengjian.png; #31"
+  },
+  {
+   "id": "consistent-76-2",
+   "page": 76,
+   "type": "contains",
+   "value": "仰祈圣鉴",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 仰祈圣鉴 (恳请添兵，仰祈圣鉴 / 事。); the delivered output writes 仰祈圣监 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw3-076-shengjian.png; #31"
+  },
+  {
+   "id": "consistent-136-3",
+   "page": 136,
+   "type": "contains",
+   "value": "仰祈圣鉴",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 仰祈圣鉴 (为遵旨复奏，仰祈圣鉴 / 事。); the delivered output writes 仰祈圣监 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw3-136-shengjian.png; #31"
+  },
+  {
+   "id": "consistent-302-4",
+   "page": 302,
+   "type": "contains",
+   "value": "仰祈圣鉴",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 仰祈圣鉴 (为遵旨复奏，仰祈圣鉴 / 事。); the delivered output writes 仰祈圣监 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw3-302-shengjian.png; #31"
+  },
+  {
+   "id": "golden-2-m1",
+   "page": 2,
+   "type": "golden_page",
+   "value": "tin-dei-wui-3/page-0002.md",
+   "provenance": "human",
+   "note": "user-confirmed golden (canvas '金標準覆核' (artifact KxfwDZovev5fVf5iLbiffK), answers/g-tdw3-2: verdict ok, 2026-10-13T23:43:57Z): the user confirmed this file as the canvas showed it, byte for byte; the canvas's writing questions for this page (q-heyian, q-volume, q-series) were left unanswered, so the draft's choices stand. The machine draft's note follows. machine draft golden (goldgate 2026-10-13, read from zoomed crops of the render, then checked against both engines; not yet confirmed by the user): the title page - the series name 清史资料丛刊 as a plain line, the calligraphic title as # 天地会, the volume number （三） on its own line (full-width brackets), the editor block, the publisher. Simplified as printed (资 丛 会 国 学 历 档 馆 编). Letter-spacing of the display lines is not written; ink specks above the title and the scan edge bars are not text. 合编 is set in the same type size as the names (39 px vs 41 px glyphs), one line to the right of the two-line block and centred between its lines; it is written in reading order after both names, one entry per line with its parts separated by spaces (中国人民大学清史研究所 中国第一历史档案馆 合编), after caangung-4's colophon convention - open question for the user, as is # 天地会 + （三） vs # 天地会（三） (whitespace, line breaks and # are not scored, so engine B's two-line form also scores 0; only 合编 placed after the first name, as engine A has it, costs 4 errors). Engine A 7 errors (lost the calligraphic 天地会, 合编 misplaced) and marks 0/2 (half-width brackets); engine B 0 errors, marks 2/2. Delivery of 2026-10-12: 3 errors/41 - 合编, which both engines read at different places, dropped, and 大 and 社 written where no engine read anything (adjudications 02 and 03, winner 'neither', from crops that did not show 合编); marks 2/2.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 3,
+     "minMarkRecall": 100.0,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 2,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  }
+ ]
+}

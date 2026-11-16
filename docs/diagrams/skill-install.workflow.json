@@ -1,0 +1,253 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "安裝：一次過配置兩個 OCR 引擎",
+    "locale": "zh-TW",
+    "quality_profile": "showcase",
+    "output": ".archify/workflow-skill-install-20261114-222403/skill-install.html",
+    "legend": {
+      "entries": {
+        "external": {
+          "label": "入口"
+        },
+        "backend": {
+          "label": "安裝步驟"
+        },
+        "security": {
+          "label": "判斷／交接"
+        },
+        "messagebus": {
+          "label": "OCR 引擎"
+        },
+        "cloud": {
+          "label": "運算裝置"
+        },
+        "database": {
+          "label": "設定檔"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "device",
+      "label": "運算裝置（兩個引擎都跟）"
+    },
+    {
+      "id": "setup",
+      "label": "安裝程式"
+    },
+    {
+      "id": "engine",
+      "label": "OCR 引擎（預設兩個都裝）"
+    }
+  ],
+  "mainPath": [
+    "start",
+    "reuse",
+    "platform",
+    "fetch",
+    "smoke",
+    "ready"
+  ],
+  "nodes": [
+    {
+      "id": "gpu",
+      "lane": "device",
+      "col": 2,
+      "type": "cloud",
+      "label": "GPU 優先",
+      "sublabel": "NVIDIA CUDA／Apple Metal"
+    },
+    {
+      "id": "cpu",
+      "lane": "device",
+      "col": 3,
+      "type": "cloud",
+      "label": "CPU 後備",
+      "sublabel": "冇可用 GPU 先用"
+    },
+    {
+      "id": "handover",
+      "lane": "device",
+      "col": 4,
+      "type": "security",
+      "label": "GPU 交接",
+      "sublabel": "停本機模型→試跑→開返"
+    },
+    {
+      "id": "start",
+      "lane": "setup",
+      "col": 0,
+      "type": "external",
+      "icon": "start",
+      "label": "install.sh",
+      "sublabel": "技能根目錄執行"
+    },
+    {
+      "id": "reuse",
+      "lane": "setup",
+      "col": 1,
+      "type": "backend",
+      "label": "檢查已有環境",
+      "sublabel": "已核實就重用"
+    },
+    {
+      "id": "platform",
+      "lane": "setup",
+      "col": 2,
+      "type": "security",
+      "icon": "decision",
+      "label": "判斷平台同裝置",
+      "sublabel": "Linux／WSL2／macOS"
+    },
+    {
+      "id": "fetch",
+      "lane": "setup",
+      "col": 3,
+      "type": "backend",
+      "label": "下載＋核驗",
+      "sublabel": "固定版本＋SHA-256"
+    },
+    {
+      "id": "smoke",
+      "lane": "setup",
+      "col": 4,
+      "type": "security",
+      "label": "每個引擎試跑",
+      "sublabel": "一張合成頁"
+    },
+    {
+      "id": "ready",
+      "lane": "setup",
+      "col": 5,
+      "type": "database",
+      "icon": "success",
+      "label": "env.sh＋就緒",
+      "sublabel": "~/.config/jyut-ocr"
+    },
+    {
+      "id": "vision",
+      "lane": "engine",
+      "col": 2,
+      "type": "messagebus",
+      "label": "Apple Vision",
+      "sublabel": "Intel Mac 做提示"
+    },
+    {
+      "id": "hunyuan",
+      "lane": "engine",
+      "col": 3,
+      "type": "messagebus",
+      "label": "HunyuanOCR",
+      "sublabel": "GGUF＋llama.cpp"
+    },
+    {
+      "id": "paddle",
+      "lane": "engine",
+      "col": 4,
+      "type": "messagebus",
+      "label": "PaddleOCR-VL",
+      "sublabel": "權重預先下載"
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-reuse",
+      "from": "start",
+      "to": "reuse"
+    },
+    {
+      "id": "reuse-platform",
+      "from": "reuse",
+      "to": "platform"
+    },
+    {
+      "id": "platform-fetch",
+      "from": "platform",
+      "to": "fetch",
+      "label": "兩個都裝",
+      "variant": "emphasis"
+    },
+    {
+      "id": "platform-gpu",
+      "from": "platform",
+      "to": "gpu",
+      "label": "預設",
+      "role": "branch"
+    },
+    {
+      "id": "gpu-cpu",
+      "from": "gpu",
+      "to": "cpu",
+      "label": "冇可用 GPU",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "platform-vision",
+      "from": "platform",
+      "to": "vision",
+      "label": "Intel Mac",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "fetch-hunyuan",
+      "from": "fetch",
+      "to": "hunyuan",
+      "role": "branch"
+    },
+    {
+      "id": "fetch-paddle",
+      "from": "fetch",
+      "to": "paddle",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "fetch-smoke",
+      "from": "fetch",
+      "to": "smoke",
+      "variant": "emphasis"
+    },
+    {
+      "id": "smoke-handover",
+      "from": "smoke",
+      "to": "handover",
+      "label": "本機模型佔 GPU",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "smoke-ready",
+      "from": "smoke",
+      "to": "ready",
+      "label": "全部成功",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "平台同裝置",
+      "items": [
+        "Linux／WSL2 有 NVIDIA：兩個引擎用 CUDA；卡細或者舊，Paddle 轉 CPU",
+        "Apple Silicon：Hunyuan 用 Metal，Paddle 用 CPU",
+        "Intel Mac：淨係 HunyuanOCR，Apple Vision 做提示",
+        "原生 Windows 唔支援，用 WSL2"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "明確覆蓋同本機模型",
+      "items": [
+        "--engine hunyuan 淨裝 Hunyuan；--device cpu 全部用 CPU",
+        "--local-model-* 聲明本機校對模型同佢嘅停／開命令",
+        "GPU 唔夠空位：兩個引擎嘅試跑放喺一次交接入面"
+      ]
+    }
+  ]
+}

@@ -575,6 +575,7 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             "claude-skill": home / ".claude/skills/jyut-ocr-proofread",
             "gemini-skill": home / ".gemini/skills/jyut-ocr-proofread",
             "antigravity-skill": home / ".gemini/config/skills/jyut-ocr-proofread",
+            "qwen-skill": home / ".qwen/skills/jyut-ocr-proofread",
         })
         self.assertTrue(all(spec["source"] == self.repo for spec in specs))
         self.assertEqual(

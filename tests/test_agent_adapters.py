@@ -131,16 +131,20 @@ class ClaudeAgentAdapterTests(unittest.TestCase):
 
 class SharedContractTests(unittest.TestCase):
     def test_contract_covers_parallelism_seals_and_independent_audit(self) -> None:
+        # The contract is in Cantonese (the skill's user-facing language); these
+        # are the same invariants the English text of the contract stated.
         text = " ".join(CONTRACT.read_text(encoding="utf-8").split())
         for invariant in (
-            "min(runtime child slots, 8)",
-            "Apple Vision OCR uses a separate bounded local process pool, not LLM agents",
+            "同時運行嘅 LLM 子 agent 預設最多 8 個",
+            "用戶明確要求可以去到 16 個",
+            "永遠唔超過平台實際有嘅 slot",
+            "Apple Vision 用獨立嘅 bounded 本機 process pool，唔係 LLM agent",
             "STOP-WRITE",
-            "100% of the assigned scans",
-            "reviewer has effective read-only access",
-            "verify actual permissions rather than relying on a prompt or adapter declaration",
-            "Only the main agent assembles the final Markdown",
-            "A late patch invalidates the affected seal and audit",
+            "覆核 100% 指定 scan",
+            "覆核者對封好嘅 candidate 同來源證據真係淨係有唯讀權限",
+            "自動覆核者要驗實際權限，唔可以靠 prompt 或者 adapter 聲明",
+            "淨係主 agent 組裝最後 Markdown",
+            "遲來嘅改動令受影響嘅 seal 同覆核作廢",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, text)

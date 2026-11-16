@@ -19,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import _repair_edits as re_  # noqa: E402
 import _repair_rules as rr  # noqa: E402
+import _content_fidelity as fidelity  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import finalize_page_markers  # noqa: E402
 import finish_book  # noqa: E402
@@ -46,11 +47,30 @@ def _seal_synthetic_page(
     draft_path: Path,
 ) -> None:
     md_bytes = md_text.encode("utf-8")
+    image = render_path.read_bytes()
+    image_sha = pp.sha256_bytes(image)
+    inventory = fidelity.parse_inventory(json.dumps({
+        "schema_version": 2, "contract_version": "content-fidelity-v2",
+        "source_image_sha256": image_sha, "page_state": "content",
+        "evidence": "Synthetic fixture; no model or external OCR.",
+        "regions": [{"id": "r1", "kind": "body", "box": [0.1, 0.1, 0.9, 0.9],
+                     "evidence": "Synthetic body region."}], "features": [], "issues": [],
+    }), image)
+    _, review = fidelity.apply_review(json.dumps({
+        "schema_version": 2, "contract_version": "content-fidelity-v2",
+        "source_image_sha256": image_sha, "inventory_sha256": inventory["inventory_sha256"],
+        "candidate_sha256": fidelity.text_sha256(md_text), "verdict": "complete",
+        "regions": [{"id": "r1", "status": "covered", "evidence": "Synthetic fixture review."}],
+        "edits": [], "resolutions": [], "table_mappings": [],
+    }), md_text, inventory)
     record = {
         "schemaVersion": pp.SCHEMA_VERSION,
         "scanPage": scan_page,
         "status": "complete",
         "mode": "merge",
+        "contentFidelityContract": "content-fidelity-v2",
+        "pageInventory": inventory,
+        "coverageReview": review,
         "auditorClean": True,
         "auditorReport": "",
         "doubts": [],

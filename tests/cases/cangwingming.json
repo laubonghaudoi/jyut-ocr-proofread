@@ -1,0 +1,628 @@
+{
+ "book": "陳炯明叛國史",
+ "bookId": "cangwingming",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/cangwingming/chen.pdf",
+  "sha256": "0bc9ffc47aa0c04b7fa0338edc6a08b7e6fb6a53cd364583fcc760fe12f2b3c4",
+  "pages": 344,
+  "renderSha256": {
+   "1": "fba6a9e37f2983feb7adc967a79623cc47c46477ceaf45225651aa6625f6601e",
+   "2": "4ffa43f81a53c552013f9d26f898e21626d28e0b4d9646ca97d7239e0bd983ef",
+   "3": "244b3cfa42121af5569a8a425837df7bd3b1f2ff0669b1c827bb23dfa2f5671a",
+   "22": "5ffac62fa6eee6056e864bc4d7cfe8c40129972ffda90a7d6943efb12bf15772",
+   "29": "eb537bb0b37e50c48fc51f5d9fc1ba059b44078158b5e3cd71bf07413c9e4fae",
+   "54": "3e0869a577ab69fd8cfefb15b6c05b208c086becea4d594a0bd64615c157299f",
+   "65": "b46395fd1a7e6ecd2890dc8d04945de4703b6b3a4f074356f86f82350dc6c81c",
+   "66": "284fc90d1a9377a0dc82e2bffcb92e811f457ebf7290bf3321e51fc201f82e77",
+   "79": "b74c677443fff5b1fe1abf8837c6c06c0c40ae745f3766a2266e6ec046cbd554",
+   "80": "4f8e3c18fea6fcf37934df6d97e061b07d3f5ede65de6a53d8d0352cdfeb7227",
+   "85": "cadf5c2d25771a98b2b4eabf412fe310e3effcbfa84b29d28e93c662fb1ef479",
+   "91": "2fdc6a64fa9215eb3e36292a786b7aaee21ac35cc62651e4a73a264f67dd5d03",
+   "93": "26761d23df6c796e55bb0151f757e051a57e51be40f44f040a89a8f519bde32e",
+   "94": "e7cc7598807d287d3080a9d935078641c0645695defb07935ac77a27793fea71",
+   "104": "874e8955b6ab38069ac7a733d2834b924a23450875caf306fdb2ef44a7cdc824",
+   "111": "b7087a4289179211db5dba3b05814cbff5a598050e849ee830e3aa9f4f988cf0",
+   "116": "e522492afdf28cf40eb40ef844060bde13d7b36b14362321135a8825f8c46fdf",
+   "142": "0d76a01082852ae336e8b668821e3dcc60c97096a024ceccc9134b65c4b89792",
+   "156": "99a7d2fd45662cece0744dbda00b6622a71aaa357d3fc14a0cdf32111b13d7c5",
+   "158": "e24910ffd72ee712c6e925c521aa49cd8f17dee6335d8032474b3cba48dc14a2",
+   "171": "f8f67a1bc54614bcd4a7bbdc35672b6c750d213436133c12c636bd5b7e7bd3f1",
+   "189": "164b3a05fb7f7ede4238b302bde44d92b72b48edc892d21bcb470bc377035c36",
+   "192": "03455cd08cc88dc4746525566967afc0be593d6f95bdcfa15ff4ad966f67b20e",
+   "193": "df512ce53d68d0220d81e381ba01cec8093c4f86b157e038efa64652a6c625e4",
+   "196": "a4be0e7d7961ff7f0739065655593eebf92eb92af32a8a2637b245e03daefb37",
+   "207": "720ed6c969cd817173e4fe293d7c69ae7fafb37bf7040696d5a64b1c0edc36b2",
+   "223": "20f0b1154c083022f294556b71d8235dc38b4ade46fa609cc240ea4795170bf1",
+   "258": "3a135e7a331a041ccba34824f8807b0a4970ca345311426bc38a6c0c5553fac6",
+   "266": "deeec1baca49f4449d8042b0be694b6d6c9bed97e167a0b1b5234cb44dae32e4",
+   "276": "3769fc468ac93c0a06f6d00ec9714962fe7ceb67ba39bce7a6910f02c0fc59ee",
+   "306": "7d2d9485bddec6fb3c95d6a853e1302938680c5c7a8fc3f103a04bab042d899c",
+   "307": "1834348f37b1b11218caba7af4003b274fb45532d73f5b903d7e001640b257bc",
+   "312": "8abc959fbed33e424aaddafab1f66f1c1d55912d33ebb664d7cab198dfb8de5d",
+   "320": "dc5fa1f7ef68597577bc764c488462c219b3b5065aeef4f857a78d0445aa259d",
+   "331": "91e08c59a234f30bb2359a4c8f1ffcc6c65247def9212313634713f7d2b58a6e",
+   "344": "a9b96054606d82101fafb2bd83893777be7c4436bd646e28749d819abf49d446"
+  },
+  "renderSha256From": "provenance.renderSha256 of this book's sealed pages in jyut-ocr-corpus and ~/ocr-runs, measured 2026-09-24: each page the assertions name has one hash across its 1-5 sealed outputs; an all-cases run skips this case when every recorded page of the output has another hash (another book's page); pp.158, 196, 312 and 320 added 2026-09-26 from sha256 of their renders/page-NNNN.png (the hash a sealed page's provenance records)"
+ },
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "lead-type",
+  "1922",
+  "single-column-body",
+  "telegrams",
+  "index-and-errata-tables",
+  "calligraphic-frontmatter"
+ ],
+ "notCovered": [
+  "horizontal layout",
+  "simplified han",
+  "modern typesetting",
+  "real table markup",
+  "multi-column",
+  "footnotes",
+  "poor scan quality"
+ ],
+ "assertions": [
+  {
+   "id": "contains-2-0",
+   "page": 2,
+   "type": "contains",
+   "value": "另刋",
+   "provenance": "human",
+   "note": "user adjudication: 刋 not 刊"
+  },
+  {
+   "id": "contains-2-1",
+   "page": 2,
+   "type": "contains",
+   "value": "捐欵",
+   "provenance": "human",
+   "note": "user adjudication: 欵 not 款"
+  },
+  {
+   "id": "contains-2-2",
+   "page": 2,
+   "type": "contains",
+   "value": "正式収據",
+   "provenance": "human",
+   "note": "user adjudication: 収 not 收"
+  },
+  {
+   "id": "contains-2-3",
+   "page": 2,
+   "type": "contains",
+   "value": "返斾討賊",
+   "provenance": "human",
+   "note": "user adjudication: 斾 correct (旆 acceptable)"
+  },
+  {
+   "id": "contains-3-4",
+   "page": 3,
+   "type": "contains",
+   "value": "屈筴",
+   "provenance": "human",
+   "note": "user adjudication: 筴 not 策"
+  },
+  {
+   "id": "contains-3-5",
+   "page": 3,
+   "type": "contains",
+   "value": "鳴鏑",
+   "provenance": "human",
+   "note": "user adjudication"
+  },
+  {
+   "id": "contains-3-6",
+   "page": 3,
+   "type": "contains",
+   "value": "弑父",
+   "provenance": "human",
+   "note": "user adjudication: 弑 not 弒"
+  },
+  {
+   "id": "contains-3-7",
+   "page": 3,
+   "type": "contains",
+   "value": "遂王",
+   "provenance": "human",
+   "note": "user adjudication: 遂王 not 逐王 - the reference had the opposite meaning"
+  },
+  {
+   "id": "contains-3-8",
+   "page": 3,
+   "type": "contains",
+   "value": "動輙",
+   "provenance": "human",
+   "note": "user adjudication: 輙 not 輒"
+  },
+  {
+   "id": "contains-3-9",
+   "page": 3,
+   "type": "contains",
+   "value": "坐収",
+   "provenance": "human",
+   "note": "user adjudication"
+  },
+  {
+   "id": "contains-306-10",
+   "page": 306,
+   "type": "contains",
+   "value": "半途而廢",
+   "provenance": "human",
+   "note": "user adjudication: 半途, not 半 + 。 + 遂"
+  },
+  {
+   "id": "contains-29-11",
+   "page": 29,
+   "type": "contains",
+   "value": "之以吿世",
+   "provenance": "human",
+   "note": "ruling: keep 吿 U+543F"
+  },
+  {
+   "id": "contains-22-12",
+   "page": 22,
+   "type": "contains",
+   "value": "滿淸小韃",
+   "provenance": "human",
+   "note": "ruling: keep 淸 U+6DF8"
+  },
+  {
+   "id": "contains-192-13",
+   "page": 192,
+   "type": "contains",
+   "value": "其强盜行爲",
+   "provenance": "human",
+   "note": "ruling: keep 强 U+5F3A"
+  },
+  {
+   "id": "contains-93-14",
+   "page": 93,
+   "type": "contains",
+   "value": "程濳居正",
+   "provenance": "human",
+   "note": "ruling: keep 濳 U+6FF3"
+  },
+  {
+   "id": "contains-104-15",
+   "page": 104,
+   "type": "contains",
+   "value": "幷硏究地方",
+   "provenance": "human",
+   "note": "ruling: keep 硏 U+784F"
+  },
+  {
+   "id": "contains-66-16",
+   "page": 66,
+   "type": "contains",
+   "value": "胡漢民之去粤",
+   "provenance": "human",
+   "note": "ruling: keep 粤 U+7CA4"
+  },
+  {
+   "id": "contains-223-17",
+   "page": 223,
+   "type": "contains",
+   "value": "澄淸中原",
+   "provenance": "human",
+   "note": "ruling: keep 淸"
+  },
+  {
+   "id": "contains-80-18",
+   "page": 80,
+   "type": "contains",
+   "value": "無可爲决計",
+   "provenance": "human",
+   "note": "ruling: keep 决 U+51B3"
+  },
+  {
+   "id": "contains-193-19",
+   "page": 193,
+   "type": "contains",
+   "value": "檢查稿件",
+   "provenance": "human",
+   "note": "ruling: keep 查 U+67E5 - you kept the MODERN form here"
+  },
+  {
+   "id": "contains-307-20",
+   "page": 307,
+   "type": "contains",
+   "value": "不合况師次",
+   "provenance": "human",
+   "note": "ruling: keep 况 U+51B5"
+  },
+  {
+   "id": "contains-91-21",
+   "page": 91,
+   "type": "contains",
+   "value": "不値自愛",
+   "provenance": "human",
+   "note": "ruling: keep 値 U+5024"
+  },
+  {
+   "id": "contains-266-22",
+   "page": 266,
+   "type": "contains",
+   "value": "僑民曁各公團",
+   "provenance": "human",
+   "note": "ruling: keep 曁 U+66C1"
+  },
+  {
+   "id": "contains-171-23",
+   "page": 171,
+   "type": "contains",
+   "value": "元尙未足",
+   "provenance": "human",
+   "note": "ruling: keep 尙 U+5C19"
+  },
+  {
+   "id": "contains-79-24",
+   "page": 79,
+   "type": "contains",
+   "value": "軍事敎育",
+   "provenance": "human",
+   "note": "ruling: keep 敎 U+654E"
+  },
+  {
+   "id": "contains-258-25",
+   "page": 258,
+   "type": "contains",
+   "value": "胡乃冐大不韙",
+   "provenance": "human",
+   "note": "ruling: keep 冐 U+5190"
+  },
+  {
+   "id": "contains-54-26",
+   "page": 54,
+   "type": "contains",
+   "value": "空前之浩刧",
+   "provenance": "human",
+   "note": "ruling: 刧 U+5227 - you corrected this one; NEITHER offered candidate was right"
+  },
+  {
+   "id": "contains-276-27",
+   "page": 276,
+   "type": "contains",
+   "value": "孫大總統國會護法將領各團體報館鑑炯明通敵破壞大局",
+   "provenance": "human",
+   "note": "your transcription of p276-telegram-a"
+  },
+  {
+   "id": "contains-276-28",
+   "page": 276,
+   "type": "contains",
+   "value": "孫大總統鑒陳逆炯明通敵叛亂乞下令致討以彰國法墨國",
+   "provenance": "human",
+   "note": "your transcription of p276-telegram-b"
+  },
+  {
+   "id": "contains-3-29",
+   "page": 3,
+   "type": "contains",
+   "value": "本書探源立論不倚不偏",
+   "provenance": "regression",
+   "note": "deletion guard: both engines read this; the formatter used to delete it as furniture"
+  },
+  {
+   "id": "contains-207-30",
+   "page": 207,
+   "type": "contains",
+   "value": "夏同和",
+   "provenance": "regression",
+   "note": "deletion guard: a table row labelled `header` by the layout engine, deleted as a running head"
+  },
+  {
+   "id": "contains-207-31",
+   "page": 207,
+   "type": "contains",
+   "value": "前清狀元",
+   "provenance": "regression",
+   "note": "deletion guard: a table row labelled `header` by the layout engine, deleted as a running head"
+  },
+  {
+   "id": "contains-207-32",
+   "page": 207,
+   "type": "contains",
+   "value": "貴州",
+   "provenance": "regression",
+   "note": "deletion guard: a table row labelled `header` by the layout engine, deleted as a running head"
+  },
+  {
+   "id": "json_field-344-33",
+   "page": 344,
+   "type": "json_field",
+   "value": "blank-page",
+   "provenance": "regression",
+   "note": "blank verso must seal, not fail",
+   "field": "mode"
+  },
+  {
+   "id": "no_repeat_run-331-34",
+   "page": 331,
+   "type": "no_repeat_run",
+   "value": 6,
+   "provenance": "regression",
+   "note": "engine repetition loop must not reach the output"
+  },
+  {
+   "id": "all_pages_metric_max-0-35",
+   "page": 0,
+   "type": "all_pages_metric_max",
+   "value": 60.0,
+   "provenance": "regression",
+   "note": "no page may exceed the degenerate punctuation density",
+   "field": "punctuationDensity"
+  },
+  {
+   "id": "all_pages_empty-0-36",
+   "page": 0,
+   "type": "all_pages_empty",
+   "value": [],
+   "provenance": "regression",
+   "note": "nothing may be silently dropped",
+   "field": "droppedRuns"
+  },
+  {
+   "id": "contains-189-37",
+   "page": 189,
+   "type": "contains",
+   "value": "大本營",
+   "provenance": "machine",
+   "note": "workflow: 大 not 太 (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-94-38",
+   "page": 94,
+   "type": "contains",
+   "value": "約束各部軍隊",
+   "provenance": "machine",
+   "note": "workflow: 束 not 朿 (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-156-39",
+   "page": 156,
+   "type": "contains",
+   "value": "陰毒手段",
+   "provenance": "machine",
+   "note": "workflow: 段 not 叚 (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-65-40",
+   "page": 65,
+   "type": "contains",
+   "value": "率兵三千",
+   "provenance": "machine",
+   "note": "workflow: 千 not 干 (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-111-41",
+   "page": 111,
+   "type": "contains",
+   "value": "正驚疑間",
+   "provenance": "machine",
+   "note": "workflow: 間 here (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-85-42",
+   "page": 85,
+   "type": "contains",
+   "value": "一爲過問",
+   "provenance": "machine",
+   "note": "workflow: 問 here - same pair, opposite direction (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "contains-116-43",
+   "page": 116,
+   "type": "contains",
+   "value": "剷除勝",
+   "provenance": "machine",
+   "note": "workflow: 剷 not 劃 (adversarially verified, not human-confirmed)"
+  },
+  {
+   "id": "note-0-44",
+   "page": 0,
+   "type": "note",
+   "value": "壳",
+   "provenance": "human",
+   "note": "you ruled 亮/壳 -> 壳; this pair's automated verification timed out"
+  },
+  {
+   "id": "contains-1-1",
+   "page": 1,
+   "type": "contains",
+   "value": "楊庶堪題",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: cursive inscription; PaddleOCR 枌塵堪題, HunyuanOCR 杨麾堪題, two vision reads 柳應堪題 - all wrong"
+  },
+  {
+   "id": "contains-1-2",
+   "page": 1,
+   "type": "contains",
+   "value": "陳炯明叛國史",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: title as one string; PaddleOCR splits it into per-character blocks"
+  },
+  {
+   "id": "absent-1-3",
+   "page": 1,
+   "type": "absent",
+   "value": "杨麾",
+   "provenance": "human",
+   "note": "HunyuanOCR/output reading of the inscription; simplified 杨 impossible in 1922 letterpress"
+  },
+  {
+   "id": "contains-2-11",
+   "page": 2,
+   "type": "contains",
+   "value": "（二）本書雖曠時日",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: parenthesised item numbers （一）（二）（三）（四）; PaddleOCR read （一）（一）（三）（四）, HunyuanOCR 一一一/一一一/一一三/八四一, prefer-engine B took Hunyuan"
+  },
+  {
+   "id": "absent-2-12",
+   "page": 2,
+   "type": "absent",
+   "value": "一一一本書",
+   "provenance": "human",
+   "note": "HunyuanOCR renders vertical parentheses as strokes"
+  },
+  {
+   "id": "absent-2-13",
+   "page": 2,
+   "type": "absent",
+   "value": "八四一本書",
+   "provenance": "human",
+   "note": "HunyuanOCR reading of （四）"
+  },
+  {
+   "id": "contains-2-14",
+   "page": 2,
+   "type": "contains",
+   "value": "及半。遂復",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: period between 半 and 遂 is printed; PaddleOCR read 半途"
+  },
+  {
+   "id": "absent-3-20",
+   "page": 3,
+   "type": "absent",
+   "value": "𠯲",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: 明訓 (HunyuanOCR emitted U+20BF2)"
+  },
+  {
+   "id": "contains-3-21",
+   "page": 3,
+   "type": "contains",
+   "value": "明訓",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21"
+  },
+  {
+   "id": "note-3-22",
+   "page": 3,
+   "type": "note",
+   "value": "獨尊/稱尊: user ruling 2026-09-21 - strictly 𭔿 (U+2D53F, HunyuanOCR), 尊 acceptable as the common codepoint; either passes",
+   "provenance": "human"
+  },
+  {
+   "id": "contains-3-23",
+   "page": 3,
+   "type": "contains_exact",
+   "value": "巨憝。叛國殃民。動輙大言炎炎。盜名欺世。",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: printed circles after 憝/民/炎炎/欺世; formatter kept only the last (3 of 4 dropped)"
+  },
+  {
+   "id": "contains-3-24",
+   "page": 3,
+   "type": "contains_exact",
+   "value": "是編取材。完全爲陳炯明叛國背黨禍粤而發。立言惟求公平。論事亦取翔實。決不參以一黨一人之私見。而失惟精惟一之明訓。",
+   "provenance": "human",
+   "note": "user ruling 2026-09-21: six printed circles. Characters re-ruled on crops 2026-09-24: 禍粤 (not 粵), 決不 (this page prints 決, although the book mostly prints 决), 一黨一人 (not 二)"
+  },
+  {
+   "id": "contains-276-h11",
+   "page": 276,
+   "type": "contains",
+   "value": "國民黨加拿大",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22: 國民黨, not 團民黨 (HunyuanOCR read 團; prefer-engine B took it, PaddleOCR had 國)"
+  },
+  {
+   "id": "absent-276-h12",
+   "page": 276,
+   "type": "absent",
+   "value": "團民黨",
+   "provenance": "human",
+   "note": "user ruling 2026-09-22"
+  },
+  {
+   "id": "contains-142-h1",
+   "page": 142,
+   "type": "contains",
+   "value": "掛有吿白",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: all five 告 on p.142 are printed 吿 (golden page-0142.md corrected)"
+  },
+  {
+   "id": "contains-276-h2",
+   "page": 276,
+   "type": "contains",
+   "value": "墨威味利市國民黨分部",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: printed 市; 巿/市 ruled an acceptable swap, so either passes"
+  },
+  {
+   "id": "contains-3-h3",
+   "page": 3,
+   "type": "contains",
+   "value": "夫靈公之弑",
+   "provenance": "human",
+   "note": "user ruling 2026-09-24: 弑 printed; 弑/弒 an acceptable swap"
+  },
+  {
+   "id": "golden-142-h4",
+   "page": 142,
+   "type": "golden_page",
+   "value": "cangwingming/page-0142.md",
+   "provenance": "human",
+   "maxErrors": 5,
+   "minMarkRecall": 38.1,
+   "minMarkPrecision": 93.8,
+   "ratchetFrom": "jyut-ocr-corpus/cangwingming/proofread-v2 (09-23 code), scored 2026-09-24 against this golden and the variant list of that day",
+   "note": "user golden: the whole page, text and marks (the user approved the prefilled draft unchanged; 告→吿 x5 ruled 2026-09-24). v2: 5 errors = 告 for the printed 吿 twice, a vertical bracket read as 一 twice, and a list numeral repeated as （七）（五）; marks 45 of 118 right, 48 written - the stretches of the rejected punctuation tiles are bare although the page is sealed clean, and most brackets are lost. No output dominates: proofread-r9 (09-21) has recall 45.8% (54 of 118) but 7 errors and precision 85.7%, so the ratchet is v2's; raise minMarkRecall once an output holds maxErrors too. Older outputs: r7 12 errors and no marks, r2 24 errors, proofread (09-04) 32 errors with 74 marks written for 21 right.",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 2,
+     "minMarkRecall": 75.4,
+     "minMarkPrecision": 78.1,
+     "maxStructureErrors": 7,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "absent-306-37",
+   "page": 306,
+   "type": "absent",
+   "value": "叛國史",
+   "provenance": "regression",
+   "note": "deletion guard: engine B read the running head and its three-figure folio (陳炯明叛國史二五口) at the page's start and engine A nothing there; 裁決 answers 無, rightly, and the answer must stand. At 60e461e the guard counted the three figures as unexplained (two allowed), refused the answer and wrote the head into the body with a deletion-refused doubt (stand-in replay, echo formatter); the goldens transcribe no running head"
+  },
+  {
+   "id": "absent-312-38",
+   "page": 312,
+   "type": "absent",
+   "value": "叛國史",
+   "provenance": "regression",
+   "note": "deletion guard: engine B read the running head and its three-figure folio (陳炯明叛國史二五六) at the page's start and engine A nothing there; 裁決 answers 無, rightly, and the answer must stand. At 60e461e the guard counted the three figures as unexplained (two allowed), refused the answer and wrote the head into the body with a deletion-refused doubt (stand-in replay, echo formatter); the goldens transcribe no running head"
+  },
+  {
+   "id": "absent-320-39",
+   "page": 320,
+   "type": "absent",
+   "value": "叛國史",
+   "provenance": "regression",
+   "note": "deletion guard: engine B read the running head and its three-figure folio (陳炯朗叛國史二六四) at the page's start and engine A nothing there; 裁決 answers 無, rightly, and the answer must stand. At 60e461e the guard counted the three figures as unexplained (two allowed), refused the answer and wrote the head into the body with a deletion-refused doubt (stand-in replay, echo formatter); the goldens transcribe no running head"
+  },
+  {
+   "id": "absent-158-40",
+   "page": 158,
+   "type": "absent",
+   "value": "一口二",
+   "provenance": "regression",
+   "note": "deletion guard: engine B read the folio (〇 read as 口) after the running head, engine A read the head and folio elsewhere; the head was placed once at engine A's site (D2) and the folio left alone as engine B's insertion. 裁決 answers 無 and the answer must stand: at 60e461e the guard counted the folio's three characters as unexplained and wrote them into the text with a deletion-refused doubt (stand-in replay, echo formatter)"
+  },
+  {
+   "id": "absent-196-41",
+   "page": 196,
+   "type": "absent",
+   "value": "一四口",
+   "provenance": "regression",
+   "note": "deletion guard: engine B read the folio (〇 read as 口) before the running head, engine A read the head and folio elsewhere; the head was placed once at engine A's site (D2) and the folio left alone as engine B's insertion. 裁決 answers 無 and the answer must stand: at 60e461e the guard counted the folio's three characters as unexplained and wrote them into the text with a deletion-refused doubt (stand-in replay, echo formatter)"
+  }
+ ]
+}

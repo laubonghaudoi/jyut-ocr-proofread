@@ -1,0 +1,86 @@
+{
+ "book": "廣東法政學堂講義",
+ "bookId": "faatzing",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/faatzing/faatzing.pdf",
+  "sha256": "65c2199e0534b2ea7beb28ca330ae059ae01851eec63e46fc1bd4d40c7f66db7",
+  "pages": 234,
+  "titleFrom": "the user (2026-09-25); p.6 is a 廣州大典 reprint page holding leaves 三 and 四 of 法學通論",
+  "renderSha256": {
+   "6": "6407ee051703281fa84faf26ffccc406821eedc6762dc0946e06e5929dca9644"
+  },
+  "renderSha256From": "sha256 of jyut-ocr-corpus/faatzing/renders/page-0006.png, 2026-09-26"
+ },
+ "reference": "zh.wikisource.org 廣東法政學堂講義 (a starting point only: it normalises characters and converts the punctuation)",
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "reprint-two-leaves-per-page",
+  "brace-chart",
+  "doubled-circle-emphasis",
+  "headings",
+  "prose-around-chart",
+  "reprint-page-furniture",
+  "fold-labels",
+  "vertical-brackets-around-chart-notes"
+ ],
+ "notCovered": [
+  "tables",
+  "horizontal layout",
+  "simplified han",
+  "footnotes",
+  "brackets in running prose"
+ ],
+ "assertions": [
+  {
+   "id": "golden-6-h1",
+   "page": 6,
+   "type": "golden_page",
+   "value": "faatzing/page-0006.md",
+   "skipBetween": [
+    "圖而解之如左",
+    "右圖所列"
+   ],
+   "provenance": "human",
+   "note": "user golden (canvas 'New Case Goldens' (artifact 6ckf8kXvoqpC3fD7jmdxMz), accepted by the user 2026-09-26): the page's prose - the upper leaf, the two headings, and the lower leaf's text - with every printed mark: 44 doubled circles 。。 and 19 single 。 (no ， 、 「」: the print has none). Characters as printed: the user changed the Wikisource-based draft to the printed 据 and 擧. The chart between 如左 and 右圖所列 is scored by golden-6-h2 in whatever form the output draws it, so its lines are skipped here (skipBetween). Page furniture is not text: the reprint's header and footer, the fold labels 法學通論 / 廣東法政學堂 and the leaf numbers. The lower leaf ends mid-sentence (德國近今哲學). No ratchet yet: first run n1 scored errors 3/590 (著 for 者, 掘 for 据, 己 for 已) and 2 acceptable swaps (舉 for 擧: user 2026-09-26, 擧 is a rare variant of 舉, both acceptable; 据 is right and 據 is not ruled acceptable), marks 18/63, 。。 0/44.",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 2,
+     "minMarkRecall": 47.6,
+     "minMarkPrecision": 56.6,
+     "maxStructureErrors": 2,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "tree-6-h2",
+   "page": 6,
+   "type": "golden_tree",
+   "value": "faatzing/page-0006-tree.md",
+   "uncertainParents": {
+    "文學": [
+     "心理學",
+     "倫理學"
+    ]
+   },
+   "provenance": "human",
+   "note": "user golden (canvas 'New Case Goldens' (artifact 6ckf8kXvoqpC3fD7jmdxMz), accepted by the user 2026-09-26): the lower leaf's brace chart of the sciences as a nested list, every name and note as printed (the user, 2026-09-25: the model should understand the chart and propose a working representation; a nested list, file tree, brace drawing or Mermaid graph are all acceptable). The print, not Wikisource: 此狹義物理學… (not 之心理學), 以上三種又總名之…, 敎育學, no punctuation inside notes. Where 文學 attaches (心理學 or 倫理學) is not clear on the scan; the golden keeps it under 心理學, and either parent passes (uncertainParents; decision D10, approved by the user 2026-09-26; run_regression --no-uncertain-parents for the golden's parent only). First run n1: 0 of 27 links."
+  },
+  {
+   "id": "exact-6-h3",
+   "page": 6,
+   "type": "contains_exact",
+   "value": "一爲編製之體裁。。一爲編製之資料。。",
+   "provenance": "human",
+   "note": "from golden-6-h1: a printed doubled circle is 。。, not 。 (n1 wrote 43 of the 44 as 。 and dropped the one after 東西學者)."
+  },
+  {
+   "id": "note-6-h4",
+   "page": 6,
+   "type": "note",
+   "provenance": "human",
+   "value": "user 2026-09-26: Wikisource is not fully reliable - it normalises characters and converts punctuation (it flattened 。。 into ， or 。). Where it differs from the print, the print is the golden."
+  }
+ ]
+}

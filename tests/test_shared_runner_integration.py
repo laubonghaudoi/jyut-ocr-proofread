@@ -170,16 +170,21 @@ time.sleep(30)
         time.sleep(0.7)
         self.assertNotIn('started', self.events())
 
-    def test_parallel_truncated_page_is_not_sealed_and_other_pages_complete(self):
+    def test_parallel_truncated_page_is_kept_as_draft_and_other_pages_complete(self):
         process = self.launch('truncated', env={'FAKE_BAD_PAGE': '2'})
-        self.finish(process, 1)
+        self.finish(process, 0)
         self.wait_stopped()
         report = self.report_for('truncated')
-        self.assertEqual(report['counts']['completed'], 2)
-        self.assertEqual(report['counts']['failed'], 1)
-        self.assertFalse((self.base / 'draft-truncated/page-0002.json').exists())
-        self.assertTrue((self.base / 'draft-truncated/page-0001.json').is_file())
-        self.assertTrue((self.base / 'draft-truncated/page-0003.json').is_file())
+        self.assertEqual(report['counts']['completed'], 3)
+        self.assertEqual(report['counts']['failed'], 0)
+        self.assertEqual(report['counts']['truncated'], 1)
+        record = json.loads((self.base / 'draft-truncated/page-0002.json').read_text())
+        self.assertTrue(record['truncated'])
+        self.assertEqual(record['finishReason'], 'length')
+        self.assertEqual(record['rawText'], 'page payload 2')
+        for page in (1, 3):
+            other = json.loads((self.base / f'draft-truncated/page-{page:04d}.json').read_text())
+            self.assertFalse(other['truncated'])
 
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux parent-death semantics')
     def test_parent_bound_exec_dies_with_parent_without_preexec_callback(self):

@@ -18,11 +18,13 @@ The chain, in order.  Every step can be run again: a step whose output is
 current is kept, and a step that was stopped goes on where it stopped.
 
 1. assemble.  Every page the page manifest expects must be sealed by phase 3
-   (complete, its seal intact, sealed on the manifest's render: exit 3
-   otherwise).  write_assembly_inputs() writes the sealed texts, verbatim, as
-   one segment with canonical page markers (assembled/segments/), the ordered
-   segment manifest, the page list (page-sources.json) and a byte copy of the
-   page manifest, and assemble_ocr_segments.py writes
+   (complete, its seal intact, sealed on the manifest's render).  Missing or
+   incomplete pages exit 3; invalid seals, or invalid content-fidelity-v2
+   evidence on a page that has any, exit 2.  write_assembly_inputs() writes
+   the sealed texts, verbatim, as one segment with canonical page markers
+   (assembled/segments/), the ordered segment manifest, the page list
+   (page-sources.json) and a byte copy of the page manifest, and
+   assemble_ocr_segments.py writes
    assembled/combined-annotated.md and its receipt.  All of it is built in a
    partial folder and renamed into place.  An assembly that still matches
    the sealed pages (the page list's hashes, a replay of the segments, each
@@ -35,7 +37,9 @@ current is kept, and a step that was stopped goes on where it stopped.
 3. finalize.  finalize_page_markers.py with the boundaries.json the repair
    wrote turns repaired/combined-repaired.md into BOOK/final.md, which must
    then hold no page marker; the final audit (audit_ocr_markdown.py --mode
-   final) runs on it, and its errors are doubts, not a failure.  Before it,
+   final) runs on it, and its errors are doubts, not a failure, on both
+   routes (--single-engine too): doubts.md lists them, the RESULT line counts
+   them, and the book is delivered.  Before it,
    each figure (a map, a chart, a picture, a plate reproducing an original:
    scripts/_figures.py) is cut from its render into BOOK/figures/ and its
    image line put after its caption in a copy of the repaired book
@@ -45,13 +49,16 @@ current is kept, and a step that was stopped goes on where it stopped.
    listed in doubts.md; a page break that ran such a line on is a
    paragraph break in finish/boundaries.json, a copy of the repair's
    boundaries the marker removal and the audit read then.
-   In that copy, after the image lines, the notes of each page whose calls
-   and notes pair one to one are written as Markdown footnotes
-   (scripts/_footnotes.py: [^1], [^2] ... through the book), the rule
-   above them taken with them; a page that does not pair stays as
-   printed, finish/footnotes.json says why, and doubts.md has one doubt
-   for it unless phase 3 doubts its note numbers already.  The marker
-   removal then puts each definition after the block that holds its call
+   In that copy, after the image lines, each call and note a page pairs
+   are written as a Markdown footnote (scripts/_footnotes.py: the printed
+   number as its label, [^240]; a number used again gets [^1-2], [^1-3]
+   ..., so labels are unique; --renumber-footnotes numbers them 1, 2, 3
+   ... through the book), the rule above a page's notes taken when all of
+   them are written; what does not pair stays as printed, finish/
+   footnotes.json says why, and doubts.md has one doubt for each such page
+   unless phase 3 doubts its note numbers already.  Definitions stay where
+   the notes are printed; with --relocate-footnotes the marker removal
+   puts each one after the block that holds its call
    (_ocr_markdown.place_footnotes).
 4. doubts.  BOOK/doubts.md: a list, by kind and page, of what the
    pipeline could not settle - the research queue (proper names no glyph can
@@ -127,14 +134,22 @@ writes anything there.  Nothing is printed or written for the agent to look
 at a page image: phase 3's questions and doubts.md stand in for that (the
 figures' pictures are the person's).
 
+Engine A must be PaddleOCR-VL and engine B HunyuanOCR, as their drafts' JSON
+says (proofread_pages.engine_roles_problem): swapped folders, or another
+engine's drafts in either role, exit 2 before anything is written.  A book
+made from a folder of images (survey_pdf.py --images-dir: no source PDF) is
+not copied anywhere, and its working files are kept.
+
 Exit codes:
-    0  done: final.md and doubts.md are written
+    0  done: final.md and doubts.md are written (and delivered beside the PDF
+       unless --no-deliver), the final audit's errors among the doubts
     1  a step failed: the assembly or the repair did not verify (repair exit
        4 or 5), finalize refused, or page markers are left - read
        finish/finish-book.log; the same command fails the same way
     2  wrong arguments, or the book's inputs are missing, ambiguous or fail
        verification (a sealed page edited after sealing, a sealed page the
-       manifest does not know, another finish_book.py on the same book)
+       manifest does not know, engine drafts in the wrong roles, another
+       finish_book.py on the same book)
     3  not ready: pages the manifest expects are not sealed yet (phase 3 has
        not finished them) - run proofread_pages.py on them first
     4  stopped (SIGTERM, SIGINT) - run the same command again; nothing done
@@ -233,7 +248,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "with image links (default: disabled so full-page plate/chart transcriptions stay intact)")
     parser.add_argument("--renumber-footnotes", action="store_true",
                         help="renumber paired footnotes sequentially 1, 2, 3... across the book (default: preserve "
-                             "each footnote's printed numeric label such as [^240])")
+                             "each footnote's printed numeric label such as [^240]; a printed number used again "
+                             "becomes [^1-2], [^1-3]... so labels stay unique)")
     parser.add_argument("--relocate-footnotes", action="store_true",
                         help="relocate footnote definitions immediately after the block holding their call when "
                              "removing page markers (default: keep definitions in place at the page/section foot)")
@@ -380,17 +396,21 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         return path is not None and (path == book or book in path.parents)
 
     def drafts(given: Path | None, key: str, default: str, engine: str, switch: str) -> Path:
-        """The book's own folder first (a book copied elsewhere keeps its
-        profile's old paths), then the one the profile names in the book,
-        then the one folder of the book with this engine's drafts, then the
-        profile's folder outside the book."""
+        """What phase 3 read, as the profile's `sources` name it, over the
+        layout's default name: the folder the profile names in the book,
+        then the book's folder of that name (a book copied elsewhere keeps
+        its profile's old paths), then the book's default folder, then the
+        one folder of the book with this engine's drafts, then the profile's
+        folder outside the book."""
         if given is not None:
             return given
-        if _page_numbers(book / default, "txt"):
-            return book / default
         source = named(key)
         if inside(source) and _page_numbers(source, "txt"):
             return source
+        if source is not None and not inside(source) and _page_numbers(book / source.name, "txt"):
+            return book / source.name
+        if _page_numbers(book / default, "txt"):
+            return book / default
         found = [p for p in _subfolders(book) if _draft_engine(p) == engine]
         if not found and source is not None and _page_numbers(source, "txt"):
             return source
@@ -403,6 +423,13 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         raise FinishError(EXIT_USAGE, f"no actual OCR drafts found in --ocr-a {ocr_a}")
     if ocr_a == ocr_b:
         raise FinishError(EXIT_USAGE, f"engine A's and engine B's drafts are the same folder {ocr_a}")
+    if ocr_b is not None:
+        # The repair reads engine A's layout and engine B's text: swapped or
+        # other engines' drafts are refused, not repaired against.
+        import proofread_pages as pp
+        problem = pp.engine_roles_problem(ocr_a, ocr_b, "--ocr-a", "--ocr-b")
+        if problem:
+            raise FinishError(EXIT_USAGE, problem)
 
     manifest = _given(arguments.page_manifest)
     if manifest is None:
@@ -496,10 +523,13 @@ def _pages(pages: Sequence[int]) -> str:
 def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
     """Verify phase 3's sealed pages against their seals and the page
     manifest.  NOT READY (exit 3) when a page the manifest expects is missing,
-    incomplete or sealed on another render; exit 2 when a seal is broken or a
-    sealed page is not the manifest's."""
+    incomplete or sealed on another render; exit 2 when a seal is broken,
+    content-fidelity-v2 evidence a page carries is invalid (a page without
+    any, proofread with the switch off, needs none), or a sealed page is not
+    the manifest's.  These checks also run before reusing an earlier assembly."""
     import proofread_pages as pp
     import _repair_inputs as ri
+    import _content_fidelity as fidelity
     from _ocr_markdown import load_page_manifest
 
     try:
@@ -546,18 +576,6 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
             provenance = record.get("provenance") or {}
             if record.get("mode") not in ("transcribe", "image-recovery", "blank-page"):
                 problems.append(f"page {scan}: --single-engine requires an image-reviewed single-engine seal")
-            inventory = record.get("pageInventory") or {}
-            if inventory.get("source_image_sha256") != render_sha[scan]:
-                problems.append(f"page {scan}: image inventory does not match the source render")
-            if record.get("mode") == "blank-page":
-                if inventory.get("page_state") != "blank":
-                    problems.append(f"page {scan}: blank page has no image inventory")
-            else:
-                coverage = record.get("coverageReview") or {}
-                if (coverage.get("complete") is not True
-                        or coverage.get("source_image_sha256") != render_sha[scan]
-                        or coverage.get("result_sha256") != pp.sha256_bytes(md_bytes)):
-                    problems.append(f"page {scan}: full-image coverage is incomplete or belongs to other content")
             for label, path, expected in (
                 ("draft", inputs.ocr_a / f"page-{scan:04d}.txt", provenance.get("draftSha256")),
                 ("render", inputs.renders / f"page-{scan:04d}.png", render_sha[scan]),
@@ -570,7 +588,17 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
         if marker[scan] and (record.get("provenance") or {}).get("renderSha256") != render_sha[scan]:
             other_render.append(scan)
             continue
-        text = md_bytes.decode("utf-8")
+        # Content-fidelity v2 evidence is verified where a page carries it;
+        # a page proofread with the switch off (the default), or sealed
+        # before it existed, carries none and needs none.
+        has_fidelity = fidelity.carries_record(record)
+        try:
+            text = md_bytes.decode("utf-8")
+            if has_fidelity:
+                fidelity.validate_completed_record(record, text, render_sha[scan])
+        except (UnicodeError, fidelity.FidelityError) as error:
+            broken.append(f"page {scan}: content-fidelity-v2 verification failed: {error}")
+            continue
         texts[scan], records[scan] = text, record
         rows.append({
             "scanPage": scan,
@@ -578,7 +606,9 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
             "markdownSha256": pp.sha256_bytes(md_bytes),
             "jsonSha256": pp.sha256_bytes(json_bytes),
             "sealChecks": {"canonicalJson": True, "markdownSeal": True, "payloadSeal": True,
-                           "renderMatchesPageManifest": True, "statusComplete": True, "scanPage": True},
+                           "renderMatchesPageManifest": True, "statusComplete": True, "scanPage": True,
+                           # True: verified; None: the page carries no such evidence.
+                           "contentFidelityV2": True if has_fidelity else None},
             "markerExpected": marker[scan],
             "includedInAssembly": marker[scan],
             "excludedText": None if marker[scan] else text,
@@ -621,8 +651,9 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
         log.warning(f"engine A's drafts in {inputs.ocr_a} are not the ones phase 3 sealed pages "
                     f"{_compress(differing)} against (draftSha256) - name the right folder with --ocr-a")
         inputs.notes.append(f"engine A's drafts differ from the sealed pages' draftSha256 ({inputs.ocr_a})")
+    # survey_pdf.py writes source_pdf "" for a folder of images: no PDF.
     return Sealed(manifest_bytes, manifest.expected_scan_pages, marker, texts, records, rows,
-                  source_pdf if isinstance(source_pdf, str) else None)
+                  source_pdf if isinstance(source_pdf, str) and source_pdf.strip() else None)
 
 
 def _relative(path: Path, base: Path) -> str:
@@ -907,6 +938,7 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
         log.warning(f"the final audit wrote no report (exit {code})")
     return {"status": "written" if changed else "unchanged", "characters": len(text), "auditErrors": errors,
             "auditExit": code, "figures": len(figures), "pictures": len(pictures), "footnotes": notes["footnotes"],
+            "footnotesRelabelled": notes["relabelled"], "footnotesAcrossPages": len(notes["crossPage"]),
             "notePagesLeft": len(notes["left"]),
             "extractFigures": bool(getattr(arguments, "extract_figures", False)),
             "renumberFootnotes": renumber_fn,
@@ -1043,7 +1075,11 @@ KINDS: dict[str, tuple[str, str]] = {
     "extra-copy": ("text", "一段字可能放多咗一次"),
     "moved-placed-once": ("text", "兩個引擎喺唔同位置讀到嘅同一段字，淨係放咗一次"),
     "unsupported-reading": ("text", "一段淨係一個引擎讀到、自己重複嘅字丟咗"),
+    "non-cjk-text-not-transcribed": ("text", "冇漢字嘅一頁（西文、數字、算式），引擎讀到字，但轉錄係空，要對圖"),
+    "engine-draft-missing": ("text", "呢頁缺咗一個 OCR 引擎嘅底稿，淨係用另一個引擎嘅底稿轉錄，冇第二個讀法互證，要對圖"),
+    "single-engine-review": ("text", "成本書得一個 OCR 引擎嘅底稿：冇第二個引擎互證，亦冇做雙引擎修補"),
     "engine-a-loop-dropped": ("text", "引擎 A 一段讀法係循環，嗰度淨係用咗引擎 B"),
+    "engine-b-truncated": ("text", "引擎 B 嗰頁嘅回覆截斷咗：截斷之後嘅字淨係引擎 A 讀到（截完冇字就由頁圖轉錄），要對圖"),
     "sealed-report": ("text", "舊版封存嘅頁，有未分類嘅疑問"),
     # marks
     "punctuation-partial": ("marks", "標點可能漏咗"),
@@ -1059,7 +1095,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "heading-mark-unread": ("marks", "標題入面有兩個引擎都冇讀到嘅標點，要對圖睇有冇印"),
     "run-mark-dropped": ("marks", "寫入兩個引擎都讀到嘅數字嗰陣，刪咗或者換咗頁面兩個引擎都冇讀到嘅標點（要對圖睇有冇印）"),
     "note-markers-unverified": ("marks", "註號：引擎讀到嘅註號頁面冇，或者數值唔同（冇改）"),
-    "note-unmatched": ("marks", "呢版嘅註號同註唔係一個對一個，成版冇寫成腳註，照印咗嘅樣留低，要對圖"),
+    "note-unmatched": ("marks", "呢版嘅註號同註唔係一個對一個：配唔上嘅冇寫成腳註，照印咗嘅樣留低，要對圖"),
     # structure
     "unit-not-in-scan": ("structure", "目錄有、正文搵唔到嘅篇"),
     "leaves-missing": ("structure", "頁碼跳咗，可能漏咗頁"),
@@ -1076,6 +1112,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "table-grids-misaligned": ("tables", "兩個引擎嘅表格格仔唔對行，定唔到跟邊個"),
     "table-unread-confirmed": ("tables", "表入面有兩個引擎都冇讀到、淨係裁決讀到嘅字"),
     "table-orientation-undecided": ("tables", "表嘅方向定唔到"),
+    "table-orientation-turned": ("tables", "結構步自己寫嘅表，淨係憑引擎 B 嘅讀法轉咗方向（引擎 B 逐條橫行讀直排表都會咁數），要對圖核有冇轉錯"),
     "table-note-marker-unverified": ("tables", "表格格仔入面嘅註號係引擎 A 讀嘅，冇核過（大過二十嘅圈碼成日讀錯）"),
     "table-rebuild-refused": ("tables", "表重建唔收"),
     "table-rebuilt-unvouched": ("tables", "重建嘅表冇第二個讀法證實"),
@@ -1091,6 +1128,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "formatter-rejected": ("format", "格式化步驟被拒，嗰頁用咗退返嘅版本"),
     "structure-rejected": ("format", "結構步驟被拒，嗰頁用咗退返嘅版本"),
     "final-audit": ("format", "final.md 結構檢查錯誤"),
+    "single-engine-boundary": ("format", "單引擎：同前一頁嘅接駁冇核實，留咗段落分隔，要對圖"),
     "AUDIT-ANNOTATED": ("format", "拼書稿結構檢查錯誤"),
     "gate-failed": ("format", "本書量唔到，一類修書規則冇做"),
     "detector-unmatched": ("format", "自動檢查見到問題，但冇規則處理到"),
@@ -1343,7 +1381,16 @@ NOTE_WHY = {"call": "註號 {number}（「…{text}…」）冇同號嘅註", "n
             "count": "{number} 號有 {calls} 個註號、{notes} 條註", "html": "註號 {number} 喺 HTML 入面（「…{text}…」）",
             "math": "註號 {number} 喺數式 `$…$` 入面（「…{text}…」）",
             "inside": "註入面有註號 {number}（「…{text}…」）", "unread": "註號 {number} 讀唔到係幾號（「…{text}…」）",
+            # Written by an earlier _footnotes.py, which left a reused number as printed.
             "duplicate_label": "註號 {number}（「…{text}…」）同前頁腳註重號，留返原印註號"}
+
+
+class _Why(dict):
+    """A reason from finish/footnotes.json: a field it lacks reads "?", so a
+    reason without one is still a doubt, not a KeyError."""
+
+    def __missing__(self, name: str) -> str:
+        return "?"
 
 
 def note_items(book: Path, doubted: set[int | None] = frozenset()) -> list[Item]:
@@ -1355,8 +1402,8 @@ def note_items(book: Path, doubted: set[int | None] = frozenset()) -> list[Item]
     except (OSError, ValueError, AttributeError):
         left = []
     return [Item(KINDS["note-unmatched"][0], "note-unmatched", page.get("page"),
-                 _clip("；".join(NOTE_WHY[why["kind"]].format_map(why) for why in page.get("why") or []
-                                if why.get("kind") in NOTE_WHY)), "finish")
+                 _clip("；".join(NOTE_WHY[why["kind"]].format_map(_Why(why)) for why in page.get("why") or []
+                                if isinstance(why, dict) and why.get("kind") in NOTE_WHY)), "finish")
             for page in left if isinstance(page, dict) and page.get("page") not in doubted]
 
 
@@ -1733,8 +1780,12 @@ def run(book: Path, arguments: argparse.Namespace, report: dict[str, Any],
         line += f"; the edited {' and '.join(kept)} kept (not in the new files)"
     outputs = [f"{FINAL}: {book / FINAL}", f"{DOUBTS}: {book / DOUBTS}"]
     both = False
-    if inputs.single_engine and finalized["auditErrors"] != 0:
-        return EXIT_FAILED, line + "; final audit did not pass; delivery skipped", outputs
+    # The final audit's errors are doubts on both routes (doubts.md lists
+    # them): the book is delivered, and the RESULT line counts them.
+    if finalized["auditErrors"]:
+        line += f"; {finalized['auditErrors']} final-audit error(s) listed in {DOUBTS}"
+    elif finalized["auditErrors"] is None:
+        line += "; the final audit wrote no report"
     if not arguments.no_deliver:
         if sealed.source_pdf is None:
             log.line("source_kind is images-dir (no source PDF): skipping beside-PDF copy")

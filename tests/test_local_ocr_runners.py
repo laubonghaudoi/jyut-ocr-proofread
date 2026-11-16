@@ -62,8 +62,9 @@ HTTPServer(('127.0.0.1', a.port), Handler).serve_forever()
 '''
 
 FAKE_PADDLE = r'''
-import atexit, json, os, time
+import atexit, json, os, sys, time
 from pathlib import Path
+from types import SimpleNamespace
 __version__ = os.environ.get('FAKE_PADDLE_VERSION', 'offline-v1')
 def record(event):
     label = os.environ.get('FAKE_LABEL')
@@ -71,12 +72,30 @@ def record(event):
 class Result:
     def __init__(self, result): self.json = {'res': result}
 class PaddleOCRVL:
-    def __init__(self, pipeline_version):
+    def __init__(self, pipeline_version, device=None, vl_rec_model_dir=None,
+                 layout_detection_model_dir=None):
         self.version = pipeline_version
         record('started:' + pipeline_version)
+        print('fake paddlex: creating models on ' + str(device))
+        sys.stderr.write('fake paddlex: stderr line\n')
+        if os.environ.get('FAKE_KWARGS_FILE'):
+            Path(os.environ['FAKE_KWARGS_FILE']).write_text(json.dumps({
+                'device': device, 'vl_rec_model_dir': vl_rec_model_dir,
+                'layout_detection_model_dir': layout_detection_model_dir,
+                'env': {key: os.environ.get(key) for key in (
+                    'CUDA_VISIBLE_DEVICES', 'PADDLE_PDX_DISABLE_DEVICE_FALLBACK',
+                    'PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK')}}))
         if os.environ.get('FAKE_PID_FILE'): Path(os.environ['FAKE_PID_FILE']).write_text(str(os.getpid()))
         atexit.register(self.stopped)
         if os.environ.get('FAKE_LOAD_FAILURE'): raise RuntimeError('fake load failure')
+        # PaddleX's predictors: where the models really went (FAKE_PADDLE_FALLBACK
+        # plays a silent CPU fallback).
+        loaded = 'cpu' if os.environ.get('FAKE_PADDLE_FALLBACK') else (device or 'cpu')
+        kind, _, index = loaded.partition(':')
+        self.paddlex_pipeline = SimpleNamespace(
+            vl_rec_model=SimpleNamespace(device=loaded, dtype='bfloat16' if kind == 'gpu' else 'float32'),
+            layout_det_model=SimpleNamespace(runner=SimpleNamespace(_config={
+                'device_type': kind, 'device_id': int(index) if index else None})))
     def stopped(self):
         record('stopped')
     def predict(self, render):
@@ -96,6 +115,24 @@ class PaddleOCRVL:
                         'layout_det_res': {'boxes': [{'order': 0, 'score': 0.8}]}})]
 '''
 
+# The two calls PaddleX's device test makes (utils/device.get_default_device).
+# FAKE_WORKER_CUDA_DEVICES is what the worker alone sees (a card gone between
+# the runner's probe and the model load).
+FAKE_PADDLE_CORE = r'''
+import os
+class _Cuda:
+    @staticmethod
+    def device_count():
+        if os.environ.get('JYUT_PADDLE_DEVICE') and 'FAKE_WORKER_CUDA_DEVICES' in os.environ:
+            return int(os.environ['FAKE_WORKER_CUDA_DEVICES'])
+        return int(os.environ.get('FAKE_CUDA_DEVICES', '0'))
+class device:
+    cuda = _Cuda
+    @staticmethod
+    def is_compiled_with_cuda():
+        return os.environ.get('FAKE_CUDA_BUILD') == '1'
+'''
+
 
 class LocalOCRTestBase(unittest.TestCase):
     def setUp(self):
@@ -112,7 +149,10 @@ class LocalOCRTestBase(unittest.TestCase):
         self.env = dict(os.environ, FAKE_LOG=str(self.log))
         for key in ('HUNYUAN_MODEL', 'HUNYUAN_MMPROJ', 'HUNYUAN_LLAMA_SERVER',
                     'HUNYUAN_ENDPOINT', 'OCR_PHASE_DEADLINE', 'OCR_PHASE_PROGRESS',
-                    'PADDLEOCR_PYTHON', 'PADDLEOCR_MODEL_REVISION', 'OCR_HUNYUAN_DEVICE'):
+                    'PADDLEOCR_PYTHON', 'PADDLEOCR_MODEL_REVISION', 'OCR_HUNYUAN_DEVICE',
+                    'OCR_PHASE_RELEASE_CMD', 'OCR_PHASE_WINDOW', 'OCR_PHASE_SWAP',
+                    'OCR_PHASE_STARTUP_SECONDS', 'OCR_PHASE_CHILDREN',
+                    'OCR_PADDLE_DEVICE', 'OCR_CPU_RESOURCE', 'CUDA_VISIBLE_DEVICES'):
             self.env.pop(key, None)
         self.queue_dir = self.base / 'gpu-queue'
         self.env['OCR_GPU_QUEUE_DIR'] = str(self.queue_dir)
@@ -131,7 +171,37 @@ class LocalOCRTestBase(unittest.TestCase):
         package = self.base / 'fake-package'
         package.mkdir()
         (package / 'paddleocr.py').write_text(textwrap.dedent(FAKE_PADDLE))
-        self.env['PYTHONPATH'] = str(package)
+        (package / 'paddle').mkdir()
+        (package / 'paddle' / '__init__.py').write_text(textwrap.dedent(FAKE_PADDLE_CORE))
+        self.package = package
+        # The installer's pinned weight folders (PADDLE_*_MODEL_DIR); PaddleX's
+        # own cache is an empty folder unless a test fills it.
+        self.vl_dir = self.model_folder('PaddleOCR-VL-1.6', 'PaddleOCR-VL-1.6-0.9B', 'model.safetensors')
+        self.layout_dir = self.model_folder('PP-DocLayoutV3', 'PP-DocLayoutV3', 'inference.pdiparams')
+        self.env['PADDLE_VL_MODEL_DIR'] = str(self.vl_dir)
+        self.env['PADDLE_LAYOUT_MODEL_DIR'] = str(self.layout_dir)
+        self.env['PADDLE_PDX_CACHE_HOME'] = str(self.base / 'paddlex-cache')
+        self.paddle_build('cpu')
+
+    def model_folder(self, name, model_name, weights, root=None):
+        folder = (root or self.base / 'paddle-models') / name
+        folder.mkdir(parents=True)
+        (folder / 'inference.yml').write_text(f'Global:\n  model_name: {model_name}\n')
+        (folder / weights).write_bytes(b'offline fake weights')
+        return folder
+
+    def paddle_build(self, kind, devices=0):
+        """Which fake Paddle package is installed: 'cpu' (paddlepaddle) or 'gpu'
+        (paddlepaddle-gpu seeing DEVICES cards)."""
+        name = 'paddlepaddle_gpu' if kind == 'gpu' else 'paddlepaddle'
+        dist = self.base / f'dist-{kind}' / f'{name}-3.3.1.dist-info'
+        if not dist.exists():
+            dist.mkdir(parents=True)
+            (dist / 'METADATA').write_text(f'Metadata-Version: 2.1\nName: {name.replace("_", "-")}\n'
+                                           'Version: 3.3.1\n')
+        self.env['PYTHONPATH'] = os.pathsep.join([str(self.package), str(dist.parent)])
+        self.env['FAKE_CUDA_BUILD'] = '1' if kind == 'gpu' else '0'
+        self.env['FAKE_CUDA_DEVICES'] = str(devices)
 
     def run_cli(self, engine, extra=(), *, env=None, configured=True):
         script = 'run_hunyuanocr.py' if engine == 'hunyuan' else 'run_paddleocr_vl.py'
@@ -158,7 +228,7 @@ class LocalOCRTestBase(unittest.TestCase):
 
 
 class LocalOCRCLITest(LocalOCRTestBase):
-    def test_device_policy_controls_decoder_and_projector_and_invalidates_resume(self):
+    def test_device_policy_controls_decoder_and_projector_and_is_recorded_not_compared(self):
         argv_file = self.base / 'argv.json'
         for device, selector, layers, projector in (
             ('cpu', 'none', '0', '--no-mmproj-offload'),
@@ -180,10 +250,16 @@ class LocalOCRCLITest(LocalOCRTestBase):
                 self.assertEqual(profile['requestedDevice'], device)
                 self.assertEqual(profile['effectiveDevice'], device)
                 self.assertEqual(profile['projectorOffload'], device != 'cpu')
+                self.assertEqual(self.record()['ocrProfile']['deployment']['executionProfile']
+                                 ['requestedDevice'], device)
+                # The device is deployment: recorded in the draft, not part of
+                # its identity, so another device resumes the finished page.
                 other = 'cpu' if device != 'cpu' else 'cuda'
-                stale, stale_report = self.run_cli('hunyuan', ['--pages', '1', '--device', other])
-                self.assertEqual(stale.returncode, 1)
-                self.assertEqual(stale_report['counts']['blocked'], 1)
+                again, again_report = self.run_cli('hunyuan', ['--pages', '1', '--device', other])
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertEqual(again_report['counts']['skippedCurrent'], 1)
+                self.assertEqual(self.record()['ocrProfile']['deployment']['executionProfile']
+                                 ['requestedDevice'], device)
 
     def test_fresh_slot_default_and_existing_environment_override(self):
         sys.path.insert(0, str(SCRIPTS))
@@ -200,12 +276,14 @@ class LocalOCRCLITest(LocalOCRTestBase):
                     self.assertEqual(args.server_slots, 16)
                     self.assertEqual(args.device, 'cpu')
 
-    def test_projector_environment_change_invalidates_existing_draft(self):
+    def test_projector_environment_change_is_recorded_not_compared(self):
         result, _ = self.run_cli('hunyuan', ['--pages', '1'], env=dict(self.env, MTMD_BACKEND_DEVICE='CUDA0'))
         self.assertEqual(result.returncode, 0, result.stderr)
+        selectors = self.record()['ocrProfile']['deployment']['executionProfile']['runtimeSelectors']
+        self.assertEqual(selectors['MTMD_BACKEND_DEVICE'], 'CUDA0')
         result, report = self.run_cli('hunyuan', ['--pages', '1'], env=dict(self.env, MTMD_BACKEND_DEVICE='none'))
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(report['counts']['blocked'], 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['counts']['skippedCurrent'], 1)
 
     def test_hunyuan_selected_pages_raw_preserved_owned_server_closed_and_resume(self):
         result, report = self.run_cli('hunyuan', ['--pages', '1,3'])
@@ -238,28 +316,67 @@ class LocalOCRCLITest(LocalOCRTestBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(report['counts']['completed'], 3)
 
-    def test_hunyuan_settings_and_weight_changes_invalidate_resume(self):
+    def test_hunyuan_request_settings_and_weight_changes_invalidate_resume(self):
         self.run_cli('hunyuan', ['--pages', '1'])
-        for args in (['--max-tokens', '100'], ['--ctx-size', '4096']):
-            with self.subTest(args=args):
-                result, report = self.run_cli('hunyuan', ['--pages', '1', *args])
-                self.assertEqual(result.returncode, 1)
-                self.assertEqual(report['counts']['blocked'], 1)
-        self.model.write_bytes(b'changed model bytes')
-        result, report = self.run_cli('hunyuan', ['--pages', '1'])
+        result, report = self.run_cli('hunyuan', ['--pages', '1', '--max-tokens', '100'])
         self.assertEqual(result.returncode, 1)
         self.assertEqual(report['counts']['blocked'], 1)
+        self.assertIn('draft identity', report['pages'][0]['error'])
+        for path, content in ((self.model, b'changed model bytes'), (self.proj, b'changed projector')):
+            with self.subTest(file=path.name):
+                original = path.read_bytes()
+                path.write_bytes(content)
+                result, report = self.run_cli('hunyuan', ['--pages', '1'])
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(report['counts']['blocked'], 1)
+                path.write_bytes(original)
 
-    def test_hunyuan_truncated_response_not_sealed_and_other_pages_continue(self):
+    def test_hunyuan_deployment_changes_keep_drafts_current_but_a_new_runtime_does_not(self):
+        # Deployment (context, slots, workers) is recorded in the draft but is
+        # not its identity.  The runtime is (the user's decision of
+        # 2026-11-14, changed from A3's reading): a rebuilt or re-pinned
+        # llama-server makes the draft stale, so two builds' drafts are not
+        # mixed in one book.
+        self.run_cli('hunyuan', ['--pages', '1'])
+        for args in (['--ctx-size', '4096'], ['--server-slots', '2'],
+                     ['--server-slots', '2', '--workers', '1']):
+            with self.subTest(args=args):
+                result, report = self.run_cli('hunyuan', ['--pages', '1', *args])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(report['counts']['skippedCurrent'], 1)
+        self.assertEqual(self.events().count('started'), 1)
+        with self.binary.open('a') as handle:
+            handle.write('# rebuilt runtime\n')
+        result, report = self.run_cli('hunyuan', ['--pages', '1'])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual((report['counts']['skippedCurrent'], report['counts']['blocked']), (0, 1))
+        self.assertIn('runtime', report['pages'][0]['error'])
+        self.assertEqual(self.events().count('started'), 1)
+
+    def test_hunyuan_truncated_response_kept_as_draft_and_reported(self):
         env = dict(self.env, FAKE_BAD_PAGE='2')
         result, report = self.run_cli('hunyuan', env=env)
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(report['counts']['completed'], 2)
-        self.assertEqual(report['counts']['failed'], 1)
-        self.assertIn('finish_reason=length', report['pages'][1]['error'])
-        self.assertFalse((self.output / 'page-0002.json').exists())
-        self.assertFalse((self.output / 'page-0002.txt').exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['counts']['completed'], 3)
+        self.assertEqual(report['counts']['failed'], 0)
+        self.assertEqual(report['counts']['truncated'], 1)
+        self.assertTrue(report['pages'][1]['truncated'])
+        self.assertEqual(report['pages'][1]['finishReason'], 'length')
+        self.assertNotIn('truncated', report['pages'][0])
+        self.assertIn('TRUNCATED', result.stdout)
+        record = self.record(2)
+        self.assertTrue(record['truncated'])
+        self.assertEqual(record['finishReason'], 'length')
+        self.assertEqual(record['rawText'], RAW_TEXT)
+        self.assertEqual((self.output / 'page-0002.txt').read_text(), '  輙與弑\n[原書符號]\n')
+        self.assertFalse(self.record(1)['truncated'])
+        self.assertEqual(self.record(1)['finishReason'], 'stop')
         self.assertEqual(self.events()[-1], 'stopped')
+        result, report = self.run_cli('hunyuan')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['counts']['skippedCurrent'], 3)
+        self.assertEqual(report['counts']['truncated'], 1)
+        self.assertTrue(report['pages'][1]['truncated'])
 
     def test_hunyuan_mismatched_or_malformed_response_is_page_failure(self):
         for setting in ({'FAKE_RESPONSE_MODEL': 'wrong'}, {'FAKE_MALFORMED': '1'}):
@@ -346,16 +463,26 @@ class LocalOCRCLITest(LocalOCRTestBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(report['counts']['completed'], 3)
 
-    def test_paddle_runtime_pipeline_revision_changes_invalidate_resume(self):
+    def test_paddle_pipeline_and_revision_changes_invalidate_resume_packages_do_not(self):
         self.run_cli('paddle', ['--pages', '1'])
-        for extra, env in ((['--pipeline-version', 'v1.5'], self.env),
-                           (['--model-revision', 'cache-new'], self.env),
-                           ([], dict(self.env, FAKE_PADDLE_VERSION='offline-v2'))):
-            with self.subTest(extra=extra, version=env.get('FAKE_PADDLE_VERSION')):
-                result, report = self.run_cli('paddle', ['--pages', '1', *extra], env=env)
+        for extra in (['--pipeline-version', 'v1.5'], ['--model-revision', 'cache-new']):
+            with self.subTest(extra=extra):
+                result, report = self.run_cli('paddle', ['--pages', '1', *extra])
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(report['counts']['blocked'], 1)
-        result, report = self.run_cli('paddle', ['--pages', '1', '--overwrite', '--pipeline-version', 'v1.5'])
+        # Package versions are recorded in the draft, not compared.
+        result, report = self.run_cli('paddle', ['--pages', '1'],
+                                      env=dict(self.env, FAKE_PADDLE_VERSION='offline-v2'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['counts']['skippedCurrent'], 1)
+        self.assertEqual(self.record()['ocrProfile']['packageVersions']['paddleocr'], 'offline-v1')
+        # v1.5 loads its own VL model: the 1.6 folder is refused before loading.
+        result, _ = self.run_cli('paddle', ['--pages', '1', '--overwrite', '--pipeline-version', 'v1.5'])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('not PaddleOCR-VL-1.5-0.9B', result.stderr)
+        vl15 = self.model_folder('PaddleOCR-VL-1.5', 'PaddleOCR-VL-1.5-0.9B', 'model.safetensors')
+        result, report = self.run_cli('paddle', ['--pages', '1', '--overwrite', '--pipeline-version', 'v1.5',
+                                                '--vl-model-dir', str(vl15)])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.record()['rawResult']['pipeline'], 'v1.5')
 
@@ -408,6 +535,8 @@ class GPUQueueRunnerTest(LocalOCRTestBase):
 
     def setUp(self):
         super().setUp()
+        # Paddle on a card it can see: it takes the same GPU queue as Hunyuan.
+        self.paddle_build('gpu', devices=1)
         self.processes = []
         self.addCleanup(self.stop_processes)
         with socket.socket() as probe:
@@ -494,6 +623,26 @@ class GPUQueueRunnerTest(LocalOCRTestBase):
         self.finish(first)
         self.finish(second)
         self.assertLess(self.events().index('A:stopped'), self.events().index('B:started:v1.6'))
+
+    def test_paddle_on_cpu_does_not_hold_or_wait_for_the_gpu_queue(self):
+        first = self.launch('hunyuan', 'A', hold=True)
+        self.wait_event('A:page:1')
+        on_cpu = self.launch('paddle', 'cpu', extra=['--device', 'cpu', '--gpu-queue-timeout', '0'])
+        self.finish(on_cpu)
+        report = json.loads((self.base / 'report-cpu.json').read_text())
+        self.assertEqual((report['gpuQueue']['resource'], report['counts']['completed']), ('local-cpu', 1))
+        self.assertIsNone(first.poll())
+        # A second CPU run waits for the first one, not for the GPU.
+        held = self.launch('paddle', 'cpu-held', hold=True, extra=['--device', 'cpu'])
+        self.wait_event('cpu-held:page:1')
+        waiting = self.launch('paddle', 'cpu-waiting', extra=['--device', 'cpu', '--gpu-queue-timeout', '0.1'])
+        self.finish(waiting, 75)
+        on_gpu = self.launch('paddle', 'gpu', extra=['--gpu-queue-timeout', '0.1'])
+        self.finish(on_gpu, 75)
+        self.release('cpu-held')
+        self.finish(held)
+        self.release('A')
+        self.finish(first)
 
     def test_queue_wait_timeout_and_phase_deadline_defer_without_loading(self):
         first = self.launch('hunyuan', 'A', hold=True)

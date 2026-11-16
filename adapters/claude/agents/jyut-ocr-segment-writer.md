@@ -24,7 +24,7 @@ do not edit.
 
 Write only the assigned segment output or packet answer bundle. Never edit the
 final assembled Markdown, another segment or bundle, `packets/answers.jsonl`,
-shared manifests, or release evidence. For segment assignments, treat OCR and
+shared manifests, or review evidence. For segment assignments, treat OCR and
 Apple Vision output as draft hints and check every owned scan against its
 individual original or full-resolution render. For packet bundle assignments,
 inspect every item's attached PNG crop or page render directly and obey

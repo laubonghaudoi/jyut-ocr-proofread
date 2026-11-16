@@ -5,20 +5,44 @@ runners process all selected pages. OCR_PHASE_PROGRESS optionally names a file
 to append sealed scan numbers to. Exit 75 means resumable pages remain, including
 queue wait expiry before loading; repeat the same command to resume sealed pairs.
 
-This helper never controls an existing model service. Only children started by
-a runner are closed on exit; Linux parent-death signals prevent orphan workers.
+OCR_PHASE_STARTUP_SECONDS optionally gives the time a runner needs to load its
+model and seal one page (ocr_book.py measures it).  A fresh Budget's first
+question - every runner asks it once, just before it loads the model - then
+answers no unless that much time is left, so an engine started late in a
+shared slice defers (exit 75) instead of loading for nothing and failing.
+OCR_PHASE_CHILDREN optionally names a file, beside the progress file, where
+detached OCR processes (the shared Hunyuan broker and its server) are written
+as "KIND PID START" lines, so the hand-over can wait for them and stop them.
+
+This helper never controls a model service: scripts/run_ocr_phase.py does the
+GPU hand-over.  Only children started by a runner are closed on exit; Linux
+parent-death signals prevent orphan workers.
 """
 from __future__ import annotations
 
 import os
 import signal
+import subprocess
 import sys
 import time
 
 DEADLINE_ENV = "OCR_PHASE_DEADLINE"
 PROGRESS_ENV = "OCR_PHASE_PROGRESS"
+STARTUP_ENV = "OCR_PHASE_STARTUP_SECONDS"
+CHILDREN_ENV = "OCR_PHASE_CHILDREN"
 # EX_TEMPFAIL: not finished, nothing wrong - run the same command again.
 EXIT_INCOMPLETE = 75
+
+
+class StartupExpired(Exception):
+    """The phase deadline came while the OCR model was still loading: no
+    queue wait, so running the same call again with the same budget would
+    end the same way.  The runner defers its pages and exits 1, naming the
+    times, rather than 75."""
+
+    def __init__(self, message: str, waited: float):
+        super().__init__(message)
+        self.waited = waited
 
 
 class Budget:
@@ -30,14 +54,29 @@ class Budget:
             self.deadline = None
         self.progress_file = os.environ.get(PROGRESS_ENV) or None
         self.longest = 0.0
+        try:
+            startup = float(os.environ.get(STARTUP_ENV, "").strip() or 0.0)
+        except ValueError:
+            startup = 0.0
+        self.startup = startup if startup > 0 and startup != float("inf") else 0.0
+        self._started = False
 
     def remaining(self) -> float | None:
         """Seconds left before the deadline (may be negative), or None without one."""
         return None if self.deadline is None else self.deadline - time.time()
 
     def allows_next_page(self) -> bool:
+        """Whether there is time for one more page.
+
+        The first answer of a fresh budget is the one asked before the model
+        loads (each runner asks it there, once, before taking the GPU), so it
+        also needs the startup time OCR_PHASE_STARTUP_SECONDS names."""
         left = self.remaining()
-        return left is None or left > self.longest
+        need = self.longest
+        if not self._started:
+            self._started = True
+            need = max(need, self.startup)
+        return left is None or left > need
 
     def page_timeout(self, own_limit: float) -> tuple[float, bool]:
         """The limit for the next page, and whether the budget (not the runner) set it."""
@@ -57,6 +96,57 @@ class Budget:
                 handle.write(f"{scan_page}\n")
         except OSError:
             pass
+
+
+def process_start_time(pid: int) -> str | None:
+    """When PID started, as a token that tells it from a later process given
+    the same number (Linux: the kernel's start tick; elsewhere ps's lstart),
+    or None when no such process exists."""
+    if pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+                return handle.read().rsplit(")", 1)[1].split()[19]
+        except (OSError, IndexError):
+            return None
+    try:
+        result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                                text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    started = " ".join(result.stdout.split())
+    return started if result.returncode == 0 and started else None
+
+
+def record_child(kind: str, pid: int) -> None:
+    """Name a detached OCR process in OCR_PHASE_CHILDREN, when it is set."""
+    path = os.environ.get(CHILDREN_ENV)
+    started = process_start_time(pid) if path else None
+    if not path or started is None:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{kind} {pid} {started.replace(' ', '_')}\n")
+    except OSError:
+        pass
+
+
+def read_children(path: str | os.PathLike | None) -> list[tuple[str, int, str]]:
+    """The (kind, pid, start) lines record_child wrote to PATH."""
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return []
+    children = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 3 and parts[1].isdigit():
+            children.append((parts[0], int(parts[1]), parts[2].replace("_", " ")))
+    return children
 
 
 def exit_on_sigterm() -> None:

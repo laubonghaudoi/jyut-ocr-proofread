@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import sys
 import tempfile
@@ -82,22 +84,34 @@ class SetupTest(unittest.TestCase):
             config.write_text("export HUNYUAN_MODEL=" + value + "\n")
             with self.assertRaises(setup.SetupError):
                 setup.read_environment(config)
-    def test_noninteractive_mac_requires_choice_but_saved_choice_resumes(self):
-        with self.assertRaisesRegex(setup.SetupError, "requires --engine"):
-            setup.choose_engine("auto", {}, system="Darwin", interactive=False)
-        self.assertEqual(setup.choose_engine("auto", {"JYUT_OCR_ENGINE": "vision"}, system="Darwin", interactive=False), "vision")
-        self.assertEqual(setup.choose_engine("auto", {}, system="Linux", interactive=False), "hunyuan")
+    def test_engines_follow_the_platform_without_a_prompt_and_an_override_resumes(self):
+        # Decision 2: both engines by default, no prompt (Intel Macs: Hunyuan only).
+        for system, machine, engines in (("Linux", "x86_64", ("hunyuan", "paddle")),
+                                         ("Darwin", "arm64", ("hunyuan", "paddle")),
+                                         ("Darwin", "x86_64", ("hunyuan",))):
+            with self.subTest(system=system, machine=machine):
+                request = setup.engine_request("default", {})
+                self.assertEqual(setup.choose_engines(request, system=system, machine=machine)[0], engines)
+        saved = {"JYUT_OCR_ENGINE": "vision", "JYUT_OCR_ENGINES": "vision"}
+        self.assertEqual(setup.engine_request("default", saved), "vision")
+        self.assertEqual(setup.engine_request("auto", saved), "auto")
+        # An older single-engine installer's automatic pick is not an override.
+        self.assertEqual(setup.engine_request("default", {"JYUT_OCR_ENGINE": "hunyuan"}), "auto")
         with self.assertRaises(setup.SetupError):
-            setup.choose_engine("vision", {}, system="Linux", interactive=False)
+            setup.choose_engines("vision", system="Linux", machine="x86_64")
     def test_device_auto_falls_back_without_installing_driver(self):
         with patch.object(setup, "cuda_available", return_value=False), patch.object(setup, "metal_available", return_value=False):
             self.assertEqual(setup.choose_device("auto", {}, engine="hunyuan", system="Linux"), "cpu")
             self.assertEqual(setup.choose_device("auto", {}, engine="hunyuan", system="Darwin"), "cpu")
             with self.assertRaisesRegex(setup.SetupError, "never installs"):
                 setup.choose_device("cuda", {}, engine="hunyuan", system="Linux")
-    def test_existing_device_and_slots_are_preserved(self):
+    def test_a_chosen_device_is_preserved_but_an_automatic_cpu_is_not(self):
         with patch.object(setup, "cuda_available", return_value=True):
-            self.assertEqual(setup.choose_device("auto", {"OCR_HUNYUAN_DEVICE": "cpu"}, engine="hunyuan", system="Linux"), "cpu")
+            chosen = {"JYUT_OCR_DEVICE": "cpu", "OCR_HUNYUAN_DEVICE": "cpu"}
+            self.assertEqual(setup.choose_device("default", chosen, engine="hunyuan", system="Linux"), "cpu")
+            # Explicit auto asks again; an older installer's saved cpu is detected again.
+            self.assertEqual(setup.choose_device("auto", chosen, engine="hunyuan", system="Linux"), "cuda")
+            self.assertEqual(setup.choose_device("default", {"OCR_HUNYUAN_DEVICE": "cpu"}, engine="hunyuan", system="Linux"), "cuda")
     def test_dependency_instructions_do_not_execute_without_opt_in(self):
         with patch.object(setup, "missing_dependencies", return_value=["pdftoppm"]), patch.object(setup, "package_commands", return_value=[["sudo", "apt-get", "install", "poppler-utils"]]), patch.object(setup, "run") as runner:
             with self.assertRaisesRegex(setup.SetupError, "poppler-utils"):
@@ -121,7 +135,7 @@ class SetupTest(unittest.TestCase):
         self.options.config_dir.mkdir()
         (self.options.config_dir / "env.sh").write_text("export JYUT_OCR_ENGINE=hunyuan\nexport OCR_HUNYUAN_DEVICE=cpu\n")
         identity = {"configuration": 1}
-        state = {"schema_version": setup.STATE_SCHEMA, "status": "ready", "fingerprint": setup.canonical_hash(identity), "smoke": {"completed_at": "today"}}
+        state = {"schema_version": setup.STATE_SCHEMA, "status": "ready", "fingerprint": setup.canonical_hash(identity), "smoke": {"hunyuan": {"completed_at": "today"}}}
         setup.atomic_json(self.options.config_dir / "setup-state.json", state)
         with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "missing_dependencies", return_value=[]), patch.object(setup, "environment_identity", return_value=identity), patch.object(setup, "check_smoke", return_value=True), patch.object(setup, "smoke_test") as smoke:
             self.assertEqual(setup.inspect_setup(self.options)["status"], "ready")
@@ -132,7 +146,7 @@ class SetupTest(unittest.TestCase):
         with self.assertRaisesRegex(setup.SetupError, "outside"):
             setup.setup(replace(self.options, data_dir=ROOT / "scratch-runtime"))
     def test_failed_smoke_cannot_mark_ready(self):
-        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", return_value=(Path("/runtime/llama-server"), {})), patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", side_effect=setup.SetupError("no OCR output")):
+        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "check_free_disk"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", return_value=(Path("/runtime/llama-server"), {})), patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", side_effect=setup.SetupError("no OCR output")):
             with self.assertRaisesRegex(setup.SetupError, "no OCR"):
                 setup.setup(self.options)
         state = json.loads((self.options.config_dir / "setup-state.json").read_text())
@@ -141,7 +155,7 @@ class SetupTest(unittest.TestCase):
     def test_repeated_setup_reuses_sealed_smoke_and_preserves_slots(self):
         self.options.config_dir.mkdir()
         (self.options.config_dir / "env.sh").write_text("# keep\nexport OCR_HUNYUAN_SLOTS=16\n")
-        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", return_value=(Path("/runtime/llama-server"), {})), patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", return_value={"json_output": "sealed.json"}) as smoke, patch.object(setup, "check_smoke", return_value=True):
+        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "check_free_disk"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", return_value=(Path("/runtime/llama-server"), {})), patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", return_value={"json_output": "sealed.json"}) as smoke, patch.object(setup, "check_smoke", return_value=True):
             self.assertEqual(setup.setup(self.options)["status"], "ready")
             self.assertEqual(setup.setup(self.options)["smoke"], "already-verified")
             smoke.assert_called_once()
@@ -158,7 +172,7 @@ class SetupTest(unittest.TestCase):
     def test_runtime_cpu_accepts_sealed_cuda_binary_but_not_changed_binary(self):
         binary = self.base / "build/bin/llama-server"
         binary.parent.mkdir(parents=True)
-        binary.write_text("#!/bin/sh\nprintf 'version: 0.3.0-dev (build 1, commit 67a17c1)\\n'\n")
+        binary.write_text("#!/bin/sh\nprintf 'version: 10969 (391fac164)\\n'\n")
         binary.chmod(0o755)
         lock = setup.load_lock(ROOT)
         setup.atomic_json(self.base / "jyut-ocr-build.json", {"commit": lock["runtime"]["commit"], "binary_sha256": setup.sha256_file(binary), "device": "cuda"})
@@ -231,7 +245,7 @@ class SetupTest(unittest.TestCase):
         self.assertTrue((managed / "jyut-ocr-build.json").is_file())
         self.assertTrue(verified)
     def test_automatic_accelerator_build_failure_retries_cpu(self):
-        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "cuda_available", return_value=True), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", side_effect=[setup.SetupError("CUDA compiler rejected"), (Path("/runtime/cpu"), {})]) as runtime, patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", return_value={"json_output": "sealed.json"}):
+        with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "cuda_available", return_value=True), patch.object(setup, "nvidia_gpus", return_value=[]), patch.object(setup, "check_free_disk"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", side_effect=[setup.SetupError("CUDA compiler rejected"), (Path("/runtime/cpu"), {})]) as runtime, patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", return_value={"json_output": "sealed.json"}):
             result = setup.setup(replace(self.options, device="auto"))
         self.assertEqual(result["device"], "cpu")
         self.assertEqual([call.args[-1] for call in runtime.call_args_list], ["cuda", "cpu"])
@@ -274,7 +288,8 @@ class SetupTest(unittest.TestCase):
                 python.parent.mkdir(parents=True)
                 python.write_text("recreated interpreter")
             return type("Result", (), {"stdout": ""})()
-        with patch.object(setup, "python_identity", side_effect=[setup.SetupError("missing PIL"), {"valid": True}]), patch.object(setup, "command_ok", side_effect=[True, False]), patch.object(setup, "run", side_effect=fake_run):
+        # Without uv the core venv comes from this interpreter (with uv: test_setup_dual_engine.PythonTests).
+        with patch.object(setup, "find_uv", return_value=None), patch.object(setup, "python_identity", side_effect=[setup.SetupError("missing PIL"), {"valid": True}]), patch.object(setup, "command_ok", side_effect=[True, False]), patch.object(setup, "run", side_effect=fake_run):
             result = setup.ensure_python(self.options, {})
         self.assertEqual(result, python)
         backups = list(self.options.data_dir.glob("python-incomplete-*"))
@@ -285,7 +300,7 @@ class SetupTest(unittest.TestCase):
     def test_linked_runtime_library_changes_invalidate_seal(self):
         binary = self.base / "bin/llama-server"
         binary.parent.mkdir()
-        binary.write_text("#!/bin/sh\nprintf 'commit 67a17c1\\n'\n")
+        binary.write_text("#!/bin/sh\nprintf 'commit 391fac1\\n'\n")
         binary.chmod(0o755)
         library = binary.parent / "libllama.so"
         library.write_bytes(b"first library")
@@ -347,9 +362,137 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(setup.missing_dependencies("hunyuan", building=True), ["git", "cmake", "c++"])
     def test_locked_model_pair_and_runtime_are_exact(self):
         lock = setup.load_lock(ROOT)
-        self.assertEqual(lock["runtime"]["commit"], "67a17c17caa95742186f8b1ecadd1b5abd6d5ebb")
+        # llama.cpp b10969 (decision 9), the first release with Linux CUDA binaries.
+        self.assertEqual(lock["runtime"]["commit"], "391fac16460f15233a7740550d858ac96df3419d")
+        self.assertEqual(lock["runtime"]["tag"], "b10969")
         self.assertEqual(lock["model"]["revision"], "8e070c9ad79e4ca97a9b4daa2f1ce17e8759afb1")
         self.assertEqual({item["role"] for item in lock["model"]["files"]}, {"model", "mmproj"})
+
+    def environment_fixture(self):
+        """A copy of the skill's files with env.sh and a ready setup state; the
+        Python, runtime and model checks are faked (no subprocess, no model)."""
+        repo = self.base / "skill"
+        for name in ("requirements.txt", "runtime/ocr-lock.json", "scripts/_setup_ocr.py",
+                     "scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py",
+                     "scripts/_gpu_queue.py", "scripts/_phase_budget.py"):
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, repo / name)
+        options = replace(self.options, repo_root=repo)
+        options.config_dir.mkdir()
+        (options.config_dir / "env.sh").write_text(
+            "export JYUT_OCR_PYTHON=/venv/bin/python\nexport JYUT_OCR_ENGINE=hunyuan\n"
+            "export OCR_HUNYUAN_DEVICE=cpu\nexport HUNYUAN_MODEL=/models/model.gguf\n"
+            "export HUNYUAN_MMPROJ=/models/mmproj.gguf\nexport HUNYUAN_LLAMA_SERVER=/runtime/llama-server\n")
+        self.python = {"version": "3.12.1 (main, Jan 1 2026) [GCC]", "version_info": [3, 12, 1],
+                       "prefix": "/venv", "base_prefix": "/usr", "pillow": "12.0.0"}
+        self.runtime = {"path": "/runtime/llama-server", "sha256": "a" * 64, "commit": "c" * 40,
+                        "compiled_device": "cpu", "libraries": {"libggml.so": "b" * 64},
+                        "verification": "sealed-build"}
+        return options
+    def faked_environment(self):
+        return [patch.object(setup, "platform_name", return_value="Linux"),
+                patch.object(setup, "missing_dependencies", return_value=[]),
+                patch.object(setup, "python_identity", side_effect=lambda _: dict(self.python)),
+                patch.object(setup, "runtime_identity", side_effect=lambda *_: dict(self.runtime)),
+                patch.object(setup, "verify_asset", return_value=True),
+                patch.object(setup, "check_smoke", return_value=True)]
+    def inspect(self, options):
+        with contextlib.ExitStack() as stack:
+            for item in self.faked_environment():
+                stack.enter_context(item)
+            return setup.inspect_setup(options)
+    def seal_ready(self, options):
+        with contextlib.ExitStack() as stack:
+            for item in self.faked_environment():
+                stack.enter_context(item)
+            identity = setup.environment_identity(
+                options, setup.read_environment(options.config_dir / "env.sh"), "hunyuan", "cpu",
+                setup.load_lock(options.repo_root))
+        setup.atomic_json(options.config_dir / "setup-state.json", {
+            "schema_version": setup.STATE_SCHEMA, "status": "ready", "identity": identity,
+            "fingerprint": setup.setup_fingerprint(identity), "smoke": {"hunyuan": {"completed_at": "today"}}})
+        return identity
+    def test_code_edits_and_python_patch_releases_keep_setup_ready(self):
+        options = self.environment_fixture()
+        identity = self.seal_ready(options)
+        self.assertEqual(self.inspect(options)["status"], "ready")
+        # The skill's own bytes and the full Python version are recorded only.
+        self.assertIn("scripts/run_hunyuanocr.py", identity["recorded"]["tools"])
+        self.assertEqual(identity["recorded"]["python"]["version_info"], [3, 12, 1])
+        self.assertEqual(identity["python"], "3.12")
+        for name in ("scripts/_setup_ocr.py", "scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py",
+                     "scripts/_gpu_queue.py", "scripts/_phase_budget.py"):
+            with (options.repo_root / name).open("a") as stream:
+                stream.write("\n# a fix that changes these bytes\n")
+        self.assertEqual(self.inspect(options)["status"], "ready")
+        self.python.update(version="3.12.9 (main, Jun 1 2026) [GCC]", version_info=[3, 12, 9],
+                           prefix="/other/venv")
+        self.runtime["path"] = "/moved/runtime/llama-server"
+        self.assertEqual(self.inspect(options)["status"], "ready")
+    def test_environment_changes_require_a_new_smoke(self):
+        options = self.environment_fixture()
+        self.seal_ready(options)
+        requirements = options.repo_root / "requirements.txt"
+        lock_path = options.repo_root / "runtime/ocr-lock.json"
+        original_lock = lock_path.read_text()
+        changed_lock = json.loads(original_lock)
+        changed_lock["model"]["files"][0]["sha256"] = "d" * 64
+        changes = (
+            ("python minor", lambda: self.python.update(version_info=[3, 13, 0])),
+            ("runtime binary", lambda: self.runtime.update(sha256="e" * 64)),
+            ("runtime library", lambda: self.runtime.update(libraries={"libggml.so": "f" * 64})),
+            ("requirements", lambda: requirements.write_text(requirements.read_text() + "extra>=1\n")),
+            ("locked model hash", lambda: lock_path.write_text(json.dumps(changed_lock))),
+        )
+        original_requirements = requirements.read_text()
+        for label, change in changes:
+            with self.subTest(change=label):
+                python, runtime = dict(self.python), dict(self.runtime)
+                change()
+                result = self.inspect(options)
+                self.assertEqual(result["status"], "action-required")
+                self.assertIn("stale", result["reason"])
+                self.python, self.runtime = python, runtime
+                requirements.write_text(original_requirements)
+                lock_path.write_text(original_lock)
+                self.assertEqual(self.inspect(options)["status"], "ready")
+        with patch.object(setup, "cuda_available", return_value=True):
+            result = self.inspect(replace(options, device="cuda"))
+        self.assertEqual(result["status"], "action-required")
+    def test_symlinked_environment_is_written_through_to_its_target(self):
+        dotfiles = self.base / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "env.sh"
+        target.write_text("# managed by a dotfile tool\nexport OCR_HUNYUAN_SLOTS=16\n")
+        config = self.base / "config"
+        config.mkdir()
+        link = config / "env.sh"
+        link.symlink_to(target)
+        setup.write_environment(link, {"OCR_HUNYUAN_DEVICE": "cpu"})
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(Path(os.path.realpath(link)), target.resolve())
+        self.assertIn("export OCR_HUNYUAN_DEVICE=cpu", target.read_text())
+        self.assertIn("# managed by a dotfile tool", target.read_text())
+        self.assertEqual(setup.read_environment(link)["OCR_HUNYUAN_SLOTS"], "16")
+        self.assertEqual(sorted(path.name for path in dotfiles.iterdir()), ["env.sh"])
+        backups = list((config / "env-backups").iterdir())
+        self.assertEqual(backups[0].read_text(), "# managed by a dotfile tool\nexport OCR_HUNYUAN_SLOTS=16\n")
+        # A link to a file not yet written in an existing folder creates it.
+        fresh = config / "fresh.sh"
+        fresh.symlink_to(dotfiles / "fresh.sh")
+        setup.write_environment(fresh, {"OCR_HUNYUAN_DEVICE": "cpu"})
+        self.assertTrue(fresh.is_symlink())
+        self.assertIn("OCR_HUNYUAN_DEVICE=cpu", (dotfiles / "fresh.sh").read_text())
+        # Links that cannot be written through are refused, and nothing is replaced.
+        for name, destination in (("missing-folder.sh", self.base / "absent" / "env.sh"),
+                                  ("folder.sh", dotfiles)):
+            with self.subTest(link=name):
+                bad = config / name
+                bad.symlink_to(destination)
+                with self.assertRaisesRegex(setup.SetupError, "symlink"):
+                    setup.write_environment(bad, {"OCR_HUNYUAN_DEVICE": "cpu"})
+                self.assertTrue(bad.is_symlink())
+        self.assertFalse((self.base / "absent").exists())
 
 
 class DownloadTest(unittest.TestCase):

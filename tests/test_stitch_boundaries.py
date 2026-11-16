@@ -27,6 +27,16 @@ class StitchBoundaryTests(unittest.TestCase):
     def run_pair(self, a: str, b: str, number: int = 2) -> dict:
         return stitch.plan([page(1, a), page(number, b)], geometry=False)
 
+    def assert_unrelated(self, result: dict, a: str, b: str, number: int = 2) -> None:
+        """Decision 8 (benchmark: merge continuations): a table that does not
+        end its page, or one after other text on the next page, is no
+        continuation by position - nothing merged, decided or flagged."""
+        self.assertEqual(result["chains"], [])
+        self.assertEqual(result["decisions"], [])
+        for n, text in ((1, a), (number, b)):
+            self.assertEqual(result["pages"][n]["text"], text)
+            self.assertEqual(result["pages"][n]["doubts"], [])
+
     def assert_blocked(self, result: dict, a: str, b: str, number: int = 2) -> None:
         self.assertEqual(result["chains"], [])
         self.assertEqual(result["decisions"][0]["verdict"], "blocked")
@@ -58,22 +68,43 @@ class StitchBoundaryTests(unittest.TestCase):
         self.assertIn("[^b]: 來源附註。", result["pages"][1]["text"])
         self.assertEqual(result["pages"][2]["text"], "")
 
-    def test_unknown_body_after_table_is_actionable(self) -> None:
+    def test_body_after_table_is_no_continuation_and_no_doubt(self) -> None:
         a = table([("甲", "10")]) + "\n下列正文不可略過。\n"
         b = table([("乙", "20")])
-        self.assert_blocked(self.run_pair(a, b), a, b)
+        self.assert_unrelated(self.run_pair(a, b), a, b)
 
-    def test_unknown_body_before_table_is_actionable(self) -> None:
+    def test_body_before_table_is_no_continuation_and_no_doubt(self) -> None:
         a = table([("甲", "10")])
         b = "此段另起新節。\n\n" + table([("乙", "20")])
-        self.assert_blocked(self.run_pair(a, b), a, b)
+        self.assert_unrelated(self.run_pair(a, b), a, b)
 
     def test_different_named_title_is_not_a_continuation(self) -> None:
         a = "## 甲表\n\n" + table([("甲", "10")])
         for title in ("## 乙表", "## 乙表（續）"):
             b = title + "\n\n" + table([("乙", "20")])
             with self.subTest(title=title):
-                self.assert_blocked(self.run_pair(a, b), a, b)
+                self.assert_unrelated(self.run_pair(a, b), a, b)
+
+    def test_engine_footnote_block_after_head_table_is_traversed_and_stays(self) -> None:
+        # A table printed over two pages with its notes at the foot of the
+        # first: engine A read the note lines in a footnote block below the
+        # table.  Decision 8: the table is merged; the notes stay on their page.
+        a = "## 分項表\n\n" + table([("甲", "10")]) + "\n〔甲〕某書卷四頁二。\n\n某年共收若干兩。\n"
+        b = table([("丙", "30")], ("乙", "20"))
+        blocks = [{"label": "paragraph_title", "text": "分項表", "box": [0.1, 0.05, 0.3, 0.03]},
+                  {"label": "table", "text": "<table></table>", "box": [0.1, 0.1, 0.8, 0.5]},
+                  {"label": "footnote", "text": "〔甲〕某書卷四頁二。", "box": [0.1, 0.8, 0.8, 0.03]},
+                  {"label": "footnote", "text": "某年共收若干两。", "box": [0.1, 0.85, 0.8, 0.03]}]
+        record = {"tables": [{"block": 1, "text": table([("甲", "10")])}]}
+        result = stitch.plan([stitch.PageInput(1, a, record, blocks), page(2, b)], geometry=False)
+        self.assertEqual(len(result["chains"]), 1)
+        head = result["pages"][1]["text"]
+        self.assertIn("| 乙 | 20 |", head)
+        self.assertLess(head.index("| 丙 | 30 |"), head.index("〔甲〕某書卷四頁二。"))
+        self.assertEqual(result["pages"][2]["text"], "")
+        # The same lines with no footnote block from engine A are body text.
+        result = stitch.plan([stitch.PageInput(1, a, record, blocks[:2]), page(2, b)], geometry=False)
+        self.assert_unrelated(result, a, b)
 
     def test_missing_pages_stop_and_report_the_chain(self) -> None:
         a, b = table([("甲", "10")]), table([("乙", "20")])
@@ -89,14 +120,17 @@ class StitchBoundaryTests(unittest.TestCase):
         self.assertEqual(len(result["chains"]), 1)
         self.assertEqual(sum(p["text"].count("頁眉") for p in result["pages"].values()), 2)
 
-    def test_same_column_count_alone_is_undecided(self) -> None:
+    def test_same_column_count_at_the_page_break_is_merged(self) -> None:
+        # Decision 8: the benchmark merges a table continued on the next
+        # page; position plus the head's field count is the old skill's
+        # measured rule (no distinct table merged on 796 pages).
         a = table([("甲", "10")])
         b = table([("丙", "30")], ("乙", "20"))
         result = self.run_pair(a, b)
-        self.assertEqual(result["chains"], [])
-        self.assertEqual(result["decisions"][0]["verdict"], "undecided")
-        self.assertEqual(result["pages"][1]["text"], a)
-        self.assertEqual(result["pages"][2]["text"], b)
+        self.assertEqual(len(result["chains"]), 1)
+        self.assertEqual(result["decisions"][0]["verdict"], "merge")
+        self.assertIn("| 乙 | 20 |\n| 丙 | 30 |", result["pages"][1]["text"])
+        self.assertEqual(result["pages"][2]["text"], "")
 
     def test_named_continuation_supplies_identity_without_repeated_header(self) -> None:
         a = "## 分項表\n\n" + table([("甲", "10")])
@@ -105,28 +139,63 @@ class StitchBoundaryTests(unittest.TestCase):
         self.assertEqual(len(result["chains"]), 1)
         self.assertIn("| 乙 | 20 |", result["pages"][1]["text"])
 
-    def test_bare_continuation_does_not_make_equal_width_sufficient(self) -> None:
+    def test_bare_continuation_with_equal_width_is_merged_and_caption_kept(self) -> None:
         a = table([("甲", "10")])
         b = "（續）\n\n" + table([("丙", "30")], ("乙", "20"))
         result = self.run_pair(a, b)
-        self.assertEqual(result["chains"], [])
-        self.assertEqual(result["decisions"][0]["verdict"], "undecided")
+        self.assertEqual(len(result["chains"]), 1)
+        self.assertIn("| 丙 | 30 |", result["pages"][1]["text"])
+        self.assertEqual(result["pages"][2]["text"].strip(), "（續）")
 
     def test_anagram_header_and_swapped_columns_are_never_deduplicated(self) -> None:
-        a = table([("甲", "10")])
-        for header in (("目項", "額數"), ("數額", "項目")):
+        # Base P's inputs (head 項目|數額) and phase B's anagram (head
+        # 收入項目|數額): columns swapped, or a label whose characters are
+        # reordered other than by reading it backwards, is a header of its own.
+        for head, header in (("項目", "數額"), ("數額", "項目")), (("收入項目", "數額"), ("項目收入", "數額")), \
+                (("收入項目", "數額"), ("數額", "收入項目")):
+            a = table([("甲", "10")], head)
             b = table([("乙", "20")], header)
-            with self.subTest(header=header):
+            with self.subTest(head=head, header=header):
                 result = self.run_pair(a, b)
                 self.assertEqual(result["chains"], [])
                 self.assertEqual(result["pages"][2]["text"], b)
 
-    def test_repeated_text_record_is_not_assumed_to_be_a_header(self) -> None:
+    def test_header_with_every_label_read_backwards_is_the_repeated_header(self) -> None:
+        # Base P's other input, 目項|額數 under 項目|數額, which base P never
+        # deduplicated.  same_header takes a cell read the other way round as
+        # the same label (a label printed right to left that the cell
+        # direction check turned on one page and not on the other), so the
+        # part's first row is the head's header read backwards and is written
+        # once (decision 8: no text repeated at the break).  Were it a record
+        # of its own, its four characters would be lost: this case pins that
+        # trade-off.
+        a = table([("甲", "10")])
+        b = table([("乙", "20")], ("目項", "額數"))
+        result = self.run_pair(a, b)
+        self.assertEqual([d["verdict"] for d in result["decisions"]], ["merge"])
+        self.assertEqual(result["pages"][1]["text"], table([("甲", "10"), ("乙", "20")]))
+        self.assertEqual(result["pages"][2]["text"], "")
+
+    def test_header_read_the_other_way_round_is_the_repeated_header(self) -> None:
+        # Decision 8: no text repeated at the break.  A label printed right
+        # to left and turned on one page only is the same label.
+        a = table([("甲", "10")], ("收入項目", "數額"))
+        b = table([("乙", "20")], ("目項入收", "數額"))
+        result = self.run_pair(a, b)
+        self.assertEqual(len(result["chains"]), 1)
+        head = result["pages"][1]["text"]
+        self.assertEqual(head.count("數額"), 1)
+        self.assertIn("| 乙 | 20 |", head)
+
+    def test_repeated_first_row_is_dropped_once(self) -> None:
+        # Decision 8: a continuation repeating the head's first row is merged
+        # with that row written once.
         a = table([("東", "西")], ("甲", "乙"))
         b = table([("南", "北")], ("甲", "乙"))
         result = self.run_pair(a, b)
-        self.assertEqual(result["chains"], [])
-        self.assertEqual(result["decisions"][0]["verdict"], "undecided")
+        self.assertEqual(len(result["chains"]), 1)
+        self.assertEqual(result["pages"][1]["text"].count("| 甲 | 乙 |"), 1)
+        self.assertIn("| 南 | 北 |", result["pages"][1]["text"])
 
     def test_per_page_reused_note_marker_blocks_relocation(self) -> None:
         a = table([("甲①", "10")]) + "\n① 第一頁附註。\n"
@@ -141,7 +210,7 @@ class StitchBoundaryTests(unittest.TestCase):
     def test_unlabelled_note_continuation_is_not_treated_as_furniture(self) -> None:
         a = table([("甲①", "10")]) + "\n① 注文。\n未縮排續行或正文。\n"
         b = table([("乙", "20")])
-        self.assert_blocked(self.run_pair(a, b), a, b)
+        self.assert_unrelated(self.run_pair(a, b), a, b)
 
     def test_unlabelled_continuation_note_body_blocks_the_whole_move(self) -> None:
         a = table([("甲", "10")])
@@ -176,18 +245,26 @@ class StitchBoundaryTests(unittest.TestCase):
             with self.subTest(how=how):
                 self.assertIsNone(stitch.orientation_of({"tableOrientation": ["block 0: " + how]}, 0))
 
-    def test_field_count_cannot_override_conflicting_visual_orientation_seals(self) -> None:
+    def test_continuation_turned_the_other_way_takes_the_heads_orientation(self) -> None:
+        # Decision 8: one printed table, one rule; a continuation whose other
+        # axis holds the head's field count is turned as the head was (the
+        # old skill's measured rule) and merged.
         a = "| 項目 | 數額 | 年度 |\n| --- | --- | --- |\n| 甲 | 10 | 2020 |\n"
-        b = "| 年度 | 乙 |\n| --- | --- |\n| 數額 | 30 |\n| 項目 | 2021 |\n"
-        pages = [page(1, a, tables=[{"block": 0, "text": a}],
-                      tableOrientation=["block 0: kept — source image confirms row records"]),
-                 page(2, b, tables=[{"block": 0, "text": b}],
-                      tableOrientation=["block 0: rotated — source image confirms column records"])]
-        result = stitch.plan(pages, geometry=False)
-        self.assertEqual(result["chains"], [])
-        self.assertEqual(result["decisions"][0]["verdict"], "undecided")
-        self.assertEqual(result["pages"][1]["text"], a)
-        self.assertEqual(result["pages"][2]["text"], b)
+        # Phase B's input, and base P's (the same label column, other
+        # figures): each value lands under the label the part prints beside it.
+        for b, row in (("| 年度 | 2021 |\n| --- | --- |\n| 數額 | 30 |\n| 項目 | 乙 |\n", "| 乙 | 30 | 2021 |"),
+                       ("| 年度 | 乙 |\n| --- | --- |\n| 數額 | 30 |\n| 項目 | 2021 |\n", "| 2021 | 30 | 乙 |")):
+            pages = [page(1, a, tables=[{"block": 0, "text": a}],
+                          tableOrientation=["block 0: kept — source image confirms row records"]),
+                     page(2, b, tables=[{"block": 0, "text": b}],
+                          tableOrientation=["block 0: rotated — source image confirms column records"])]
+            with self.subTest(b=b):
+                result = stitch.plan(pages, geometry=False)
+                self.assertEqual(len(result["chains"]), 1)
+                self.assertIn("turned to the head's",
+                              result["pages"][1]["stitch"]["head"]["parts"][0]["orientation"])
+                self.assertIn(row, result["pages"][1]["text"])
+                self.assertEqual(result["pages"][1]["text"].count("| 項目 |"), 1)
 
     def test_as_printed_never_uses_geometry_to_change_field_count(self) -> None:
         a = table([("甲", "10")])

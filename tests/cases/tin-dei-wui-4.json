@@ -1,0 +1,350 @@
+{
+ "book": "天地会（四）",
+ "bookId": "tin-dei-wui-4",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/liksi/文獻/天地会 4 (中国人民大学清史研究所, 中国第一历史档案馆合编).pdf",
+  "sha256": "e6fb8e8b7a6a5218b1e187ab8c5c0b41aea75451c2d7843fff0494f356eac45a",
+  "pages": 500,
+  "titleFrom": "the title page, scan 2: 天地会 above （四）, series 清史资料丛刊, 中国人民大学清史研究所 and 中国第一历史档案馆; 中国人民大学出版社 1983",
+  "renderSha256": {
+   "6": "192697b0fe93118f61af9fd38c5aab76e007bc43c8ae9d1fb594b66cd9a3a862",
+   "12": "5867fd87963a85233500c8e8fee83ada2995710a22b9491d9b6e9f98cb32d09c",
+   "43": "7765a476762d70f10e476234285a316fc5e99ebf454e6bc369218a049f3ecbca",
+   "57": "6e1183fd4d21478ed2b345e11cef790682f08bccbb518e5933809ce8bf44e904",
+   "62": "f60a400e8cac284ece17e4f7c98d7c5d96bdcf8c9c1c1b4636d2620b8ae5d71b",
+   "63": "fe3eafd4d225c12608a36539124271ddb9270e24f3893a5b42a60039f1ecbedd",
+   "66": "1da874c7f6f0e58f87d499bd05b8c87fb3365d2f298dcb60cd2dbd9372cf8c12",
+   "67": "622839af9d2659208de57edc3b7bb08b44202d3ad0b2c058013790d00594dba7",
+   "68": "14f4d94e4d10a38e70e204c319f8963b1e773b20d9ba7bb645d9757aa22e713f",
+   "70": "9eee4dd6a19d0efb8d10a0337580efd06cb8a80e8d32fec04ef319757bee44ea",
+   "71": "703ffff640943ef5b5b095078c1386ecdfc00ab973083c3b3bfadc21dd4ede00",
+   "81": "1a2b9f9aa696ac56725b23abcb08a8d2e86e96dc4cdca83586117b7ddf7afc7e",
+   "115": "7f5fae558e4c3f6f451b6bd2bf7ecda104c9be1334958a1080fe70faf1772bc7",
+   "178": "c81a263a82727ef11fcde397a907c0f88f2f9d60fb28fa49815d35d49c9d5029",
+   "196": "76cce57738a9d84fb21981faaafc813427807fa4861ce8672e71194a1fbdd12d",
+   "246": "0b2925791cba3c94c3de691fc6e9d998e5aed34e5763fd039d1d848cc6dc07ce",
+   "247": "548484fb63479e4fada7365f6eb9e4457358a2f68985109f897aa382c1262a0b",
+   "248": "27b1b903c0f614ccdbf76db758baa6692eac0b360f5d1b075cfd153e49f29416",
+   "298": "91a2637ec65b8796d21e803aed4f1cea479ef94ac0c7999a26c501f13af7aefe",
+   "305": "125059f66ea1e8d3117aa67ef793a1ffd03eac3e12a653598f27c5c8edf7e91b",
+   "356": "fd5868a3150fe66125549a577b1ed20fb0318b9806313fb23124a248b0aca5b7",
+   "358": "175ca722a199cdfe2d021133cc062103da454f2d5cce8014435c2188e859e565",
+   "430": "8bbb5c77866116a6b643610c54ebe14c995e4121e832958acb0c87ec8cdabeda",
+   "461": "699ecad7eb12e60782ce8c0fa59fc3676f76331d38b750b545ee0d5a4c1a237e",
+   "497": "91d1651c172a878a1057f05476d48495ebecca54e2e2cbab7480b54fcffd01a9",
+   "65": "e712e5b2060eafe4d5dd7426828f850afbc0c2558e34a478827919950774cb3a",
+   "477": "94ee87bb5302d0fe4f33e5aaabb350722b4353579870098b8bc6c62540903d87"
+  },
+  "renderSha256From": "sha256 of ~/jyut-ocr-books/tin-dei-wui-4/renders/page-NNNN.png (survey_pdf.py, pdftoppm 300 dpi), measured 2026-10-13; equal to provenance.renderSha256 of the sealed proofread pages"
+ },
+ "traits": [
+  "horizontal-ltr",
+  "simplified-han",
+  "modern-typesetting",
+  "1983",
+  "qing-archive-documents",
+  "memorial-titles-with-date-lines",
+  "table-of-contents",
+  "leader-dots",
+  "1-bit-scan-295ppi",
+  "rare-name-characters-彲-埏-杙"
+ ],
+ "notCovered": [
+  "vertical layout",
+  "traditional han",
+  "tables",
+  "figures"
+ ],
+ "assertions": [
+  {
+   "id": "consistent-6-1",
+   "page": 6,
+   "type": "contains",
+   "value": "备杨彲等人",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 备杨彲等人 (contents: 守备杨彲等人); the delivered output writes 备杨彫等人 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-006-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-43-2",
+   "page": 43,
+   "type": "contains",
+   "value": "杨彲在西门",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲在西门 (再守备杨彲在西门外打仗); the delivered output writes it right today (杨彲在西门); crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-043-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-57-3",
+   "page": 57,
+   "type": "contains",
+   "value": "又守备杨彲",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 又守备杨彲 (又守备杨彲在西门外打仗); the delivered output writes 又守备杨彪 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-057-yangchi-1.png; #26"
+  },
+  {
+   "id": "consistent-57-4",
+   "page": 57,
+   "type": "contains",
+   "value": "之守备杨彲",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 之守备杨彲 (伤亡之守备杨彲，均著); the delivered output writes 之守备杨彪 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-057-yangchi-2.png; #26"
+  },
+  {
+   "id": "consistent-62-5",
+   "page": 62,
+   "type": "contains",
+   "value": "杨彲等人",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲等人 (阵亡之守备杨彲等人); the delivered output writes 杨彪等人 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-062-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-63-6",
+   "page": 63,
+   "type": "contains",
+   "value": "内守备杨彲",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 内守备杨彲 (八月内守备杨彲，在诸罗西门); the delivered output writes it right today (内守备杨彲); crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-063-yangchi-1.png; #26"
+  },
+  {
+   "id": "consistent-63-7",
+   "page": 63,
+   "type": "contains",
+   "value": "杨彲业经",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲业经 (杨彲业经降旨); the delivered output writes 杨影业经 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-063-yangchi-2.png; #26"
+  },
+  {
+   "id": "consistent-63-8",
+   "page": 63,
+   "type": "contains",
+   "value": "杨彲著加",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲著加 (守备杨彲， 著加一等); the delivered output writes 杨彧著加 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-063-yangchi-3.png; #26"
+  },
+  {
+   "id": "consistent-66-9",
+   "page": 66,
+   "type": "contains",
+   "value": "杨彲施放",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲施放 (西门外守备杨彲施放大); the delivered output writes 杨彫施放 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-066-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-67-10",
+   "page": 67,
+   "type": "contains",
+   "value": "杨彲连放",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲连放 (守备杨彲连放大炮); the delivered output writes it right today (杨彲连放); crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-067-yangchi-1.png; #26"
+  },
+  {
+   "id": "consistent-67-11",
+   "page": 67,
+   "type": "contains",
+   "value": "杨彲施放",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲施放 (守备杨彲施放大炮多中); the delivered output writes 杨彪施放 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-067-yangchi-2.png; #26"
+  },
+  {
+   "id": "consistent-68-12",
+   "page": 68,
+   "type": "contains",
+   "value": "杨彲照定",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲照定 (守备杨彲 / 照定准头); the delivered output writes it right today (杨彲照定); crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-068-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-70-13",
+   "page": 70,
+   "type": "contains",
+   "value": "率守备杨彲",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 率守备杨彲 (率守备杨彲，在西门); the delivered output writes 率守备杨彪 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-070-yangchi-1.png; #26"
+  },
+  {
+   "id": "consistent-70-14",
+   "page": 70,
+   "type": "contains",
+   "value": "杨彲施放",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲施放 (守备杨彲施放大炮，连环); the delivered output writes 杨彪施放 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-070-yangchi-2.png; #26"
+  },
+  {
+   "id": "consistent-71-15",
+   "page": 71,
+   "type": "contains",
+   "value": "杨彲在西门",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 杨彲在西门 (守备杨彲在西门外阵前); the delivered output writes 杨彫在西门 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-071-yangchi.png; #26"
+  },
+  {
+   "id": "consistent-12-16",
+   "page": 12,
+   "type": "contains",
+   "value": "轰打大里杙",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 轰打大里杙 (contents: 轰打大里 / 杙……（174）); the delivered output writes 轰打大里代 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-012-daliyi.png; #26"
+  },
+  {
+   "id": "consistent-115-17",
+   "page": 115,
+   "type": "contains",
+   "value": "直攻大里杙",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 直攻大里杙 (或直攻大里杙。); the delivered output writes 直攻大里代 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-115-daliyi.png; #26"
+  },
+  {
+   "id": "consistent-196-18",
+   "page": 196,
+   "type": "contains",
+   "value": "赴大里杙",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 赴大里杙 (带兵赴大 / 里杙会同进剿); the delivered output writes 赴大里代 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-196-daliyi.png; #26"
+  },
+  {
+   "id": "consistent-356-19",
+   "page": 356,
+   "type": "contains",
+   "value": "大里杙看守",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 大里杙看守 (即系在大里杙看守洪智之人); the delivered output writes 大里代看守 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-356-daliyi.png; #26"
+  },
+  {
+   "id": "consistent-461-20",
+   "page": 461,
+   "type": "contains",
+   "value": "大里杙看守",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 大里杙看守 (林领等在大里杙看守防护); the delivered output writes 大里杕看守 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-461-daliyi-1.png; #26"
+  },
+  {
+   "id": "consistent-461-21",
+   "page": 461,
+   "type": "contains",
+   "value": "兵来攻大里杙",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 兵来攻大里杙 (后来官兵来攻大里杙，林爽文); the delivered output writes 兵来攻大里代 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-461-daliyi-2.png; #26"
+  },
+  {
+   "id": "consistent-81-22",
+   "page": 81,
+   "type": "contains",
+   "value": "以慰厪注",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 以慰厪注 (以慰厪注: this page prints 厪 (厂, no dot; tdw4-jinzhu-glyph.png), the book prints both 厪 and 廑); the delivered output writes 以慰厘注 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-081-jinzhu.png; #26"
+  },
+  {
+   "id": "consistent-298-23",
+   "page": 298,
+   "type": "contains",
+   "value": "以慰廑注",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 以慰廑注 (以慰廑注 (广, with the dot)); the delivered output writes 以慰雇注 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-298-jinzhu.png; #26"
+  },
+  {
+   "id": "consistent-305-24",
+   "page": 305,
+   "type": "contains",
+   "value": "以慰廑注",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 以慰廑注 (以慰廑注 (广, with the dot)); the delivered output writes 以慰塵注 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-305-jinzhu.png; #26"
+  },
+  {
+   "id": "consistent-358-25",
+   "page": 358,
+   "type": "contains",
+   "value": "以慰厪注",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 以慰厪注 (以慰厪注: 厂, no dot, as on p.81); the delivered output writes 以慰厘注 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-358-jinzhu.png; #26"
+  },
+  {
+   "id": "consistent-178-26",
+   "page": 178,
+   "type": "contains",
+   "value": "颟顸混过",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 颟顸混过 (从不肯颟顸混过 (顸 = 干+页; tdw4-manhan-glyph.png)); the delivered output writes 颟预混过 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-178-manhan.png; #26"
+  },
+  {
+   "id": "consistent-246-27",
+   "page": 246,
+   "type": "contains",
+   "value": "颟顸了事",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 颟顸了事 (从不肯颟顸了事); the delivered output writes 颟预了事 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-246-manhan.png; #26"
+  },
+  {
+   "id": "consistent-247-28",
+   "page": 247,
+   "type": "contains",
+   "value": "稍涉颟顸",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 稍涉颟顸 (断不肯稍涉颟顸); the delivered output writes 稍涉颟顢 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-247-manhan.png; #26"
+  },
+  {
+   "id": "consistent-248-29",
+   "page": 248,
+   "type": "contains",
+   "value": "颟顸了事",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 颟顸了事 (臣下之颟顸了事耶); the delivered output writes 颟顚了事 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-248-manhan.png; #26"
+  },
+  {
+   "id": "consistent-430-30",
+   "page": 430,
+   "type": "contains",
+   "value": "同知董启埏",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 同知董启埏 (台防同知董启埏，署诸罗); the delivered output writes 同知董启珽 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-430-dongqiyan-1.png; #26"
+  },
+  {
+   "id": "consistent-430-31",
+   "page": 430,
+   "type": "contains",
+   "value": "峻董启埏",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 峻董启埏 (程峻、董启埏、唐镒); the delivered output writes 峻董启珽 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-430-dongqiyan-2.png; #26"
+  },
+  {
+   "id": "consistent-497-32",
+   "page": 497,
+   "type": "contains",
+   "value": "峻董启埏",
+   "provenance": "machine",
+   "note": "cross-page consistency: print 峻董启埏 (程峻、董启埏、唐镒数员); the delivered output writes 峻董启珽 today; crop jyut-ocr-corpus/runs/goldgate/contains/crops/tdw4-497-dongqiyan.png; #26"
+  },
+  {
+   "id": "golden-65-m1",
+   "page": 65,
+   "type": "golden_page",
+   "value": "tin-dei-wui-4/page-0065.md",
+   "provenance": "human",
+   "note": "user-confirmed golden (canvas '金標準覆核' (artifact KxfwDZovev5fVf5iLbiffK), answers/g-tdw4-65: verdict ok, 2026-10-13T23:43:54Z): the user confirmed this file as the canvas showed it, byte for byte; the canvas's writing questions for this page (q-inkdot) were left unanswered, so the draft's choices stand. The machine draft's note follows. machine draft (goldgate, 2026-10-13), to be confirmed by the user: the rest of 常青's memorial 各路应援诸罗情形折 (title, 批/source line and opening on scan 64) - its first line 奏事。 is the tail of p.64's sentence …恭折复 and is body text, not a heading (an unindented continuation line in body type; titles in this book are centred in a lighter typeface with a small 批-date/军录 line below, as on pp.64 and 66), then two paragraphs and the date line 乾隆五十二年九月十二日。 as a plain paragraph (indented body type, like p.64's date line). No heading on this page. Simplified as printed: 著, 禀, 糜, 矜, 屡, 剿, 一千 (checked against the page's other 千). The 。 after the last 谨奏 is ink-filled (●-looking), damaged print, written 。. Folio • 39 • is not text. Engines A and B and the delivery read all 661 characters and marks right; the delivery (repaired/pages/page-0065.md) makes 奏事。 a ### heading (engine B ##, proofread #, re-levelled by repair rule S5, E0587), which in final.md splits the sentence into …恭折复 / ### 奏事。.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 100.0,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 1,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  },
+  {
+   "id": "golden-477-m1",
+   "page": 477,
+   "type": "golden_page",
+   "value": "tin-dei-wui-4/page-0477.md",
+   "provenance": "human",
+   "note": "user-confirmed golden (canvas '金標準覆核' (artifact KxfwDZovev5fVf5iLbiffK), answers/g-tdw4-477: verdict ok, 2026-10-13T23:43:51Z): the user confirmed this file as the canvas showed it, byte for byte; the canvas's writing questions for this page (q-notenum) were left unanswered, so the draft's choices stand. The machine draft's note follows. machine draft golden (goldgate, 2026-10-13; to be confirmed by the user): drafted from zoomed crops of the render, then checked against both engines and the delivery, which agree with it character for character. Scan 477 = printed p.451. Contents: the 奉朱批 paragraph closing the previous memorial (scan 476 ends 谨奏。); ## 钦差协办大学士福康安等奏筹办撤兵事宜折 (centred on two lines, joined: one entry in the contents); the date and source line 乾隆五十三年三月二十一日批　兵部移会[^1] as a plain paragraph, as the book's other date lines are (a one-character gap, written U+3000); the 兵部 cover note running on after （下缺） in the same line into 福康安、海兰察、鄂辉谨奏…; the body to 即于二月 (continued on scan 478 by 十九日登舟); notes [^1] 录自《明清史料戊编》第三本第二九二——二九四页。 and [^2] 《钦定平定台湾纪略》（刻本）卷五十七为“驻防”。 Simplified characters as printed; the editors' 〔驻〕 and the printed （下缺） kept; —— is two em widths; curly quotes as printed. Folio · 451 · is not text. The delivery (repaired, 2026-10-12) has 0 character errors of 462 but makes the date line a ## heading (11 of 76 date lines book-wide), writes the notes as '- ①' list items and leaves bare ①② in the body: marks recall 80.0%, precision 94.7%, all of it footnote syntax.",
+   "ratchets": {
+    "repaired": {
+     "maxErrors": 0,
+     "minMarkRecall": 100.0,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 3,
+     "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
+    }
+   }
+  }
+ ]
+}

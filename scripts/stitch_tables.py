@@ -102,6 +102,15 @@ def resealed(record: Mapping[str, Any], text: str, stitch: Mapping[str, Any] | N
     out["auditorReport"] = "; ".join(d["detail"] for d in out["doubts"])
     if stitch:
         out["tableStitch"] = dict(stitch)
+        before = stitch.get("before")
+        if isinstance(record.get("coverageReview"), Mapping) and isinstance(before, str):
+            # The page's full-image coverage review is bound to the text it was
+            # proofread as; the stitch binds that text to the one it writes
+            # (_content_fidelity.validate_completed_record), so a stitched page
+            # with content-fidelity evidence stays current.
+            out["tableStitch"]["coverageBinding"] = {
+                "reviewedSha256": pp.sha256_bytes(before.encode("utf-8")),
+                "stitchedSha256": pp.sha256_bytes(text.encode("utf-8"))}
     provenance = {key: value for key, value in (record.get("provenance") or {}).items()
                   if key != "jsonPayloadSha256"}
     provenance["markdownSha256"] = pp.sha256_bytes(text.encode("utf-8"))

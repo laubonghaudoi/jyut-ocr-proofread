@@ -1,0 +1,120 @@
+{
+ "book": "剷共半月刊 第四期",
+ "bookId": "caangung-4",
+ "source": {
+  "pdf": "/home/laubonghaudoi/Documents/GitHub/jyut-ocr-corpus/caangung-4/caangung-4.pdf",
+  "sha256": "1b6f613b9f960f4b945e176266d5b4e9c8773e3177f7a7de8df282f62a839750",
+  "pages": 63,
+  "titleFrom": "the colophon printed on scan p.2 (中華民國十九年十一月十日出版 / 剷共半月刊 / 第四期)",
+  "renderSha256": {
+   "2": "990e8eba975a417ac11f8e19e451cf7c120f19d4b21ae4e6e5de5112708da283",
+   "3": "8913b21f17999c5ab8cff67bafc6d7ede930929309eb67d374d909e697ab095e",
+   "34": "b0fc47c384930c72dcbb2bdc2ceff46fe33d6d8627fed712c493649ad10595b0"
+  },
+  "renderSha256From": "sha256 of jyut-ocr-corpus/caangung-4/renders/page-000N.png, 2026-09-26"
+ },
+ "traits": [
+  "vertical-rtl",
+  "traditional-han",
+  "new-style-punctuation",
+  "magazine",
+  "notice-list",
+  "colophon",
+  "small-table",
+  "table-of-contents",
+  "dot-leaders",
+  "oversized-scan-77-83MP",
+  "library-seal"
+ ],
+ "notCovered": [
+  "horizontal layout",
+  "simplified han",
+  "long prose",
+  "footnotes",
+  "cross-page tables"
+ ],
+ "assertions": [
+  {
+   "id": "golden-2-h1",
+   "page": 2,
+   "type": "golden_page",
+   "value": "caangung-4/page-0002.md",
+   "provenance": "human",
+   "note": "user golden (canvas 'New Case Goldens' (artifact 6ckf8kXvoqpC3fD7jmdxMz), accepted by the user 2026-09-26): the whole page - ▲本刊徵文簡約 and its six items with the printed new-style marks (， ： ； 「」 （）), the colophon one entry per line, and the 實價表 as an HTML table, one record per row (rearranged 2026-09-27, see table-2-h2). Printed forms kept: 卽, 尙, 况, 册, 衆. The scan is 77 MP: the first run (n1) lost the page to the vision server's pixel budget; after the fix (n2) the page completed but wrote 丶 for the commas and enumeration commas (13 of 17 ， and all 6 、; 4 ， dropped), 厶 for ▲, stray 口 and 爹.",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 33,
+     "minMarkRecall": 93.3,
+     "minMarkPrecision": 93.3,
+     "maxStructureErrors": 8,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "table-2-h2",
+   "page": 2,
+   "type": "golden_table",
+   "value": "caangung-4/page-0002.md",
+   "provenance": "human",
+   "note": "the 實價表 in golden-2-h1. Rearranged 2026-09-27 to the user's convention (round-2 register, tableOrientation: a table printed in vertical columns is written one record per row; scoring accepts either orientation): the title row 實價表 (colspan 3), then one record per row - 全年念四期｜一元二角, 半年十二册｜六角, 一册｜五分 - with the postage note 郵費在內，代售處得另加手續費每册一分 as the third cell of the first record, rowspan 3, since the print sets it as one column beside all three records. Same characters as the 2026-09-26 golden, only the arrangement: that golden wrote each printed column as a row (periods, prices, then the note as a colspan-3 row), which is this grid transposed under its title row and is still scored right (golden_table compares each table as written and transposed, _tables.orientations, and names the one it scored).",
+   "ratchets": {
+    "phase3": {
+     "minCellsExact": 8,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "absent-2-h3",
+   "page": 2,
+   "type": "absent",
+   "value": "丶",
+   "provenance": "regression",
+   "note": "n2 (2026-09-25) wrote the radical 丶 for 13 of the 17 printed commas ， and for all 6 enumeration commas 、 after the item numerals (the other 4 commas were dropped); the page prints no 丶."
+  },
+  {
+   "id": "absent-2-h4",
+   "page": 2,
+   "type": "absent",
+   "value": "厶",
+   "provenance": "regression",
+   "note": "n2 wrote 厶 for the printed bullet ▲ (本刊徵文簡約); the page prints no 厶."
+  },
+  {
+   "id": "golden-3-h5",
+   "page": 3,
+   "type": "golden_page",
+   "value": "caangung-4/page-0003.md",
+   "provenance": "human",
+   "note": "user golden (canvas 'New Case Goldens' (artifact 6ckf8kXvoqpC3fD7jmdxMz), accepted by the user 2026-09-26): the table of contents, one entry per line as 篇名……作者 (the dot leaders are printed), entries without an author as the title alone, the 通信 sub-entry indented. 顚公 as printed (twice). 曙霞: the second character is an ink blot on this page, read from the article's own byline on scan p.41.",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 3,
+     "minMarkRecall": 100.0,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 14,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 6 runs)"
+    }
+   }
+  },
+  {
+   "id": "golden-34-m1",
+   "page": 34,
+   "type": "golden_page",
+   "value": "caangung-4/page-0034.md",
+   "provenance": "machine",
+   "note": "machine draft golden (goldgate, 2026-10-13; to be confirmed by the user): drafted from zoomed crops of the render, then checked against both engines; no delivered output exists for this page yet. Scan 34 = printed folio 31, section 五 of 明志's 江西共匪的內幕一斑: ### 五、共匪在江西的軍隊及其活動 (magazine #, article ##), one paragraph ending 已有下表之多：, then the start of a table of Red Army units printed in vertical columns, written as HTML one record per row (朱德, 毛澤東, 彭德懷, 黃公略, 方志敏, 周子昆) under a 2-row header (統系姓名, 僞銜名, 組織, 實力 colspan 2 over 人數/槍數, 老巢, 出沒地點, 主力現在位置); small two-line and 4x7 cell text joined in reading order, blank cells empty. Figures as printed in Western digits: 5000/3000, 3000/1500, 1000/400, 1000/800, 2000/400 餘 (engine A wrote 150 and 80 at faint 0s; engine B lost 13 of 14). Printed forms: 衞, 尙 (the p.2 glyph), 査, 黃, 峯, 粵, 僞; 已 although the type closes its corner like 巳. Kept as printed: 安春 (the next cell prints 宜春), 上餘 (for 上饒), 秀水, 磨蓋山, 富口. The bracketed pair in 方志敏's 老巢 is set horizontally right to left, as the running head is, so it is written 磨蓋山（已破）; both engines read 破已. The side line beside 江西 (a proper-name mark) is not written. Running head 剷共半月刊 第四期, folio 31 and the seal are not text. OPEN: the table continues on scans 35-36 (13 more records); under the merged-table rule this page-only golden fails a correctly merged output and should become pages-0034-0036.",
+   "stopAt": "柯東武",
+   "ratchets": {
+    "phase3": {
+     "maxErrors": 283,
+     "minMarkRecall": 15.2,
+     "minMarkPrecision": 100.0,
+     "maxStructureErrors": 1,
+     "ratchetFrom": "GPU benchmark: zkc1 zkc2 (2026-10-05, code-p2), zm1 zm2 (2026-10-13, code-19 = main) and zv1 zv2 (2026-10-13, code-19 + variant pairs from the lists only); runs/fixes/bench/scores6 (worst of 4 runs)"
+    }
+   }
+  }
+ ]
+}

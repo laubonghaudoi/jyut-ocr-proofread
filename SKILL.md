@@ -1,174 +1,106 @@
 ---
 name: jyut-ocr-proofread
-description: 逐頁識別、校對同清理歷史中文 PDF／OCR Markdown；支援直排、長書分段、來源校勘符號、題名註、頁面家具、低信心與高信心錯字、缺頁／重複掃描、跨頁註腳、heading/list/table 重建，以及按風險啟用嘅 deterministic release audit。Use when asked to OCR, transcribe, 校對, proofread, clean historical Chinese PDFs or Markdown, including image-only books and jyut-ocr repos.
+description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markdown：render、兩個本機 OCR 引擎（HunyuanOCR、PaddleOCR-VL）、book profile、逐頁校對、修書、交付，每步一個 script。校對預設由當前 agent 答 packet 題，亦可以交本機模型（http）。保留異體字、舊標點、註號、表格同頁面結構。Use when asked to OCR, transcribe, 校對, proofread or clean a historical Chinese PDF, scanned page images or OCR Markdown.
 ---
 
 # Jyut OCR 校對
 
-需要互動式人工標註、對圖裁定或覆核 golden 時，可以讀 `references/manual-review-tool.md`，經 `scripts/review.py` 啟動可選嘅 `jyut-ocr-bench` 共用工具；一般 OCR／校對唔要求另一份 repo。題目、圖片同答案歷史留喺各 project，保存裁定唔會自動改正文或 golden。介面未配置好時先保存精確疑點，唔阻塞其他可完成嘅校對。
+呢份係跑書嘅流程表：字由兩個 OCR 引擎同流程定，校對者淨係答流程問嘅題。你按次序跑 command、等、交付，喺寫明嘅位做決定。
 
-用呢個 skill 將歷史中文 PDF 忠實轉錄成 Markdown，或者按同名 PDF 校對既有 OCR。目標係保存原文，而唔係現代化、改寫或潤飾。
+## 一、開工先定邊個校對
 
-## 能力、首次使用同校對模型
+兩套規矩，開工嗰陣揀一套，成本書用到尾：
 
-- **智能校對同最終內容審核由調用本技能嘅當前 agent 模型負責**。需要能直接讀個別原頁／full-resolution render 同裁圖、讀寫 UTF-8／JSON 工作檔，以及執行所需腳本。唔依賴指定平台工具名稱、model ID、custom-agent 角色或外部校對 API key；平台專用設定係可選 adapters。
-- 首次使用先喺技能根目錄跑 `./install.sh --env-only --check`；未就緒時按 [安裝指引](references/install.md) 用同一入口初始化。Linux／WSL2 預設 Hunyuan；macOS 要選 Vision 或 Hunyuan，無互動時明確傳 `--engine`。原生技能管理器放置檔案唔代表 OCR 環境已配置。
-- 腳本採用安裝器設定嘅 `JYUT_OCR_PYTHON`；按實際配置路徑讀過並載入 `env.sh`，唔將 venv Python symlink resolve 成系統 Python。需要嘅系統依賴未就緒時如實列明；原生 Windows 唔在支援範圍，Windows 用 WSL2。
-- HunyuanOCR、PaddleOCR-VL、Apple Vision 只係可替換嘅底稿引擎。Deterministic scripts 負責字元對齊、內容／標點保留、結構及證據契約，唔代替核圖。唔需要本機另一個智能校對模型、指定 GPU 或另一份 OCR repo。
-- 腳本校對明確傳 `--backend packet`：當前 agent 讀圖回答 bundles，再驗證及重播；外部 HTTP 校對服務只有用戶顯式選擇先會啟用，唔由環境變數意外換模型。選 OCR backend 唔會改校對模型。
-- 子 agent 係可選加速；冇子 agent／custom roles 時，由當前 agent 順序寫各頁段或回答 packets。普通 worker 接收完整 logical role assignment 即可。Writer／reviewer 預設沿用 session 嘅有效模型策略，平台或用戶 override 要如實交代。
-- 冇可用 OCR 引擎但仍能讀圖時，直接按原圖逐頁轉錄，唔以空底稿冒充 packet 輸入。冇讀圖能力時，保存已完成準備及待核圖範圍，唔聲稱完成視覺校對。
-- 如工作要求獨立審核，需要不同 reviewer 對 sealed candidate 覆核；可以順序交另一個具只讀存取權嘅 session 或獨立人員。同一 writer 重讀唔算獨立，prompt 禁止寫入亦唔等於權限隔離；缺少所需能力時保留 candidate 及 pending audit，唔降低原有 release 要求。
+- **A. 當前 agent 校對（預設）**：`--backend packet`。要睇圖嘅題目寫成 bundle，腳本 exit `10`；你睇圖作答，照六交答案。
+- **B. 本機模型校對**：`--backend http`（`book_profile.py`、`proofread_pages.py` 每次都加），腳本經 `PROOFREAD_ENDPOINT`、`PROOFREAD_MODEL` 直接問模型，圖唔入你嘅 context；env.sh 冇 `PROOFREAD_ENDPOINT` 就話畀用戶知，唔好自己估；冇 `PROOFREAD_MAX_INFLIGHT`（server 一次跑幾多個請求）就開工前問用戶，唔好估。用戶要求就用；**你本身就係嗰個本機模型就一定要用**：`JYUT_OCR_AGENT_IS_LOCAL_MODEL=1`（每個 call 照三加），或者 Qwen Code 嘅 `QWEN_CODE_MODEL` 等於 `PROOFREAD_MODEL` 而 endpoint 喺本機，腳本會自己認出，預設 http、拒絕 packet。
+- **B 套唔准自己覆核**：由開工到交付之後，你**唔准**開頁圖或者裁圖、用 `zoom_image` 放大、用 `read_file` 讀圖，唔准讀 sealed `.md`／`.json`、run report 或者成段 log 嚟搵錯，唔准自己裁定字或者手改書，亦唔准叫 subagent 代你做。淨係跑 script、讀佢哋最尾嘅 RESULT 行。每幅讀入對話嘅圖都留喺 context：實測 Qwen Code 咁做撞 `hard limit: 177000` 退出，冇 `final.md`。
 
-## 先讀邊份規則
+## 二、規矩（兩套都守）
 
-- 先讀目標 repo 嘅 `AGENTS.md` 或其他本地指示；本地規則優先。
-- 做全文、final pass、長報告、章程、表格、票據、尾頁或速記錄時，讀 `references/jyut-ocr-detailed-rules.md`。
-- 遇到反覆近形錯字、官職、人名、地名、數字符號或舊式標點時，讀 `references/common-ocr-traps.md`。
-- 處理雙底稿同漏、稀疏頁、註號、算式／原印項號遺失，或者按評測更新技能時，讀 `references/content-fidelity.md`；將識字、內容保留、閱讀次序同評分版本分開查。
-- 處理單一長書、掃描 spread、旋轉／重複／缺頁、分段並行、OCR 底稿、跨頁註腳或外部同版復原時，讀 `references/long-book-workflow.md`。
-- 配置或檢查 OCR 環境時讀 `references/install.md`；用本機引擎產生底稿、分階段 packet 校對或決定論修書時讀 `references/local-ocr.md`。
-- 分段寫稿、回答 packet 裁圖任務或做獨立 visual audit 時，按需要讀 `references/subagent-orchestration.md`；可用普通 worker 或順序執行，raw OCR 由主 agent 統一啟動，唔用一頁一個 LLM agent 包裝。
-- 書內有凡例、編者校勘符號或原書不配對引號時，讀 `references/release-gate.md` 嘅相應 feature；只有已揀 `release` profile 先跟入面嘅 plan／receipt 封關部分。
-- 遇到題名星號／來源題注、獨立覆核後再修改、跨冊證據重用，或者要判斷上游改動令邊批 release evidence 失效時，讀 `references/review-evidence.md`。
-- 收到人工標註、建立疑字覆核介面，或者追查底稿／校對稿之間嘅錯誤來源時，讀 `references/human-review-feedback.md`。
+- 以 PDF 圖像為最終依據：保留原有異體字、舊字形同舊式標點（頁面印乜字形就寫乜字形），唔好靜靜正規化，亦唔好過度古化；唔好憑空補字；原書嘅 `[]`、`〈〉`、`□` 呢類符號唔可以當 residual 一律刪；既有轉錄（連你自己上一版）唔係 ground truth，只係底稿。
+- 輸出：只刪書眉、頁碼、版心／書口、印章、索書號、條碼同館藏印；正文數字、註號、圖表入面嘅字同表外說明照轉。印出嘅 `*` 寫 `\*`，雙圈句號寫 `。。`。註：引用 `[^n]` 留喺原位，定義預設留喺頁底，同一原印號再用就寫 `[^n-2]`，得一半就留一半。表：橫排表照原行列；直排表將由右至左嘅直欄變成由上至下嘅行，唔按內容重排；冇表頭或者有合併格用 HTML `<table>`；跨頁續表合併。交付稿冇頁碼分隔。
+- **唔可以話「已逐頁視覺校對」「已逐頁同 PDF 對照」**：流程淨係喺佢問嘅位睇圖。定唔到嘅位喺 `doubts.md`，冇列出嚟嘅字唔代表一定啱。
+- 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。
+- Tesseract／Tessdata 硬性禁用。引擎冇裝好，runner 出 ERROR 講缺乜：照講畀用戶知，唔好改用其他引擎。
+- 唔好成份讀 `references/` 入面嘅檔：照十淨係讀嗰一節。
 
-## 原文依據
+## 三、本書目錄同交付檔
 
-- 以 PDF／原掃描圖像為最終依據；HunyuanOCR、PaddleOCR-VL、Apple/macOS Vision、Gemini、GJ.cool、OCR JSON 同外部研究都只係底稿或提示。兩引擎、既有成品同 reviewer 可以一致錯；容許兩個候選皆非，唔因一致、通順、較古字形或引擎偏好定案。
-- 保留原有異體字、舊字形同舊式標點，例如 `粤/粵`、`淸/清`、`决/決`、`吿/告`、`塲/場`、`箚/劄/剳/札`；雙圈句號照寫 `。。`，正文與 Markdown 表格內印出嘅字面星號寫 `\*`（HTML `<table>` 格內除外）。唔好靜靜正規化。
-- 優先核對 `[]` 低信心字同雙引擎對齊分歧；冇括號或兩引擎一致嘅字亦可能係高信心錯字，要按語境同圖像檢查。
-- 漢字數量為零、引擎輸出一致或者版面區塊少，都唔證明原頁空白。先睇完整原頁，包括英文、數字、算式、稀疏題字、樹圖根節點與分支，再按區域補讀；只由底稿已偵測區塊產生嘅裁圖唔能夠排除共同漏塊。
-- 開始正文前先讀凡例／編輯說明，建立本書符號政策。`[]`、`［］`、`〈〉`、`□`、`（？）` 同註號可能係原書校勘內容，唔可以當 residual 一律刪；同一系列各冊亦要分開判斷。
-- Annotated audit 唔接受 notation policy 豁免：已核實嘅來源符號可以原樣保留並記成 known annotated-stage issue，但呢一關唔可以聲稱 clean；移除 OCR confidence markup 後，只喺 final mode 先按 exact policy 接受來源 notation。
-- PDF 模糊而底稿合理時，保留最有根據讀法或報告 uncertainty；唔好憑空補字。
-- 未逐頁視覺對照，就唔可以話「已逐頁同 PDF 對照完成」。
-- 聲稱逐頁視覺完成時，每個 in-scope scan 都要以 individual original／full-resolution render 作文字依據。`basic` 保留可追溯至來源頁圖嘅逐頁核對記錄；已建立 page manifest 時，亦須對返目前 render hash。Contact sheet、thumbnail、OCR output 只可導航或產生 risk queue，唔算逐頁直接覆核；crop 冇字亦要先確認覆蓋正確位置，唔當完整頁面無字嘅證據。
+- 首次用先跑 `./install.sh --env-only --check`（即係 `scripts/install.py`）；未就緒就照 `references/install.md` 裝：長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑。
+- 每個 shell call 都係新 shell，開頭寫：`. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; cd SKILL_DIR`（呢份檔所在目錄）。你本身就係本機模型（一 B）就寫 `. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; export JYUT_OCR_AGENT_IS_LOCAL_MODEL=1; cd SKILL_DIR`，Qwen Code 都照加：上一個 call export 嘅唔會留低。下面 `BOOK`、`PDF` 換做實際路徑（有空格就加引號）。
+- `BOOK` 開喺 `"${JYUT_OCR_WORK_ROOT:-$HOME/jyut-ocr-books}/<名>"`，**唔好開喺 PDF 隔籬**（render 成幾 GB，PDF 嗰個資料夾可能係用戶嘅 git repo）。名用冇聲調嘅粵拼或者簡單英文，唔好用普通話拼音。
+- 用戶睇 PDF 隔籬嘅 `X-draft.md`（未校對草稿）、`X.md`（定稿）、`X-doubts.md`（疑問清單），加咗 `--extract-figures` 先有 `X-圖/`：腳本自己抄，抄唔到嗰行會講原因。由掃描圖資料夾開嘅書冇 PDF：唔抄，用戶睇 `BOOK/draft.md`、`BOOK/final.md`、`BOOK/doubts.md`（抽圖就加 `BOOK/figures/`），`BOOK` 唔清走。
 
-## OCR 工具次序
+## 四、點跑：一步一個 command
 
-1. 立即用 `scripts/survey_pdf.py` render PDF（或用 `--images-dir` 為現成 `page-NNNN.png` 掃描資料夾建立 `source_kind: "images-dir"` 嘅 `page-manifest.json`），唔為任何服務停低。
-2. 按已配置引擎產生有 page provenance 嘅底稿：**HunyuanOCR** 提供整頁讀法；macOS 亦可用 **Apple Vision**；**PaddleOCR-VL 按需補讀**版面／文字疑點，`run_hunyuanocr_second_look.py` 可以針對窄邊欄／漏讀區塊補切裁圖。單引擎預設直接用 `proofread_pages.py --backend packet`（省略 `--draft2-directory` 同 `--profile` 引擎校準檔）逐頁核圖，封存完成後用 `finish_book.py --single-engine --ocr-a` 指定真實底稿定稿；唔執行雙引擎修書，跨頁不確定接續留下疑點。真正兩份底稿分開保存後，先用 `book_profile.py` 量度，再走雙引擎 packet 流程核對分歧、標點、結構同表格。唔將同一底稿複製成假第二引擎。引擎不可用就報告原因並直接按原圖轉錄，唔反覆等待服務。
-3. GJ.cool 只作可選輔助：已有 token 同可用 API 時先按短 request budget 嘗試，唔阻塞逐頁工作。5 秒係保守等待預設，唔係準確率門檻；用戶／當地配置可指定 budget。timeout、quota、auth、服務錯誤或 `wait for ... seconds` 後，本輪唔再自發重試。
-4. Tesseract/Tessdata 係硬性禁用：唔安裝、唔調用、唔等待、唔讀取現成輸出、唔採納結果。
+1. **Render**（前景，純 CPU）：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py PDF BOOK`（第二個參數係 `BOOK`，唔好畀佢 `BOOK/renders`；現成掃描圖：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py BOOK --images-dir DIR`）。A 套可以逐個睇 `BOOK/survey-report.json` 嘅 `blank_pages` 全頁一眼，真係空白先喺 `page-manifest.json` 嗰頁加 `"marker_expected": false`；B 套唔睇，照正常頁跑。
+2. **OCR**：`env.sh` 有 `OCR_PHASE_RELEASE_CMD`（本機模型佔住 GPU）就照五嘅交接前景跑 `"$JYUT_OCR_PYTHON" scripts/run_ocr_phase.py -- "$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1; echo "exit=$?"; grep -F '[ocr-book] DRAFT' BOOK/ocr.log; tail -3 BOOK/ocr.log`；冇就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1`，用 `wait_for_run.py BOOK BOOK/ocr.log` 等。佢依次做引擎 B（HunyuanOCR）、草稿 `BOOK/draft.md`、引擎 A（PaddleOCR-VL）同引擎 B 補讀。草稿一出（唔等引擎 A），log 有 `[ocr-book] DRAFT 路徑` 行，`wait_for_run.py` 嗰行尾亦有 `; DRAFT 路徑`：第一次見到就用一行話畀用戶知草稿喺邊，唔使等佢回覆；冇呢行（寫唔到）亦唔阻流程。exit 0 之後再跑 `"$JYUT_OCR_PYTHON" scripts/build_draft.py BOOK`（補讀改咗引擎 B 嘅頁）。
+3. **Book profile**（長步驟；`<=4` 頁嘅短檔唔使；B 套加 `--backend http`，冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--workers N`）：`"$JYUT_OCR_PYTHON" scripts/book_profile.py BOOK/renders BOOK/ocr-paddle BOOK/ocr-hunyuan BOOK/book-profile.json > BOOK/profile.log 2>&1`，用 `wait_for_run.py BOOK/book-profile.json BOOK/profile.log` 等。
+4. **逐頁校對**（長步驟）：`"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-paddle BOOK/proofread --draft2-directory BOOK/ocr-hunyuan > BOOK/proofread.log 2>&1`，用 `wait_for_run.py BOOK/proofread BOOK/proofread.log --progress BOOK` 等。B 套加 `--backend http`（冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--max-inflight N`）。用戶要求先加 `--content-fidelity on`（每頁多三條整頁睇圖題，見 `references/content-fidelity.md`）。全部頁封好，佢自己接跨頁表格。缺引擎 B 底稿嘅頁唔封（exit 1，WARNING 列出頁碼）：等第 2 步做完再跑同一條。
+5. **定稿**（一律放背景，唔好前景跑）：`"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK > BOOK/finish.log 2>&1`，用 `wait_for_run.py BOOK BOOK/finish.log` 等；exit 碼照七。
+6. **交付同清走**：exit 0 之後，有 `WARNING` 先 `grep -n WARNING BOOK/finish/finish-book.log`；跟住 `"$JYUT_OCR_PYTHON" scripts/clean_book.py BOOK --all`（成個 `BOOK` 刪走，淨係留 PDF 隔籬嘅交付檔），再照九交付。掃描圖資料夾開嘅書唔跑佢（冇 PDF，佢 exit 3：交付檔淨係喺 `BOOK`）。
 
-## 安全並行
+**單引擎**（淨係得 HunyuanOCR 嘅機，例如 Intel Mac；明確例外）：第 2 步加 `--single-engine`；跳過第 3 步；第 4 步 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`；第 5 步 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`；工作檔留低，唔跑 `--all`。
 
-- LLM subagent 只用嚟分段轉錄、版面重建同獨立核圖。macOS Apple Vision 由主 agent 啟動最多八個本機 process；Hunyuan 預設由跨 session broker 共用一份模型，按 session 輪流分派頁面，所有 sessions 合共受 server slots 上限限制。Paddle／不同 backend 設定仍按 FIFO 交棒。Client 底稿完成即離開，最後一個 client 離開後卸載模型並釋放 GPU，唔等 agent 校對；唔為每本書分開 queue，亦唔套用八個 process 嘅規則。外部 OCR endpoint 唔受呢個隊列管理，配置同限制見 `references/local-ocr.md`。子 agent 唔自行啟停 OCR 模型或共享推理服務。
-- 同時運行嘅 LLM child 數量不得超過平台實際可用 slots，亦最多八個；agent tasks 多過 slots 時分 wave 執行，冇 slots 時由主 agent 順序處理。Worker／auditor 預設沿用主 session 嘅有效模型策略，唔喺通用技能鎖死平台 model ID。
-- 多份獨立 Markdown/PDF pair 可以一檔一 agent 並行；每個 writer 嘅檔案範圍必須互斥。
-- 單一長書亦可以按連續頁段分工，但每個 agent 只寫獨立暫存 segment，例如 `segments/p001-080.md`；只由主 agent 組裝最終 Markdown。
-- 開工前列明 PDF 頁數、頁段、marker 範圍、表格／尾頁／缺頁風險同輸出檔。唔好畀多人同時改同一份最終檔。
-- 主 agent 要 review 每段、驗證 segment 交界、處理衝突，並統一跑 final audit。subagent 回報唔等於全文完成。
-- 已採用多 agent／獨立覆核時，交付前收齊所有 writer 同 read-only auditor 嘅 final report，確認冇 active、未合併或可能再寫入嘅頁段 task。獨立覆核後再 patch，受影響 scan 要重新獨立覆核；啟用 `release` 時，亦可以建立 canonical sealed amendment ledger，再用 `validate_review_evidence.py` 驗 status、reviewer、coverage 同目前 hashes。
-- 已採用多 agent／封存覆核時，writer 封 candidate 後要停止寫入；independent verifier 只核 formal seals，唔採納未封存嘅 live bytes。Verifier open 0 先可轉 final；如果仍要 patch，重新指定唯一 writer、產生新 candidate，再由另一位 reviewer 重核，唔可以一邊覆核一邊繼續改同一份 artifact。
-- `release` evidence 要分清目前生效嘅 `active`，同被排除嘅 `historical`／`superseded`；後者用 classification、reason 同必要嘅 `superseded_by` 交代。任何 provisional、未驗證或 failing artifact 都唔可以進入 active release closure。
+## 五、長步驟同 GPU 交接
 
-## 工作 profile
+- 長步驟放背景（Qwen Code 嘅 `is_background`），輸出寫落新 log；跟住前景叫 `"$JYUT_OCR_PYTHON" scripts/wait_for_run.py OUTPUT LOG`，tool call timeout 開到最大（Qwen Code `600000`）。佢唔問模型，一次最多等 570 秒，淨係印一行；`env.sh` 有 `OCR_PHASE_UNLIMITED_SHELL=1`（見下面）就唔設 timeout，加 `--timeout 43200`，一個 call 等到做完。等嗰陣淨係等：唔好 tail log、唔好讀已封存嘅頁。對話保持短，唔好將 log、JSON 成段貼入對話：B 套你每行一輪都同校對搶同一個 server。`wait_for_run.py` 嘅 exit：
+  - **exit 0**：做完：嗰行講有 `WARNING` 就先 `grep -n WARNING LOG`，處理咗先去下一步；
+  - **exit 75**：仲跑緊：即刻再叫同一個 command；
+  - **exit 10**：等 packet 答案：A 套照六。B 套即係嗰步行咗 packet（漏咗 `--backend http`，或者腳本冇認出你係本機模型），**唔准答 bundle**：照三嘅開頭、加 `--backend http` 再跑同一步；
+  - **exit 11**：等答案兼有頁 failed／blocked：A 套照六答，再按嗰行列嘅頁同原因處理；B 套同 exit 10；
+  - **exit 1**：做完但有失敗：嗰行列出 failed／blocked 頁同原因；A 套再睇 `tail -20 LOG`，B 套淨係讀嗰行、將頁碼同原因話畀用戶知；唔好淨係重跑；嗰行講 `did not start` 就係 command 開唔到工，改好 command 先再開；
+  - **exit 4**：未做完就停咗，或者 GPU 忙：重跑嗰步同一條 command（封咗嘅頁會留）；
+  - **exit 2**：`wait_for_run.py` 自己嘅參數或者路徑錯：檢查兩個路徑，唔好因此重跑嗰步。
+- 重複叫同一條 command，每次 tool call 嘅 description 寫唔同嘅字（例如第幾輪）：Qwen Code 見到連續 5 個一模一樣嘅 tool call 會當死循環。Qwen Code 退出會殺晒背景 shell：等到做完先好結束。
+- **GPU 交接**（`run_ocr_phase.py`）：GPU 交接一定要喺前景行（唔准 `is_background`、`&`、`nohup`），一個 tool call 淨係放一個，timeout 開到最大；唔好將輸出 pipe 去 `tail`／`head`，先寫 log 再 `echo "exit=$?"`。照最尾 `[ocr-phase] RESULT exit=N`：**0** 做完；**75** 預算用完、模型開返咗：即刻再叫，用 RESULT 行尾 `next call:` 嗰條（加咗 `--round N+1`），照舊寫 log；**76** GPU 忙（另一份工、另一個交接，或者模型其他 client 仲有請求）：等一陣再照 `next call:` 叫，RESULT 行講點解；次次都係同一個 proxy／gateway 擋住就叫用戶設 `OCR_PHASE_CLIENT_IGNORE`；**1** runner 失敗、停咗模型都唔夠顯存，或者預算太細、載入模型都唔夠時間：讀 ERROR，照講畀用戶知；**2** 設定錯，乜都冇跑；**3** 模型冇開返（上次交接留低冇開、今次先開都開唔返，亦係 3，一頁都冇跑）：即刻話畀用戶知。
+- 交接停模型之前會等其他 client 做完，閒置嘅 session 喺窗口入面收到 503 加 `Retry-After`。背景跑緊嘅時候唔好開任何 `run_ocr_phase.py`。`OCR_PHASE_UNLIMITED_SHELL=1` 淨係用戶喺 `env.sh` 設（佢拆咗 shell 時限、試過先設）；你唔好自己設或者 export。有呢個設定：交接 call 唔好設 `timeout`，一個 call 做晒；咁樣都俾 harness 殺咗，即係設定冇生效：唔好再試，話畀用戶知，之後照有時限做。冇呢個設定：tool call timeout 照開到最大，`--max-seconds 0` 會被拒絕（要 `OCR_PHASE_UNLIMITED_SHELL=1` 講明）。
 
-Profile 只控制證據封存重量，唔會降低逐頁視覺校對標準。先揀最低足夠 profile，再按實際素材疊加專項 gate；唔好按書名、固定頁數或上一冊做法自動升級。
+## 六、答 packet 題（A 套）
 
-- `basic`（預設）：單一文件、單一 writer，無複雜跨頁結構或可重播交付要求。完成 scan count、逐頁圖文核對、Markdown 整理、residual search 同格式檢查；唔強制建立 release plan、tool snapshot 或 receipt。
-- `structured`：有 page markers、跨頁 join、缺頁／重複掃描、分段或多 agent。建立 project-local page／boundary manifest、segment assembly、review 記錄同實際需要嘅專項 auditor；多 writer、重核 late patch 或外部復原本身唔會自動升級。
-- `release`：只有用戶／目標 repo 明確要求可重播 evidence closure、跨 release 證據重用，或者決定要將現有多 writer／獨立覆核／外部復原證據封成 durable closure 時先啟用 sealed review ledger、release plan、tool snapshot、receipt 同 final audit。
+- exit `10` 嗰陣，stdout 嘅 `[packets] PENDING` 行講 wave 目錄，下一行講 `apply_packet_answers.py` command。
+- 逐個 `bundle-*.json`：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。
+- 答晒成個 wave 先跑嗰條 command，加 `--answered-by` 你確實嘅 model ID，再重跑同一條步驟 command，直到 exit `0`。
+- 一個 bundle 最多 20 題（`--max-items-per-bundle`）。長書可以一個 subagent 答一個 bundle，淨係寫自己嗰份 answers，由你跑 apply。
+- 答錯咗：同一條 apply command 加 `--amend --reason "..."`；已封嘅頁要 `--overwrite --pages N` 重做先用新答案。
+- 唔准手改 `answers.jsonl` 或者封存頁；bundle 冇問嘅頁唔使自己覆核。格式見 `references/subagent-orchestration.md`。
 
-來源校勘符號、星號題名註、長目錄、表格同外部復原係互相獨立嘅 feature gate；只喺來源實際出現時啟用，亦唔單憑其中一項自動揀 `release`。唔適用嘅 artifact 記做 `not-applicable`，唔為湊齊流程建立空 sidecar。
+## 七、`finish_book.py` 同 `clean_book.py` 嘅 exit 碼
 
-## 核心流程
+- **exit 0**：做完，照第 6 步；
+- **exit 3**：有頁未封：照嗰行講嘅頁跑第 4 步（加 `--pages`，同埋呢本書要加嘅 `--no-…`），再跑第 5 步；
+- **exit 4**：俾人停咗：再跑同一條；
+- **exit 1**：有一步失敗：`tail -20 BOOK/finish/finish-book.log`，照實話畀用戶知；唔好淨係重跑，亦唔好自己拼書、改封存頁、切裁圖或者手寫 `final.md` 嚟補；
+- **exit 2**：參數或者輸入錯（封存頁封完改過、引擎掉轉咗等），或者同一本書已經有一個 `finish_book.py` 跑緊（第二個乜都唔寫就 exit 2：用 `wait_for_run.py` 等返第一個）。
 
-1. 找出 PDF/Markdown pair，確認 PDF scan page count，同時辨認書內 printed page number；先讀凡例、編輯說明同交付範圍。每本書重新觀察字形／標點、閱讀次序、頁面家具同引擎漏讀；用少量代表頁建立暫定 project-local 判斷，遇到新版式再更新，唔由上一冊或固定密度門檻推斷全書。
-2. 保留檔首 `---` metadata；只有 PDF、既有 OCR 或可靠同版書目清楚提供時先補 metadata。
-3. render 足夠解像度嘅頁圖或 crop；確認現有 render 數量同 PDF 頁數一致。
-4. 改文前掃 `[]`、page marker、OCR notice、頁面家具、可疑拉丁／符號及 project correction ledger；將命中分類成 OCR、來源內容或合法格式。
-5. 按頁推進：低信心字、語境疑點同 OCR 差異只安排核對次序；全部正文、標點、數字、外文同註號都要對圖，再重建段落、heading、list、table、表單同圖說。語法／套語提示核圖，唔直接觸發改字、黐段、拆 heading 或刪重。保留底稿時，亦將底稿→校對稿嘅實質文字改動列入覆核線索，防止校對新增錯字；具體做法見 `references/common-ocr-traps.md`。
-6. 每次視覺確認一個無括號錯字後，搜尋全書同形／一字之差嘅人名、官名同固定語；逐處核圖，唔做全域替換。
-7. 校對期間保留 `<!-- page_... -->` 定位。若啟用 `structured`，逐個 marker 判斷刪除後應係正文 join、真正 paragraph break、新 list item，定同一 list item 續文；判斷時保留原始 leading whitespace。
-8. 若頁底註腳插斷跨頁正文，先接完整正文，再將註腳放到所屬完整段落後；核對註號順序。移動任何註腳／題注後重判相關 boundary。
-9. 完成逐頁視覺對照同所有可能改文嘅獨立 high-confidence sweep 後，先跑適用嘅 deterministic audits、residual search、結構檢查同 whitespace check；最後一次改文會令所有依賴舊 bytes 嘅檢查失效，要重跑受影響 gate。Post-final auditor 只可 read-only；一發現問題就返回 late-amendment／rebuild 流程，唔喺已封 final 上補改。
+開關（新書唔使加）：`--proofread`、`--renders`、`--ocr-a`、`--ocr-b`、`--profile`、`--page-manifest`（輸入唔喺慣用位置先用）、`--single-engine`、`--workers`、`--extract-figures`、`--renumber-footnotes`、`--relocate-footnotes`（用戶要求先加）、`--no-deliver`、`--keep-work`、`--clean-renders`。
 
-`structured` 文件先建立 page manifest，分開記 source/render、scan facts、重複／缺頁同 `marker_expected`；boundary、notation、TOC 同 review evidence 各自用專責 contract，唔靠一個 status 欄包辦。`release` 文件先收齊 review，以 `validate_review_evidence.py` 驗 late amendments、以 `plan_release_rebuild.py` 找 stale descendants、用 `assemble_ocr_segments.py` 重播，再驗 release plan、finalize receipt 同 final audit。完整次序見相關 references。
+`clean_book.py BOOK --all`：0 做完；1 刪到一半停咗：再跑；3 拒絕、乜都冇刪（例如用戶改過 `X.md`，`BOOK` 有 backup、`*.edited-*.md` 或者 `.git`）：照講畀用戶知，唔好自己刪，亦唔好為咗清走而改 `X.md`；2 參數錯。另有 `--dry-run`、`--keep-renders`。
 
-若來源明確用星號題名註，先由凡例／頁圖確認該 apparatus，先用 `audit_title_notes.py`；普通 Markdown `*` list／emphasis 同題注語法可能相撞，auditor 只係結構 gate，ownership 仍要逐 heading 核圖。所有 note→running-body 跨頁 transition 預設 actionable；只可由 project-local、綁定目前 target／boundary hash 同逐項視覺證據嘅 transition review 放行，唔可以靠來源句式、語言或詞頭猜。
+## 八、續跑（斷咗、新 session）
 
-## 完成狀態同 canonical output
+1. 搵返 `BOOK`：`JYUT_OCR_WORK_ROOT` 入面 `page-manifest.json` 嘅 `"source_pdf"` 係嗰個 PDF。**唔好重跑 `survey_pdf.py`**：佢會重寫 manifest。
+2. 由上而下第一個啱嘅：有 `BOOK/finish/` → 第 5 步；有 `BOOK/proofread/` 或者 `book-profile.json` → 第 4 步；有 `BOOK/ocr-hunyuan/` 或者淨係 manifest → 第 2 步（照四.2 揀：有 `OCR_PHASE_RELEASE_CMD` 就一樣經五嘅交接前景跑同一條 `run_ocr_phase.py` command，唔好直接跑 `ocr_book.py`）。每個 script 都跳過已經封好嘅頁；A 套未答嘅 wave 照答。
+3. 舊版技能封好嘅頁同 OCR 底稿照收，唔重做：run report 標 `legacy`。
+4. 第 4 步一開始 exit 2，`ERROR` 以 `resume with --no-…` 開頭：照嗰行加齊，之後呢本書每次都加；唔好 `--overwrite` 成本，唔好重跑 `book_profile.py`。
 
-- 分開報告四條軸：OCR／scan coverage、逐頁視覺校對、deterministic release closure、repo／publish delivery。前三者 open 0 唔自動代表檔案已 tracked、committed 或發布；未追蹤／ignored／repo 外輸出要如實交代，亦唔自動 stage 或 commit。
-- 可據圖修正嘅問題已閉合，同仍待裁定嘅字形疑問分開報；`actionable=0` 唔會將暫保留候選變成已確認原字。人手定案後更新目前疑點記錄，保留舊版作歷史證據，唔靠刪括號或一次全頁覆核清空未解疑點。
-- `release` profile 嘅 canonical final path 由 schema v2 receipt `output.path` 決定，唔預設一定有 `release/final.md`。直接 receipt-bound／final-audited public Markdown 可以係唯一 canonical output。
-- 如果同時宣稱 internal 同 public 兩份 final，兩份 target bytes／SHA 必須一致，並各有 current receipt＋final audit；或者由 post-final bundle 明確封存 canonical target、secondary copy 同 parity。Output path 唔同時 receipt hash 可以唔同，唔可以誤當內容不一致。
-- 回答既有 release「而家仲係咪完成」時用 read-only current-seal profile：解析 receipt target、重算 target／receipt／plan／source hashes、驗 release plan、要求 rebuild planner direct／transitive stale 為零，並 check-only 重跑 final audit。舊 `pass` JSON 或 pre-final root summary 本身唔證明目前 bytes 仍然有效。
+## 九、同用戶講嘢
 
-## 經驗泛化同技能更新門檻
+- **交付要短**：`X.md`、`X-doubts.md` 喺邊（冇抄到就講 WARNING 嘅原因；掃描圖書係 `BOOK/final.md`、`BOOK/doubts.md`，講埋 `BOOK` 留低咗）、入書幾多頁、幾多項疑問喺幾多頁（`finish_book.py` 嗰行有齊）、清走咗幾多 MB；有圖（`--extract-figures`）就講 `X-圖/` 喺邊、幾多幅，圖入面嘅字冇轉寫，連圖攞走咗嘅字（例如影印原件嘅轉寫）`X-doubts.md` 逐行列住；講明冇逐頁視覺核對（唔可以話有），定唔到嘅位喺 `X-doubts.md`，要對住原書核。有 `WARNING` 就照講（例如改過嘅 `final.md` 搬咗去 `final.edited-<時間>.md`）；PDF 真係缺頁就講明，唔好自己補。唔好將 `final.md`、`doubts.md` 或者 log 成段讀入對話。交付檔唔好 `git add` 或者 commit。
+- 校對期間嘅進度稿 `BOOK/proofreading.md`：用戶問先講，或者最多每個鐘講一次。
+- 交付之後有網：`X-doubts.md`〈要查資料嘅專名〉嘅專名淨係用文字搜尋（唔好放大頁圖睇），查到就一兩句話畀用戶知，唔改 `X.md`。
+- 用戶叫你改一個字：喺 `X.md` 全書搜同形同一字之差，逐處列畀用戶核，唔做全域替換；改完淨係跑 `"$JYUT_OCR_PYTHON" scripts/audit_ocr_markdown.py X.md --mode final --summary-only`，唔好為咗核而再跑 `finish_book.py`。
 
-- 每份材料新見到嘅字形、題名、頁碼、人名、地名、來源句式、版式、頁面家具同編輯符號，先放入目標 project 嘅 correction ledger、notation／inventory profile、boundary contract、source exception 或 review sidecar，唔直接寫入核心 skill。
-- 只喺以下情況更新核心 skill／bundled scripts：同一失效類型喺至少兩份互不相關嘅出版物或 OCR pipeline 重現；單一案例揭示與書種無關嘅資料遺失、fail-open、hash／provenance 或安全問題；或者公開 contract 同工具實際行為矛盾。
-- 核心規則同程式唔可以 hard-code 書名、scan number、人名、地名、單一版次符號或特定來源措辭。新 acceptance 必須由結構、exact locator、目前內容 hash 同視覺 evidence 證明。
-- Regression tests 用最小 synthetic fixtures，配正例同反例：既要捉到 OCR 錯，亦要保留看似異常但原書真印嘅內容。實書只作外部 forward test，記錄已覆蓋／未覆蓋嘅材料特徵；冇跨材料驗證，唔聲稱準確率普遍提升。README／CHANGELOG 描述失效類型，唔保存實書名、實頁碼或大段原文。
-- 視覺判讀、腳本測試同實書驗證分開記錄；文字、標點漏／增、結構同表格格位分開評估。Audit clean、hash seals 同執行成功只證明相應契約，唔證明來源內容正確。
-- 每本書完成後先將新發現記做 candidate lesson。若現有 project contract 已經可以表達，而且未達以上門檻，預設結論係毋須更新技能。
+## 十、要細節先睇 reference（淨係讀嗰節）
 
-完整 `release` 封關次序見 [release-gate.md](references/release-gate.md#release-profile-完整流程)；只喺已選 `release` 時載入。
+用 `grep -n '^##' FILE` 搵行號，由嗰節標題讀到下一個同級或者更高級嘅標題。
 
-## 真正缺失嘅印刷頁
-
-- 先證明頁面真係唔存在於 PDF，而唔係 OCR 漏頁、spread 次序錯、旋轉頁、重複頁或 render 漏檔。
-- 先找本地舊版、raw OCR、完整 render 或同 repo 底稿。只有原 PDF 真缺頁時，先用外部同版資料復原正文。
-- 外部資料必須可以確認為同一版本；優先完整同版頁圖。無完整頁圖時，以兩個獨立同版來源交叉核實字詞。
-- 保存 evidence manifest，記錄 PDF hash、缺頁位置、來源、復原文字、證據強度同未能視覺核實嘅標點／行款。
-- 在 metadata 同最終回覆透明披露；唔可以將非視覺復原講成逐頁圖像校對。
-
-## Markdown 結構
-
-- 全書題名用 `#`；大篇／主要文件用 `##`；章節、呈文、批答、箚覆等按父子關係使用 `###` 以下層級。
-- heading 層級除咗按語義，亦要睇 PDF 字級、位置同副題關係。完成後檢查 heading 前後空行同有冇意外跳級。
-- 按來源段落同閱讀次序重建 Markdown，唔保留 OCR 原始行寬；語法未完只係核圖線索，唔推翻真換段或來源半句。
-- 簡單平行枚舉用 tight bullet list，保留原項號；包含多段、引文或其他 block 嘅 item 要保留層次，唔為 tight-list 檢查壓平，工具限制見詳細版面規則。
-- 原印數字項號係內容；例如來源嘅 `3.` 轉成 bullet 時寫 `- 3. ...`，唔刪成 `- ...`，亦唔自動補齊缺號。算式、數字、外文、註號同字面符號要連同所在段落／格位保存；只驗漢字集合或者總字數唔夠。
-- 跨頁同一 list item 嘅續文縮入該 item；新項目另起 bullet。唔好因數字開頭就自動當新項。
-- 長目錄啟用對賬 gate 時，按 `references/long-book-workflow.md` 嘅目錄對賬同 `references/release-gate.md` 嘅「封關長目錄對賬」建立 inventory／ledger、scope 同獨立完整覆核，再做高風險異文／頁碼 challenge。普通目錄仍逐項核圖，保留來源原字同參照；唔自動由正文生成或改寫目錄。
-- 普通規則網格重建 Markdown table；合併格可用 HTML `rowspan`／`colspan`，按原圖保留欄列同跨格關係，唔照 OCR 行序硬排。Bundled table audit 只查 Markdown 欄數；HTML 另核內容、關係同渲染，唔聲稱已由舊腳本驗過。
-- 表格預設 `--table-orientation auto`：按原圖判斷邊個方向係一筆紀錄、邊個係欄位，直排紀錄可轉成邏輯橫列，欄位依閱讀次序排列。`as-printed` 只用於下游**明確要求保留物理格網座標**；「評分器唔會轉置」只描述評分行為，唔等於要求 `as-printed`。格網方向同格內讀序分開核圖，唔憑詞語通順倒字；孤立單行／單列表頭未有圖像證據時保留並記未定。
-- 跨頁表先核對相鄰頁嘅同表證據、欄位及重複表頭，再處理夾住嘅註腳、家具同續表題名。註腳唔當家具刪；未知文字、獨立新表、缺頁或方向未定要留下疑點，唔只靠同欄數拼表。
-- 表格總數、條號、人名數、A–J 等結構 invariants 要另行計算驗證，唔好只靠閱讀語意。
-
-## 頁面家具
-
-- 按交付範圍刪除重複導航家具，例如頁眉、頁腳、書脊、頁碼同卷冊邊欄，以及 OCR 工具標題同空白頁 notice。一次性承印、出版同來源資料唔按名稱或位置當家具刪；後加印章／註記按交付範圍另行處理。
-- 只刪明顯非正文。似家具但同正文黐住，或者課名／書名可能屬正文時，先對 PDF。
-- OCR 話空白嘅頁仍要 render 檢查淡字、印章、表格、圖、尾頁小字同另一篇題名。
-- 全書識別通常保留只出現一次嘅扉頁、英文題名、版權／CIP、凡例、照片圖說、贊助題記同來源說明；呢啲唔係重複頁面家具。先界定係全掃描本定正文-only，唔好見到出版資訊就機械刪。
-
-## Deterministic 驗證
-
-技能附帶：
-
-- `scripts/survey_pdf.py`：由 PDF render 頁面（或以 `--images-dir` 讀取現成 `page-NNNN.png` 掃描目錄，寫入 `source_kind: "images-dir"`）並產生 `page-manifest.json`。
-- `scripts/run_hunyuanocr.py`、`scripts/run_hunyuanocr_second_look.py`（共用 `SharedHunyuanClient` 同 `GPUQueue`）同 `scripts/run_paddleocr_vl.py`＋`scripts/paddleocr_vl_worker.py`（Ubuntu／Linux 本機雙引擎底稿與窄欄／邊欄補讀）：沿用本機 OCR 引擎，逐頁保存 `schemaVersion: 2` JSON／TXT、render／tool／profile hashes 同 run report，支援選頁同續跑。用法、GPU 共用同 provenance 限制見 `references/local-ocr.md`。
-- `scripts/book_profile.py`、`scripts/proofread_pages.py` 同 `scripts/apply_packet_answers.py`：單引擎直接核原頁，雙引擎先量度 profile 再對齊字元及分類字形／異體；共用分階段 `PacketClient` 批次裁圖協定（預設 `--backend packet`，由當前 session 嘅 Agent／平行 Subagents 核對整頁及裁圖；內容補讀須綁定原圖與候選 hash，格式整理另經字元／標點保留檢查，最後再核整頁覆蓋；支援 `--table-orientation {auto,as-printed}`，短檔 `<=4` 頁自動走免校準快速路徑）。
-- `scripts/stitch_tables.py`、`scripts/repair_book.py` 同 `scripts/finish_book.py`：單引擎 `--single-engine --ocr-a` 驗封存後組裝及 final audit，保留跨頁未定接續同工作證據；雙引擎路線另支援跨頁表格非破壞性縫合（`--output-dir`）、全書決定論修書（含字面 `\*` 跳脫與 `U+16FE6 -> 。。` 正規化）、腳註轉換（預設保留原印編號如 `[^240]` 及頁底原位定義，支援同頁局部配對與跨頁孤立註號回溯；`--renumber-footnotes`、`--relocate-footnotes`、`--extract-figures` 均為顯式 opt-in）及移除 page markers 產生 `final.md` 與 `doubts.md`。
-- `scripts/run_apple_vision_ocr.py`＋`scripts/apple_vision_ocr.swift`（macOS OCR 底稿）：用 bounded process pool 逐頁產生可續跑、可驗 hash、有 scan provenance 嘅 Apple Vision JSON／text；有效 worker 上限八個，任何輸出仍只係 draft，亦絕不 fallback 去 Tesseract／Tessdata。
-- `scripts/assemble_ocr_segments.py`（`structured`／`release`）：按 strict ordered manifest 驗 segment hashes／連續 scan ranges，並按 sealed page manifest 驗 marker coverage；重播 bytes 同現有 combined annotated 不一致就失敗。
-- `scripts/audit_title_notes.py`（星號題名註 feature）：按主 item 核對 heading 尾端 `*`／`**` 同題注 marker，列 missing／orphan 同 note-shaped 跨頁 hazard。任何 note→running-body transition 預設 fail closed；只有 strict `--transition-reviews` exact match 目前 target、boundary、前後文字、reviewer 同 visual evidence 先接受。報告唔自動證明題注 ownership；普通 Markdown star syntax 必須由人分辨。
-- `scripts/build_notation_inventory.py`（來源 notation feature）：逐頁 inventory 通用 residual symbols；`--inventory-profile` 可以用 project-local literal tokens 擴展，`--include-starred-title-notes` 只喺來源確有該 apparatus 時啟用。工具避開 metadata、code、單行 HTML comments 同 Markdown links，並封 target／authority／profile、toolchain hash 同 invocation profile；佢唔取代凡例判讀。
-- `scripts/validate_review_evidence.py`（`release`）：驗 canonical late-amendment ledger 嘅 exact schema、安全相對路徑、current content／render／evidence hashes、非空而相異嘅 before／after rows、writer／verifier 獨立性、changed＋neighbor scan coverage 同零 unresolved；before／after 是否對應 baseline／目前字串仍由 reviewer 同 evidence 證明。
-- `scripts/plan_release_rebuild.py`（`release`）：重算 active artifact hashes，將 direct stale 沿 reverse dependencies 傳播，輸出 dependency-first rebuild order；clean／stale／invalid 分別用不同 exit status。缺失 active path 若唔可能由 discovery globs 命中就係 invalid，唔係可重建 stale；JSON report 唔准 alias plan、任何 declared artifact 或工具。佢只理解 plan graph，未列入 plan 嘅 generator 升級唔會自動變 stale。
-- `scripts/validate_release_evidence.py`：按 canonical discovery globs 驗全部 artifact classification、SHA-256、typed dependency contracts、active closure、dependency／supersession DAG，同 optional reconciliation arithmetic／sealed evidence binding。
-- `scripts/audit_ocr_markdown.py`：審核 annotated/final Markdown、marker inventory、顯式 boundary contract、OCR residue、soft break、tight-list continuation、Markdown pipe table 欄數、成對標點、完整 EOF whitespace、來源 notation／exception、PDF／render provenance、marker coverage 同 assembly proof。`structured` final 可用 `--annotated-source` 加 boundary manifest 即場 exact 重建；`release` receipt gate 則重驗 schema v2 plan 同 ordered active closure。Notation policy 只喺 final mode exact accept；legacy v1 receipt 只可診斷，唔會放行。
-- `scripts/finalize_page_markers.py`：先 dry-run，逐個核對 marker 左右 context、boundary manifest 同預期移除數；`--write` 必須提供完整 `--boundary-manifest` 同另一個 `--output`。長書寫 `--receipt` 時亦必須提供已驗證嘅 `--release-plan`；腳本唔覆寫 annotated 底稿，並自動用 schema v2 唯一 `release-plan` role 封存 plan 嘅 active closure，唔再靠手寫重複 `--upstream` 清單。Output／receipt 唔可以 alias plan 或任何 classified artifact，亦唔可以變成 pre-final discovery 新命中。
-- 第一次 boundary／issue review 保留預設 verbose 輸出；全數位置已核實後，長書重跑可加 `--summary-only` 壓縮終端輸出。呢個選項只隱藏逐項 context，唔改檢查、deterministic issue counts 或 exit code；任何非零 issue 要除去選項重跑定位。
-
-最少再人工檢查：
-
-```bash
-rg -n "\[|\]|<!--|gjcool|此頁OCR|[A-Za-z]" TARGET.md || true
-rg -n "[[:blank:]]+$" TARGET.md || true
-test ! -s project-suspects.txt || rg -n -f project-suspects.txt TARGET.md || true
-git status --short -- TARGET.md
-git diff --check -- TARGET.md
-```
-
-`project-suspects.txt` 由目前文件嘅重複頁面家具、correction ledger、OCR disagreement 同已核實錯形產生；書名、專名同單一材料先入呢份 project-local 清單，唔回寫核心 skill。
-
-`git diff --check -- TARGET.md` 對 untracked 新檔可能實際無檢查內容；遇到新檔要另跑 trailing-whitespace audit，或者用 `git diff --no-index --check /dev/null TARGET.md`，並留意 exit 1 可以只代表檔案有差異，判斷以有冇 whitespace error 輸出為準。
-
-完成回覆一定交代：所用 profile、PDF scan 頁數、printed-page continuity、是否逐頁用 individual original／full-resolution renders 視覺核對、重複／缺頁、補 OCR／外部復原、剩餘疑問、殘留 markers／brackets／OCR notices、合法拉丁詞同舊標點、段落／heading／list／table audit，以及所有實際執行嘅驗證結果。只有啟用相應 feature／profile 時，先再交代 source/render manifest hashes、text／facts／structure changed-set arithmetic、notation inventory、題名註、獨立 auditor／late amendment、release plan、canonical receipt target、final audit、internal/public parity 同 tracked／untracked／ignored／repo 外交付狀態；唔適用就直接寫 `not-applicable`。
+- `references/long-book-workflow.md`：〈三次交付同本書目錄〉、〈OCR 階段（ocr_book.py）〉、〈Book profile 同異體〉、〈逐頁校對（proofread_pages.py）〉、〈封條同續跑〉、〈一個 command 做完（finish_book.py）〉、〈清走工作檔（clean_book.py）〉、〈圖：淨係留圖片（--extract-figures）〉、〈疑點（doubts.md）〉、〈用戶決定嘅規則（decisionChanges）〉、〈開關〉、〈修書計數（_book_lint.py）〉、〈agent 規矩嘅實測根據〉。用戶問某類疑點、某個開關點解，或者 exit 碼唔喺上面，先讀。
+- `references/local-ocr.md`：〈GPU 交接（本機模型佔住 GPU）〉、〈GPU 交接期間嘅其他 client〉、〈模型同裝置〉、〈輸出、續跑同核圖〉、〈等背景步驟跑完（`wait_for_run.py`）〉：交接、底稿 blocked 或者截斷嗰陣讀。
+- `references/install.md`：安裝、平台、本機校對模型。
+- `references/subagent-orchestration.md`：A 套 bundle 每種題點答、subagent 分工。
+- `references/content-fidelity.md`：開 `--content-fidelity on` 之前讀。
+- `references/jyut-ocr-detailed-rules.md`、`references/common-ocr-traps.md`：版面、表格同常見錯字；A 套答題、用戶覆核用。
+- `references/structured-workflow.md`：冇 OCR 引擎、或者用戶要人手分段轉錄、structured 定稿先用（B 套唔用）。
+- `references/human-review-feedback.md`、`references/manual-review-tool.md`：用戶要人工覆核、標註工具先讀。
+- `references/developer-notes.md`：改 skill 嘅人先讀。
