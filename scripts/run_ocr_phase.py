@@ -561,23 +561,28 @@ def answers(url: str, timeout: float) -> bool:
 
 def model_state(health_url: str | None) -> tuple[bool | None, str]:
     """Whether the configured model is up before this call, and how that was
-    seen: True when its health URL answers 2xx within HEALTH_PROBE_SECONDS,
-    something listens on the URL's host:port (a model still loading), or one
-    of the GPU's compute processes is the model's (it listens there, descends
-    from what does, or names the port as --port: a server that loads before
-    it listens); False when none of these; None without OCR_PHASE_HEALTH_URL,
-    which leaves nothing to tell it by."""
+    seen: True when something listens on the health URL's host:port (a
+    model that serves, or one still loading), or one of the GPU's compute
+    processes is the model's (it listens there, descends from what does, or
+    names the port as --port: a server that loads before it listens); False
+    when none of these; None without OCR_PHASE_HEALTH_URL, which leaves
+    nothing to tell it by.
+
+    The port is only connected to and closed again, by this side first; no
+    HTTP request is sent.  A GET that the server answers and then closes
+    leaves the server's side of the connection in TIME_WAIT for a minute,
+    and a server that binds without SO_REUSEADDR (measured: ninfer) thereby
+    keeps the stand-in from binding the freed port after the release, so
+    idle clients were refused instead of told to wait."""
     if not health_url:
         return None, "no OCR_PHASE_HEALTH_URL, so whether it is up cannot be told"
     parts = urllib.parse.urlsplit(health_url)
     where = f"{parts.hostname}:{parts.port or (443 if parts.scheme == 'https' else 80)}"
-    if answers(health_url, HEALTH_PROBE_SECONDS):
-        return True, f"it answers at {health_url}"
     module = tenant_clients()
     if module is not None and hasattr(module, "listening"):
         with contextlib.suppress(Exception):
             if module.listening(health_url):
-                return True, f"something listens at {where}: a model still loading"
+                return True, f"something listens at {where} (up, or a model still loading)"
     processes, _ = compute_processes()
     if processes and module is not None and hasattr(module, "model_processes"):
         with contextlib.suppress(Exception):

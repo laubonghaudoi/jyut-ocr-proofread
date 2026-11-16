@@ -647,6 +647,62 @@ class GpuOccupancyTests(HandoverBase):
         self.assertIn('a model still loading', seen)
 
 
+class ModelProbeTests(unittest.TestCase):
+    """Asking whether the model is up must not keep the stand-in off its port."""
+
+    def test_the_up_check_leaves_the_port_free_for_the_stand_in(self):
+        # A model server that binds without SO_REUSEADDR (measured: ninfer)
+        # and closes each connection after its answer.  An HTTP health GET
+        # right before the release left the server's side in TIME_WAIT, and
+        # the stand-in could not bind the freed port for a minute (measured
+        # live: no stand-in in the window).  The up check only connects and
+        # closes first, so the port is free as soon as the server is gone.
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+        import run_ocr_phase as phase
+        import _tenant_clients as clients
+
+        class Answer(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.0'
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '2')
+                self.end_headers()
+                self.wfile.write(b'{}')
+
+            def log_message(self, *args):
+                pass
+
+        class NoReuse(ThreadingHTTPServer):
+            allow_reuse_address = False
+            daemon_threads = True
+
+        server = NoReuse(('127.0.0.1', 0), Answer)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
+        thread.start()
+        try:
+            up, seen = phase.model_state(f'http://127.0.0.1:{port}/v1/models')
+            self.assertTrue(up, seen)
+            time.sleep(0.3)  # let the server finish its side of the probe
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                stand_in = clients.StandIn('127.0.0.1', port, retry_after_s=30)
+                stand_in.__enter__()
+                break
+            except clients.PortBusy as error:
+                if time.monotonic() > deadline:
+                    self.fail(f'the stand-in could not bind after the up check: {error}')
+                time.sleep(0.1)
+        stand_in.__exit__(None, None, None)
+
+
 class OccupantTests(unittest.TestCase):
     """How a GPU process is named and how the person is told to free it."""
 
