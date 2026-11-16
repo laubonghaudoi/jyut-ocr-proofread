@@ -1,5 +1,9 @@
 # 更新摘要
 
+## Unreleased — GPU 交接：模型本身停咗就唔郁；顯存唔夠就講邊個佔住
+
+- 停咗模型之後顯存仍然唔夠（exit 1，RESULT 行 `GPU FULL`）：照舊即刻開返模型，另外逐個列 GPU 上面嘅 compute 程序（pid、使用者、程序名、MiB、systemd unit）同釋放佢嘅命令（`systemctl --user stop UNIT`、`kill PID`）。技能乜都唔殺、唔停，由用戶決定。
+
 ## Unreleased — 唯一通用技能：併入 qwen 版、雙引擎安裝、GPU 交接
 
 - 併入 jyut-ocr-qwen：搬入佢嘅回歸測試（54 個 check）同 `run_ocr_phase.py`、`wait_for_run.py` 等工具，`tests/run_all.py` 一個入口跑晒 unit test 同 check。qwen 版封好嘅頁同舊底稿照收，唔使重新校對。

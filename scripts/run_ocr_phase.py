@@ -45,7 +45,10 @@ One call is one hand-over WINDOW:
    503 + Retry-After until the restore, instead of a refused connection.
 4. A detached watchdog starts (it restores the server if this process dies),
    then the release.  Still too little free memory after it: the server is
-   restored at once and the call exits 1 with the numbers.
+   restored at once and the call exits 1 with the numbers, naming each
+   compute process on the GPU (pid, user, name, MiB, its systemd unit) with
+   the command that frees it (`systemctl --user stop UNIT`, `kill PID`).
+   Nothing else on the GPU is ever stopped or killed: the person decides.
 5. The runner runs in its own process group with a private GPU queue
    (OCR_GPU_QUEUE_DIR) and OCR_PHASE_WINDOW, so it never waits behind this
    process's own lease while every other session stays queued; runners outside
@@ -118,8 +121,8 @@ Exit codes: 0 done; 75 time budget spent, server restored, call again;
 stopped - or the runner sealed no page in its window (it waited for the GPU
 or had no time to load), and when the server was stopped for it the RESULT
 line says so and that it is back: wait and call again; 1 the runner failed
-(or the GPU stayed too full after the release); 2 configuration; 3 the server
-was NOT restored.
+(or the GPU stayed too full after the release: GPU FULL, with what holds it
+and how to free it); 2 configuration; 3 the server was NOT restored.
 """
 from __future__ import annotations
 
@@ -355,6 +358,182 @@ def free_memory_mib() -> tuple[int | None, str]:
             return free, "vm_stat (unified memory)"
         return None, "vm_stat gave no answer"
     return None, "no nvidia-smi answer"
+
+
+def is_wsl() -> bool:
+    """WSL2: its nvidia-smi lists no process, whatever runs on the GPU."""
+    try:
+        with open("/proc/sys/kernel/osrelease", encoding="utf-8") as handle:
+            release = handle.read().lower()
+    except OSError:
+        return False
+    return "microsoft" in release or "wsl" in release
+
+
+def runners_gpu_uuid(smi: str) -> str | None:
+    """The UUID of the GPU the runners use (picked as nvidia_free_mib picks
+    it), or None when nvidia-smi does not say (then every listed process counts)."""
+    try:
+        result = subprocess.run(
+            [smi, "--query-gpu=index,uuid,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            text=True, capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    gpus = []
+    for line in result.stdout.splitlines() if result.returncode == 0 else ():
+        fields = [field.strip() for field in line.split(",")]
+        try:
+            gpus.append((int(fields[0]), fields[1], int(fields[3]) - int(fields[2])))
+        except (IndexError, ValueError):
+            return None
+    if not gpus or not all(gpu_id.startswith("GPU-") for _, gpu_id, _ in gpus):
+        return None
+    if len(gpus) == 1:
+        return gpus[0][1]
+    visible = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")[0].strip()
+    for index, gpu_id, _free in gpus:
+        if (visible.isdigit() and int(visible) == index) or (visible.startswith("GPU-") and gpu_id.startswith(visible)):
+            return gpu_id
+    return min(gpus, key=lambda gpu: gpu[2])[1]
+
+
+def compute_processes() -> tuple[list[dict] | None, str]:
+    """([{"pid", "name", "mib"}] of the compute processes on the runners' GPU,
+    where the list is from), or (None, why there is none).
+
+    Only `nvidia-smi --query-compute-apps`: graphics-only processes (the
+    desktop) are not in it.  None where processes cannot be listed: no
+    nvidia-smi (macOS), WSL2 (its nvidia-smi lists none), or an answer that
+    is not a list of processes."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, "no nvidia-smi"
+    if is_wsl():
+        return None, "WSL2: nvidia-smi lists no processes there"
+    try:
+        result = subprocess.run(
+            [smi, "--query-compute-apps=gpu_uuid,pid,process_name,used_memory", "--format=csv,noheader,nounits"],
+            text=True, capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        return None, f"nvidia-smi failed: {error}"
+    if result.returncode != 0:
+        return None, f"nvidia-smi exit {result.returncode}"
+    found = []
+    for line in result.stdout.splitlines():
+        if not line.strip() or "no running processes" in line.lower():
+            continue
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) < 4 or not fields[1].isdigit():
+            return None, f"nvidia-smi gave no process list ({line.strip()[:60]})"
+        # A process name may hold a comma; "[N/A]" memory (no per-process figure) is None.
+        found.append({"gpu": fields[0], "pid": int(fields[1]), "name": ",".join(fields[2:-1]).strip(),
+                      "mib": int(fields[-1]) if fields[-1].isdigit() else None})
+    gpu = runners_gpu_uuid(smi) if found else None
+    listed = [dict(pid=entry["pid"], name=entry["name"], mib=entry["mib"]) for entry in found
+              if gpu is None or entry["gpu"] == gpu]
+    return listed, "nvidia-smi --query-compute-apps"
+
+
+def process_label(entry: dict) -> str:
+    """'pid 123 (python3, 2000 MiB)' for a compute process."""
+    name = os.path.basename(str(entry.get("name") or "?")) or "?"
+    mib = entry.get("mib")
+    return f"pid {entry.get('pid')} ({name}{'' if mib is None else f', {mib} MiB'})"
+
+
+def owner_of(pid: int) -> int | None:
+    """The user id PID runs as, or None when it cannot be read here."""
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "uid=", "-p", str(pid)], capture_output=True, text=True,
+                                timeout=10, check=False, stdin=subprocess.DEVNULL)
+        return int(result.stdout.strip()) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def user_name(uid: int | None) -> str:
+    if uid is None:
+        return "unknown"
+    try:
+        import pwd  # noqa: PLC0415 - POSIX only
+        return pwd.getpwuid(uid).pw_name
+    except (ImportError, KeyError):
+        return f"uid {uid}"
+
+
+USER_MANAGER = re.compile(r"user@\d+\.service")
+
+
+def systemd_unit(cgroup: str) -> tuple[str, bool] | None:
+    """(the systemd service a process runs in, whether it is a user service)
+    from its /proc/PID/cgroup text, or None: not in a service (a terminal's
+    scope, a login session, a container, no systemd)."""
+    lines = cgroup.splitlines()
+    # cgroup v2 ("0::/path") first, then v1's systemd hierarchy.
+    for line in sorted(lines, key=lambda line: not line.startswith("0::")):
+        parts = [part for part in line.split(":", 2)[-1].split("/") if part]
+        services = [part for part in parts if part.endswith(".service")]
+        if not services:
+            continue
+        if USER_MANAGER.fullmatch(services[-1]):
+            return None  # the user's own manager: a process of a scope under it
+        return services[-1], any(USER_MANAGER.fullmatch(part) for part in parts)
+    return None
+
+
+def unit_of(pid: int) -> tuple[str, bool] | None:
+    try:
+        with open(f"/proc/{pid}/cgroup", encoding="utf-8") as handle:
+            return systemd_unit(handle.read())
+    except OSError:
+        return None
+
+
+def how_to_free(entry: dict) -> str:
+    """The command that frees what a GPU process holds, for the person: stop
+    its systemd service (a service manager would start a killed one again),
+    or kill it."""
+    pid, uid, unit = entry["pid"], entry.get("uid"), entry.get("unit")
+    own = uid == os.getuid()
+    if unit:
+        command = f"systemctl --user stop {unit}" if entry.get("userUnit") else f"sudo systemctl stop {unit}"
+        return command if own or not entry.get("userUnit") else f"as {entry.get('user')}: {command}"
+    if own:
+        return f"kill {pid}"
+    return f"kill {pid} as its owner ({entry.get('user')}), or sudo kill {pid}"
+
+
+def name_occupants() -> str:
+    """Say what holds the GPU's memory and how the person can free it, a line
+    per process; nothing is stopped.  The short form for the RESULT line."""
+    processes, how = compute_processes()
+    if processes is None:
+        say(f"[ocr-phase] what holds the GPU cannot be listed here ({how}): free it with the GPU's own "
+            "tools, then run the same command again", error=True)
+        return f"what holds the GPU cannot be listed here ({how})"
+    if not processes:
+        say("[ocr-phase] no compute process is on the GPU: graphics (the desktop) or processes this user "
+            "cannot see hold its memory, or the engines need more than the card has (lower "
+            "OCR_HUNYUAN_SLOTS, or set OCR_PHASE_REQUIRED_MIB if the estimate is too high)", error=True)
+        return "no compute process is listed on the GPU"
+    shown = []
+    for entry in processes:
+        uid = owner_of(entry["pid"])
+        unit = unit_of(entry["pid"])
+        entry = dict(entry, uid=uid, user=user_name(uid), unit=unit[0] if unit else None,
+                     userUnit=bool(unit and unit[1]))
+        command = how_to_free(entry)
+        mib = "?" if entry["mib"] is None else entry["mib"]
+        in_unit = f", unit {entry['unit']}" if entry["unit"] else ""
+        say(f"[ocr-phase] on the GPU: pid {entry['pid']}, user {entry['user']}, {entry['name'] or '?'}, "
+            f"{mib} MiB{in_unit}; to free it: {command}", error=True)
+        shown.append(f"{process_label(entry)}: {command}")
+    more = f" and {len(shown) - 2} more" if len(shown) > 2 else ""
+    return "held by " + "; ".join(shown[:2]) + more
 
 
 def hunyuan_mib(slots: int, ctx: int) -> int:
@@ -1575,6 +1754,13 @@ RESULT_MEANING = {
 }
 
 
+# Exit 1 when the GPU has too little free memory for the call's engines:
+# what holds it is listed with how to free it, and nothing of it is stopped.
+GPU_FULL = ("GPU FULL - too little free GPU memory for the OCR engines; no OCR was run. Nothing on the GPU "
+            "was killed: tell the user what holds it and how to free it (the lines above), then run the "
+            "SAME command again")
+
+
 def next_round(argv: list[str], runner: list[str], current: int) -> str:
     """This call's command line for the next call of the run: the same, with
     --round CURRENT+1 among its own options (before the runner)."""
@@ -1944,6 +2130,7 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
 
     previous: dict[int, object] = {}
     runner_code = 1
+    too_full = False
     interrupted: Interrupted | None = None
     # Anything else that escapes the run, raised again once the server is
     # back - or dropped for exit 3 when it is not, as a `return` in a
@@ -1973,8 +2160,13 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
                 f"{'unknown' if released_free is None else f'{released_free} MiB'}")
             if released_free is not None and released_free < need:
                 say(f"ERROR only {released_free} MiB free after the release, {need} MiB needed: "
-                    "something else holds the GPU. Restoring the server; no OCR was run",
+                    "something else holds the GPU. Restoring the server; no OCR was run; nothing "
+                    "else was stopped",
                     error=True)
+                # Named with how to free it; the person decides, nothing is killed.
+                held = name_occupants()
+                arguments.result_note = f"{released_free} MiB free after the release, {need} MiB needed; {held}"
+                too_full = True
                 runner_code = 1
             else:
                 write_status(state, "ocr-running", "the server is stopped for an OCR window",
@@ -2017,6 +2209,9 @@ def swap_and_run(arguments: argparse.Namespace, runner: list[str], env: dict[str
 
     if interrupted is not None:
         return 128 + int(interrupted.args[0]), True
+    if too_full:
+        arguments.result_meaning = GPU_FULL + "; the local model was stopped for this call and is back up"
+        return 1, True
     say(f"[ocr-phase] OCR runner exit code {runner_code}")
     return no_progress_is_busy(runner_code, window, arguments, swapped=True), True
 

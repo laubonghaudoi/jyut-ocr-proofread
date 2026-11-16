@@ -101,7 +101,7 @@ Agent 跑交接嘅規矩：
 - `0`：做完。
 - `75`：時間到，已封嘅頁保留，模型已經開返；再跑同一條命令。75 同 76 嘅 RESULT 行最尾有 `next call:`，就係同一條命令加 `--round N+1`：`--round` 乜都唔改，淨係令連續幾次 call 唔會一模一樣（agent harness 嘅 loop detection 會將連續相同嘅 tool call 當成兜圈）；照抄嗰條就得。直接跑 `ocr_book.py` 嘅 75 一樣有。（直接跑、冇經 `run_ocr_phase.py` 而 RESULT 行話 GPU 屬於本機模型就唔同：照佢列嘅命令經交接再跑，見下面「窗口以外」。）
 - `76`：GPU 忙（其他工作排緊 GPU 隊列、另一個交接進行緊，或者模型其他 client 仲用緊佢）；通常**乜都冇停**，等一陣再跑（照抄 RESULT 行嘅 `next call:`）。係 client 擋住嘅話，RESULT 行會寫明係邊個 pid；次次都係同一個一直連住嘅 proxy／gateway／web UI，就要設 `OCR_PHASE_CLIENT_IGNORE`（見下面），再跑都冇用。runner 喺窗口入面一頁都冇封到就 exit 75（排隊或者冇時間載入模型），亦報成 76，因為即刻再跑只會白白停一次模型；呢個情況模型其實停過又開返，RESULT 行會照講。
-- `1`：runner 失敗；或者停咗模型之後顯存仍然唔夠，即刻開返模型，列出數字；或者預算太細，引擎載入模型都唔夠時間（RESULT 行列出時間，要加大預算）。
+- `1`：runner 失敗；或者停咗模型之後顯存仍然唔夠（RESULT 行 `GPU FULL`）：即刻開返模型，列出數字，再逐個列 GPU 上面嘅 compute 程序：pid、使用者、程序名、用幾多 MiB、屬於邊個 systemd unit，連釋放佢嘅命令（systemd 服務就 `systemctl --user stop UNIT`，系統服務 `sudo systemctl stop UNIT`，其他就 `kill PID`；其他使用者嘅程序就要佢本人或者 `sudo`）。技能自己乜都唔殺、唔停，交俾用戶決定；釋放咗再跑同一條命令；或者預算太細，引擎載入模型都唔夠時間（RESULT 行列出時間，要加大預算）。
 - `2`：設定錯誤，乜都冇做。
 - `3`：模型冇開返到；watchdog 會繼續試，睇 `status.json`。上次交接留低模型冇開，今次 call 會先開返；開唔返亦係 `3`，一頁 OCR 都冇跑，RESULT 行寫明手動開返嘅命令。
 

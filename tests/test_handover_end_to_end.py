@@ -320,5 +320,225 @@ class OcrPhaseEndToEndTests(HandoverBase):
         self.assert_window()
 
 
+# nvidia-smi from the JSON spec in $FAKE_GPU_SPEC: a card of `total` MiB
+# whose compute processes are real processes of the test, each listed (and
+# its MiB used) while it lives - a zombie is gone - by pid or by a pid file;
+# `memory: "n/a"` answers [N/A] for the memory, as a unified-memory GPU does.
+FAKE_GPU_SMI = r"""
+import json, os, sys
+spec = json.load(open(os.environ['FAKE_GPU_SPEC']))
+def live(pid):
+    try:
+        with open(f'/proc/{pid}/stat') as handle:
+            return handle.read().rsplit(')', 1)[1].split()[0] != 'Z'
+    except (OSError, ValueError, IndexError):
+        return False
+processes = []
+for entry in spec.get('processes', []):
+    pid = entry.get('pid')
+    if entry.get('pidfile'):
+        try:
+            pid = int(open(entry['pidfile']).read())
+        except (OSError, ValueError):
+            continue
+    if pid and live(pid):
+        processes.append(dict(entry, pid=pid))
+total = spec.get('total', 32000)
+used = spec.get('base', 500) + sum(entry['mib'] for entry in processes)
+query = ' '.join(sys.argv[1:])
+with open(os.environ['FAKE_GPU_LOG'], 'a') as log:
+    log.write(query + '\n')
+if '--query-compute-apps' in query:
+    for entry in processes:
+        print(f"GPU-fake-0, {entry['pid']}, {entry['name']}, {entry['mib']}")
+elif spec.get('memory') == 'n/a' and '--query-gpu' in query:
+    print('0, GPU-fake-0, [N/A], [N/A]' if 'uuid' in query else '[N/A], [N/A]')
+elif 'uuid' in query:
+    print(f'0, GPU-fake-0, {used}, {total}')
+elif 'memory.used,memory.total' in query:
+    print(f'{used}, {total}')
+elif 'memory.free' in query:
+    print(total - used)
+else:
+    print('No devices were found')
+    sys.exit(6)
+"""
+
+# The release: SIGTERM to the model, then wait for it to be gone, as
+# `systemctl stop` does.
+RELEASE_MODEL = r"""
+import os, signal, sys, time
+pidfile, events = sys.argv[1:3]
+def live(pid):
+    try:
+        with open(f'/proc/{pid}/stat') as handle:
+            return handle.read().rsplit(')', 1)[1].split()[0] != 'Z'
+    except (OSError, ValueError, IndexError):
+        return False
+try:
+    pid = int(open(pidfile).read())
+    os.kill(pid, signal.SIGTERM)
+except (OSError, ValueError):
+    pid = None
+end = time.monotonic() + 10
+while pid and live(pid) and time.monotonic() < end:
+    time.sleep(0.05)
+with open(events, 'a') as handle:
+    handle.write('release\n')
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith('linux'), 'the fakes read /proc')
+class GpuOccupancyTests(HandoverBase):
+    """What holds the GPU: the configured model (up or not) and other compute
+    processes, listed by a fake nvidia-smi from real processes of the test.
+    Nothing on the GPU is ever killed: what holds it is named with how to
+    free it."""
+
+    def setUp(self):
+        super().setUp()
+        (self.bin / 'nvidia-smi').write_text('#!' + PY + '\n' + FAKE_GPU_SMI)
+        self.spec = self.base / 'gpu.json'
+        self.smi_log = self.base / 'smi.log'
+        self.gpu([])
+        self.model_script = self.base / 'model_server.py'
+        self.model_script.write_text(MODEL_SERVER)
+        self.model_pid = self.base / 'model.pid'
+        import socket
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            self.model_port = probe.getsockname()[1]
+        self.model_url = f'http://127.0.0.1:{self.model_port}/v1/models'
+        (self.base / 'release.py').write_text(RELEASE_MODEL)
+        (self.base / 'restore.py').write_text(RESTORE)
+        self.env.update(
+            FAKE_GPU_SPEC=str(self.spec), FAKE_GPU_LOG=str(self.smi_log), OCR_PHASE_HEALTH_URL=self.model_url,
+            OCR_PHASE_RELEASE_CMD=f"'{PY}' '{self.base / 'release.py'}' '{self.model_pid}' '{self.events}'",
+            OCR_PHASE_RESTORE_CMD=(f"'{PY}' '{self.base / 'restore.py'}' '{self.events}' '{self.free}' "
+                                   f"'{self.pids}' '{self.model_script}' {self.model_port} '{self.model_pid}'"))
+        self.addCleanup(self.stop_model)
+
+    def gpu(self, processes, **extra):
+        self.spec.write_text(json.dumps(dict(processes=processes, **extra)))
+
+    def model_on_the_gpu(self, mib=8000):
+        return {'pidfile': str(self.model_pid), 'name': 'fake-model-server', 'mib': mib}
+
+    def start_model(self):
+        process = subprocess.Popen([PY, str(self.model_script), str(self.model_port), str(self.model_pid),
+                                    str(self.events)], start_new_session=True,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.processes.append(process)
+        self.wait_for(lambda: get(self.model_url)[0] == 200, 10, 'the fake model did not start')
+
+    def stop_model(self):
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(int(self.model_pid.read_text()), signal.SIGKILL)
+
+    def other_process(self) -> subprocess.Popen:
+        """A process of this user on the GPU (a real one, so a kill would show)."""
+        process = subprocess.Popen(['sleep', '120'], stdin=subprocess.DEVNULL)
+        self.processes.append(process)
+        return process
+
+    def result_line(self, result) -> str:
+        return next(line for line in result.stdout.splitlines() if line.startswith('[ocr-phase] RESULT'))
+
+    def how_to_free(self, pid: int) -> str:
+        """What the wrapper tells the person for a process of this user."""
+        import run_ocr_phase as phase
+        unit = phase.unit_of(pid)
+        return phase.how_to_free({'pid': pid, 'uid': os.getuid(), 'user': phase.user_name(os.getuid()),
+                                  'unit': unit[0] if unit else None, 'userUnit': bool(unit and unit[1])})
+
+    def test_a_model_up_is_stopped_and_started_again_and_the_rest_is_named_not_killed(self):
+        # (d) The model is up and another process of this user holds 20000
+        # MiB: the model is stopped, still too little is free, so the model
+        # is started again and the call ends GPU FULL naming the process and
+        # how to free it; the process is untouched.
+        self.start_model()
+        other = self.other_process()
+        self.gpu([self.model_on_the_gpu(), {'pid': other.pid, 'name': '/usr/bin/sleep', 'mib': 20000}])
+        marker = self.base / 'ran'
+        result = self.phase([PY, '-c', f'open({str(marker)!r}, "w")'], '--max-seconds', '60',
+                            '--restore-reserve', '15')
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 1, output)
+        self.assertFalse(marker.exists())
+        self.assertIsNone(other.poll(), 'the other process was killed')
+        self.assertEqual([line for line in self.lines() if line == 'release' or line.startswith('restore')],
+                         ['release', 'restore alive=0'])
+        self.assertEqual(get(self.model_url)[0], 200)
+        self.assertIn(f'on the GPU: pid {other.pid}, user ', output)
+        import run_ocr_phase as phase
+        how = self.how_to_free(other.pid)
+        self.assertIn(f'on the GPU: pid {other.pid}, user {phase.user_name(os.getuid())}, /usr/bin/sleep, '
+                      f'20000 MiB', output)
+        self.assertIn(f'to free it: {how}', output)
+        line = self.result_line(result)
+        self.assertIn('RESULT exit=1 GPU FULL', line)
+        self.assertIn(f'held by pid {other.pid} (sleep, 20000 MiB): {how}', line)
+        self.assertIn('the local model was stopped for this call and is back up', line)
+
+
+class OccupantTests(unittest.TestCase):
+    """How a GPU process is named and how the person is told to free it."""
+
+    def setUp(self):
+        import run_ocr_phase
+        self.phase = run_ocr_phase
+
+    def test_the_systemd_unit_of_a_process(self):
+        unit = self.phase.systemd_unit
+        self.assertEqual(unit('0::/user.slice/user-1000.slice/user@1000.service/app.slice/ninfer.service\n'),
+                         ('ninfer.service', True))
+        self.assertEqual(unit('0::/system.slice/ollama.service\n'), ('ollama.service', False))
+        # A terminal's scope or a login session is no service: kill it.
+        self.assertIsNone(unit('0::/user.slice/user-1000.slice/user@1000.service/app.slice/'
+                               'app-org.gnome.Terminal.slice/vte-spawn-1.scope\n'))
+        self.assertIsNone(unit('0::/user.slice/user-1000.slice/session-2.scope\n'))
+        self.assertIsNone(unit('0::/system.slice/docker-0123abcd.scope\n'))
+        # cgroup v1: the systemd hierarchy.
+        self.assertEqual(unit('12:cpu:/\n1:name=systemd:/system.slice/vllm.service\n'), ('vllm.service', False))
+
+    def test_how_the_person_frees_a_process(self):
+        me = os.getuid()
+        how = self.phase.how_to_free
+        self.assertEqual(how({'pid': 7, 'uid': me, 'unit': 'ninfer.service', 'userUnit': True}),
+                         'systemctl --user stop ninfer.service')
+        self.assertEqual(how({'pid': 7, 'uid': 0, 'unit': 'ollama.service', 'userUnit': False}),
+                         'sudo systemctl stop ollama.service')
+        self.assertEqual(how({'pid': 7, 'uid': me + 1, 'user': 'kim', 'unit': 'x.service', 'userUnit': True}),
+                         'as kim: systemctl --user stop x.service')
+        self.assertEqual(how({'pid': 7, 'uid': me}), 'kill 7')
+        self.assertEqual(how({'pid': 7, 'uid': me + 1, 'user': 'kim'}), 'kill 7 as its owner (kim), or sudo kill 7')
+
+    def test_the_compute_list_is_the_runners_gpu_only(self):
+        apps = 'GPU-a, 11, python3, 2000\nGPU-b, 12, /opt/train, [N/A]\n'
+        gpus = '0, GPU-a, 1000, 24000\n1, GPU-b, 20000, 24000\n'
+
+        def run(command, **kwargs):
+            query = ' '.join(command)
+            stdout = apps if 'compute-apps' in query else gpus
+            return subprocess.CompletedProcess(command, 0, stdout, '')
+        with mock.patch.object(self.phase.shutil, 'which', return_value='/fake/nvidia-smi'), \
+                mock.patch.object(self.phase, 'is_wsl', return_value=False), \
+                mock.patch.object(self.phase.subprocess, 'run', side_effect=run):
+            with mock.patch.dict(os.environ, {'CUDA_VISIBLE_DEVICES': '0'}):
+                self.assertEqual(self.phase.compute_processes()[0], [{'pid': 11, 'name': 'python3', 'mib': 2000}])
+            with mock.patch.dict(os.environ, {'CUDA_VISIBLE_DEVICES': ''}):
+                # Order unknown: the fullest card, as the free memory is read.
+                self.assertEqual(self.phase.compute_processes()[0], [{'pid': 12, 'name': '/opt/train', 'mib': None}])
+            apps = 'No running processes found\n'
+            self.assertEqual(self.phase.compute_processes()[0], [])
+            apps = 'Not Supported\n'
+            self.assertIsNone(self.phase.compute_processes()[0])
+        with mock.patch.object(self.phase.shutil, 'which', return_value='/fake/nvidia-smi'), \
+                mock.patch.object(self.phase, 'is_wsl', return_value=True):
+            self.assertEqual(self.phase.compute_processes(), (None, 'WSL2: nvidia-smi lists no processes there'))
+        with mock.patch.object(self.phase.shutil, 'which', return_value=None):
+            self.assertEqual(self.phase.compute_processes(), (None, 'no nvidia-smi'))
+
+
 if __name__ == '__main__':
     unittest.main()
