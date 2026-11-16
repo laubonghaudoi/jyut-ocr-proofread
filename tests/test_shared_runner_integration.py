@@ -210,7 +210,13 @@ time.sleep(30)
         stat_path = Path('/proc') / str(pid) / 'stat'
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
-            if not stat_path.exists() or stat_path.read_text().split(') ', 1)[1].startswith('Z '):
+            # The child may exit between the exists() check and the read:
+            # a /proc entry that vanishes mid-read means it is gone, which is
+            # what this test waits for.
+            try:
+                if not stat_path.exists() or stat_path.read_text().split(') ', 1)[1].startswith('Z '):
+                    break
+            except FileNotFoundError:
                 break
             time.sleep(0.01)
         else:
