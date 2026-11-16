@@ -2,7 +2,7 @@
 
 一份通用 [Agent Skill](https://agentskills.io/specification)，用原掃描圖像將歷史中文 PDF 忠實轉錄、校對成 Markdown。Repo 根目錄就係技能目錄：`SKILL.md`、`scripts/` 同 `references/` 只有一份，Codex、Claude Code、Gemini CLI、Antigravity、Qwen Code 或其他支援技能嘅 agent 都可以載入。
 
-**兩個本機 OCR 引擎出底稿，校對者定讀法。** HunyuanOCR 同 PaddleOCR-VL 預設一齊裝、一齊用；腳本負責流程同所有決定論檢查。校對者預設係調用技能嘅當前 agent（答 packet 題）；亦可以交本機模型（http）。Agent 本身就係本機模型嗰陣，一定由腳本直接問模型，頁圖唔入 agent 嘅 context。
+**兩個本機 OCR 引擎出底稿，校對者定讀法。** HunyuanOCR 同 PaddleOCR-VL 預設一齊裝、一齊用（macOS 首次安裝會先問：由 Hugging Face 下載呢兩個引擎，定係淨用系統內置嘅 Apple Vision、唔下載模型）；腳本負責流程同所有決定論檢查。校對者預設係調用技能嘅當前 agent（答 packet 題）；亦可以交本機模型（http）。Agent 本身就係本機模型嗰陣，一定由腳本直接問模型，頁圖唔入 agent 嘅 context。
 
 ## 技能結構
 
@@ -10,9 +10,10 @@
 
 ### 1. 安裝
 
-![安裝流程：install.sh 檢查已有環境、判斷平台同裝置、下載及核驗兩個引擎、每個引擎試跑合成頁、寫 env.sh；GPU 優先，冇就 CPU；本機模型佔住 GPU 就經 GPU 交接試跑](docs/diagrams/skill-install.svg)
+![安裝流程：install.sh 檢查已有環境、判斷平台同裝置（macOS 首次安裝先問用戶：下載兩個引擎，定係淨用 Apple Vision）、下載及核驗兩個引擎、每個引擎試跑合成頁、寫 env.sh；GPU 優先，冇就 CPU；本機模型佔住 GPU 就經 GPU 交接試跑](docs/diagrams/skill-install.svg)
 
-- `install.sh` 唔問揀邊個引擎：HunyuanOCR（GGUF＋llama.cpp）同 PaddleOCR-VL 都裝；已核實嘅環境照用，其餘下載固定版本並核對 SHA-256。
+- Linux／WSL2 上 `install.sh` 唔問揀邊個引擎：HunyuanOCR（GGUF＋llama.cpp）同 PaddleOCR-VL 都裝；已核實嘅環境照用，其餘下載固定版本並核對 SHA-256。
+- macOS 有內置嘅 Apple Vision，所以首次安裝未下載任何嘢之前先問用戶：`--engine auto` 由 Hugging Face 下載兩個引擎（Apple Silicon 約佔 5.7 GB），定係 `--engine vision` 淨用 Apple Vision（唔下載模型，約 0.2 GB）。喺 terminal 跑會直接問；冇 terminal（例如由 agent 跑）就停低，講明兩個選擇，由 agent 問咗用戶再加 `--engine` 重跑，唔會代用戶揀。揀過一次之後記住，唔再問。
 - 裝置預設用 GPU（Linux／WSL2 用 NVIDIA CUDA，Apple Silicon 用 Metal），冇可用 GPU 先用 CPU；卡太細或者太舊、或者喺 macOS，Paddle 用 CPU。
 - Intel Mac 淨係 HunyuanOCR，Apple Vision 做提示；原生 Windows 唔支援，用 WSL2。
 - 每個引擎試跑一張合成頁，全部成功先標就緒，設定寫入 `~/.config/jyut-ocr/env.sh`。
@@ -50,7 +51,12 @@
 
 ```bash
 # 兩個 OCR 引擎都裝；有 NVIDIA GPU（或者 Apple Silicon）就用，否則用 CPU。
+# macOS 首次安裝會先問揀邊個引擎（見下面兩條），揀咗先下載。
 ./install.sh --agent claude
+
+# macOS：直接講明揀邊個，唔使答問題。
+./install.sh --agent claude --engine auto     # 由 Hugging Face 下載 HunyuanOCR 同 PaddleOCR-VL
+./install.sh --agent claude --engine vision   # 淨用內置嘅 Apple Vision，唔下載模型
 
 # 可以同時裝畀幾個 agent；qwen 係 Qwen Code。
 ./install.sh --agent codex --agent gemini --agent antigravity --agent qwen

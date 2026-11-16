@@ -1,6 +1,6 @@
 # 本機 OCR 底稿同 packet 校對
 
-安裝器預設兩個引擎都裝：**引擎 B，HunyuanOCR**（GGUF，經 llama.cpp）同**引擎 A，PaddleOCR-VL**（Intel Mac 裝唔到 Paddle，淨係 Hunyuan，Apple Vision 可以做提示）；`--engine hunyuan` 先係淨裝 Hunyuan。所有輸出都只係底稿：讀法由校對者定，校對者係當前 agent（packet）或者本機模型（http），見 `SKILL.md` 第一節；揀 OCR 引擎唔會改校對模型。
+安裝器預設兩個引擎都裝：**引擎 B，HunyuanOCR**（GGUF，經 llama.cpp）同**引擎 A，PaddleOCR-VL**（Intel Mac 裝唔到 Paddle，淨係 Hunyuan，Apple Vision 可以做提示）；`--engine hunyuan` 先係淨裝 Hunyuan。macOS 首次安裝先問用戶：下載呢兩個引擎（`--engine auto`），定係淨用內置嘅 Apple Vision（`--engine vision`，唔下載模型，行單引擎流程），見 `install.md`〈macOS：先揀引擎〉。所有輸出都只係底稿：讀法由校對者定，校對者係當前 agent（packet）或者本機模型（http），見 `SKILL.md` 第一節；揀 OCR 引擎唔會改校對模型。
 
 首次使用先按 [install.md](install.md) 配置環境，再跑 `./install.sh --env-only --check`。以下命令從技能根目錄執行，使用設定嘅 `JYUT_OCR_PYTHON`。
 
@@ -174,7 +174,7 @@ Agent 跑交接嘅規矩：
 "$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK
 ```
 
-單引擎：第 2 步 `ocr_book.py BOOK --single-engine`；唔跑 profile；`proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`（逐頁對住頁圖轉錄，底稿做提示）；`finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`。macOS 選 Vision 時用 `run_apple_vision_ocr.py BOOK/renders BOOK/ocr-vision --workers auto --report BOOK/reports/vision-run.json`，再將上面嘅 `ocr-hunyuan` 換成 `ocr-vision`。
+單引擎：第 2 步 `ocr_book.py BOOK --single-engine`；唔跑 profile；`proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`（逐頁對住頁圖轉錄，底稿做提示）；`finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`。macOS 選 Vision 時用 `run_apple_vision_ocr.py BOOK/renders BOOK/ocr-vision --first-page 1 --last-page N --workers auto --report BOOK/reports/vision-run.json`（`N` 係 `BOOK/renders` 入面嘅頁數；呢個 runner 一定要講明頁範圍，`--first-page` 同 `--last-page` 要一齊畀，或者用 `--pages`），再將上面嘅 `ocr-hunyuan` 換成 `ocr-vision`。
 
 `finish_book.py --single-engine` 必須明確提供真實 `--ocr-a`，唔接受 `--ocr-b` 或 `--extract-figures`。佢驗逐頁 seals，再組裝及執行 final audit，**唔跑依賴兩引擎嘅 repair**；跨頁段落先保持分開，可能需要接續嘅位置記成疑點（`single-engine-boundary`），唔憑單一底稿自動黐段。工作檔同證據會保留（唔清走）。Final audit 嘅錯誤同雙引擎路線一樣，記入 `doubts.md` 做疑點，完成稿照交付，RESULT 行寫明有幾多個。
 

@@ -2,7 +2,11 @@
 """Install one portable Agent Skill and prepare its local OCR environment.
 
 Both draft engines, HunyuanOCR and PaddleOCR-VL, are installed by default (an
-Intel Mac gets HunyuanOCR only); --engine is an explicit override."""
+Intel Mac gets HunyuanOCR only); --engine is an explicit override.  A Mac has
+Apple Vision built in, so its first setup asks which the person wants - the
+downloaded engines (--engine auto) or Apple Vision alone (--engine vision) -
+before anything is downloaded; with no terminal to ask at, it stops and says
+to rerun with one of the two."""
 from __future__ import annotations
 
 import argparse
@@ -35,7 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engine", choices=("auto", "hunyuan", "vision"),
                         help="override the engines: auto (the default: HunyuanOCR and PaddleOCR-VL; an Intel Mac "
                              "gets HunyuanOCR only), hunyuan (HunyuanOCR alone, e.g. for a small machine) or "
-                             "vision (Apple Vision alone, macOS). Without it the saved choice is kept")
+                             "vision (Apple Vision alone, macOS: no model download). Without it the saved choice "
+                             "is kept; on macOS, with none saved yet, setup asks (auto or vision) and without a "
+                             "terminal stops until one of them is passed")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "metal"),
                         help="override the device: auto (the default: the NVIDIA GPU, or Metal on Apple Silicon, "
                              "else CPU), cpu, cuda or metal. Without it the saved choice is kept")

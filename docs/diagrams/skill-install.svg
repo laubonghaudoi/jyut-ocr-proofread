@@ -1006,7 +1006,7 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
         <text x="54" y="198" class="t-muted" font-size="10" font-weight="600">02 / 安裝程式</text>
 
         <rect data-graph-role="structural-frame" data-composition-frame-kind="lane" data-composition-frame-id="lane-2" x="40" y="300" width="807" height="104" rx="10" class="c-lane" stroke-width="1"/>
-        <text x="54" y="322" class="t-muted" font-size="10" font-weight="600">03 / OCR 引擎（預設兩個都裝）</text>
+        <text x="54" y="322" class="t-muted" font-size="10" font-weight="600">03 / OCR 引擎（Linux 兩個都裝；macOS 先問用戶）</text>
 
         <!-- Phase headers -->
 
@@ -1021,7 +1021,7 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
         <path data-edge-from="gpu" data-edge-to="cpu" data-edge-label="冇可用 GPU" data-edge-key="3" data-edge-id="gpu-cpu" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="404,119;470,119" d="M 404 119 L 470 119" class="a-dashed" data-animate="edge" style="--step: 9;" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="platform" data-edge-to="fetch" data-edge-label="兩個都裝" data-edge-key="4" data-edge-id="platform-fetch" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="388,243;470,243" d="M 388 243 L 470 243" class="a-emphasis" data-animate="edge" style="--step: 2;" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="platform" data-edge-to="gpu" data-edge-label="預設" data-edge-key="5" data-edge-id="platform-gpu" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="342,217;342,145" d="M 342 217 L 342 145" class="a-default" data-animate="edge" style="--step: 11;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="platform" data-edge-to="vision" data-edge-label="Intel Mac" data-edge-key="6" data-edge-id="platform-vision" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="342,269;342,341" d="M 342 269 L 342 341" class="a-dashed" data-animate="edge" style="--step: 12;" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="platform" data-edge-to="vision" data-edge-label="Mac 淨用" data-edge-key="6" data-edge-id="platform-vision" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="342,269;342,341" d="M 342 269 L 342 341" class="a-dashed" data-animate="edge" style="--step: 12;" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="reuse" data-edge-to="platform" data-edge-key="7" data-edge-id="reuse-platform" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="264,243;296,243" d="M 264 243 L 296 243" class="a-default" data-animate="edge" style="--step: 1;" stroke-width="1.4" marker-end="url(#arrowhead)"/>
         <path data-edge-from="smoke" data-edge-to="handover" data-edge-label="本機模型佔 GPU" data-edge-key="8" data-edge-id="smoke-handover" data-composition-routing="workflow-v2-auto" data-edge-role="branch" data-composition-points="640,217;640,145" d="M 640 217 L 640 145" class="a-dashed" data-animate="edge" style="--step: 12;" stroke-width="1.4" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="smoke" data-edge-to="ready" data-edge-label="全部成功" data-edge-key="9" data-edge-id="smoke-ready" data-composition-routing="workflow-v2-auto" data-edge-role="" data-composition-points="686,243;742.4,243" d="M 686 243 L 742.4 243" class="a-emphasis" data-animate="edge" style="--step: 4;" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
@@ -1131,8 +1131,8 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
           <text x="788.4" y="263.8" class="t-muted" font-size="7.7" text-anchor="middle">~/.config/jyut-ocr</text>
         </g>
 
-        <g id="node-vision" data-node-id="vision" data-node-label="Apple Vision" tabindex="0" role="button" aria-label="聚焦Apple Vision，Intel Mac 做提示, OCR 引擎（預設兩個都裝）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="Intel Mac 做提示" data-node-context="OCR 引擎（預設兩個都裝）">
-          <title>Apple Vision · Intel Mac 做提示 · OCR 引擎（預設兩個都裝）</title>
+        <g id="node-vision" data-node-id="vision" data-node-label="Apple Vision" tabindex="0" role="button" aria-label="聚焦Apple Vision，macOS 可以淨用佢, OCR 引擎（Linux 兩個都裝；macOS 先問用戶）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="macOS 可以淨用佢" data-node-context="OCR 引擎（Linux 兩個都裝；macOS 先問用戶）">
+          <title>Apple Vision · macOS 可以淨用佢 · OCR 引擎（Linux 兩個都裝；macOS 先問用戶）</title>
           <rect x="296" y="341" width="92" height="52" rx="8" class="c-mask"/>
           <rect x="296" y="341" width="92" height="52" rx="8" class="c-messagebus" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-5;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(302 347) scale(0.6875)">
@@ -1142,11 +1142,11 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
             <circle cx="7" cy="11.5" r="1" class="sigil-fill"/>
           </g>
           <text data-node-label="" x="342" y="373.2" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Apple Vision</text>
-          <text x="342" y="388.1" class="t-muted" font-size="8" text-anchor="middle">Intel Mac 做提示</text>
+          <text x="342" y="388.1" class="t-muted" font-size="8" text-anchor="middle">macOS 可以淨用佢</text>
         </g>
 
-        <g id="node-hunyuan" data-node-id="hunyuan" data-node-label="HunyuanOCR" tabindex="0" role="button" aria-label="聚焦HunyuanOCR，GGUF＋llama.cpp, OCR 引擎（預設兩個都裝）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="GGUF＋llama.cpp" data-node-context="OCR 引擎（預設兩個都裝）">
-          <title>HunyuanOCR · GGUF＋llama.cpp · OCR 引擎（預設兩個都裝）</title>
+        <g id="node-hunyuan" data-node-id="hunyuan" data-node-label="HunyuanOCR" tabindex="0" role="button" aria-label="聚焦HunyuanOCR，GGUF＋llama.cpp, OCR 引擎（Linux 兩個都裝；macOS 先問用戶）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="GGUF＋llama.cpp" data-node-context="OCR 引擎（Linux 兩個都裝；macOS 先問用戶）">
+          <title>HunyuanOCR · GGUF＋llama.cpp · OCR 引擎（Linux 兩個都裝；macOS 先問用戶）</title>
           <rect x="470" y="341" width="92" height="52" rx="8" class="c-mask"/>
           <rect x="470" y="341" width="92" height="52" rx="8" class="c-messagebus" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-6;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(476 347) scale(0.6875)">
@@ -1159,8 +1159,8 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
           <text x="516" y="379" class="t-muted" font-size="8" text-anchor="middle">GGUF＋llama.cpp</text>
         </g>
 
-        <g id="node-paddle" data-node-id="paddle" data-node-label="PaddleOCR-VL" tabindex="0" role="button" aria-label="聚焦PaddleOCR-VL，權重預先下載, OCR 引擎（預設兩個都裝）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="權重預先下載" data-node-context="OCR 引擎（預設兩個都裝）">
-          <title>PaddleOCR-VL · 權重預先下載 · OCR 引擎（預設兩個都裝）</title>
+        <g id="node-paddle" data-node-id="paddle" data-node-label="PaddleOCR-VL" tabindex="0" role="button" aria-label="聚焦PaddleOCR-VL，權重預先下載, OCR 引擎（Linux 兩個都裝；macOS 先問用戶）" aria-pressed="false" data-node-kind="messagebus" data-node-sublabel="權重預先下載" data-node-context="OCR 引擎（Linux 兩個都裝；macOS 先問用戶）">
+          <title>PaddleOCR-VL · 權重預先下載 · OCR 引擎（Linux 兩個都裝；macOS 先問用戶）</title>
           <rect x="594" y="341" width="92" height="52" rx="8" class="c-mask"/>
           <rect x="594" y="341" width="92" height="52" rx="8" class="c-messagebus" data-animate="node" style="--step: 12; --flow-node-name: archify-relay-node-7;" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="messagebus" class="semantic-sigil s-messagebus" transform="translate(600 347) scale(0.6875)">
@@ -1189,9 +1189,9 @@ been cleared for every commercial, promotional, or redistributive use.</metadata
           <rect x="327" y="171" width="30" height="14" rx="3" class="c-mask"/>
           <text x="342" y="181" class="t-muted" font-size="8" text-anchor="middle">預設</text>
         </g>
-        <g data-edge-from="platform" data-edge-to="vision" data-edge-label="Intel Mac" data-edge-key="6" data-edge-id="platform-vision">
+        <g data-edge-from="platform" data-edge-to="vision" data-edge-label="Mac 淨用" data-edge-key="6" data-edge-id="platform-vision">
           <rect x="315.4" y="295" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
-          <text x="342" y="305" class="t-edge-dashed" font-size="8" text-anchor="middle">Intel Mac</text>
+          <text x="342" y="305" class="t-edge-dashed" font-size="8" text-anchor="middle">Mac 淨用</text>
         </g>
 
         <g data-edge-from="smoke" data-edge-to="handover" data-edge-label="本機模型佔 GPU" data-edge-key="8" data-edge-id="smoke-handover">

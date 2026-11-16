@@ -26,7 +26,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 ## 三、本書目錄同交付檔
 
-- 首次用先跑 `./install.sh --env-only --check`（即係 `scripts/install.py`）；未就緒就照 `references/install.md` 裝：長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑。
+- 首次用先跑 `./install.sh --env-only --check`（即係 `scripts/install.py`）；未就緒就照 `references/install.md` 裝：長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑。macOS 上嗰行講 `The OCR engines of this Mac are not chosen yet`：**問用戶**要由 Hugging Face 下載兩個引擎（`--engine auto`）定係淨用內置嘅 Apple Vision（`--engine vision`，唔下載模型），照嗰行講各自要幾多磁碟；唔准代佢揀。之後每條 `./install.sh` 都加用戶揀嗰個 `--engine`。
 - 每個 shell call 都係新 shell，開頭寫：`. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; cd SKILL_DIR`（呢份檔所在目錄）。你本身就係本機模型（一 B）就寫 `. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; export JYUT_OCR_AGENT_IS_LOCAL_MODEL=1; cd SKILL_DIR`，Qwen Code 都照加：上一個 call export 嘅唔會留低。下面 `BOOK`、`PDF` 換做實際路徑（有空格就加引號）。
 - `BOOK` 開喺 `"${JYUT_OCR_WORK_ROOT:-$HOME/jyut-ocr-books}/<名>"`，**唔好開喺 PDF 隔籬**（render 成幾 GB，PDF 嗰個資料夾可能係用戶嘅 git repo）。名用冇聲調嘅粵拼或者簡單英文，唔好用普通話拼音。
 - 用戶睇 PDF 隔籬嘅 `X-draft.md`（未校對草稿）、`X.md`（定稿）、`X-doubts.md`（疑問清單），加咗 `--extract-figures` 先有 `X-圖/`：腳本自己抄，抄唔到嗰行會講原因。由掃描圖資料夾開嘅書冇 PDF：唔抄，用戶睇 `BOOK/draft.md`、`BOOK/final.md`、`BOOK/doubts.md`（抽圖就加 `BOOK/figures/`），`BOOK` 唔清走。
@@ -40,7 +40,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 5. **定稿**（一律放背景，唔好前景跑）：`"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK > BOOK/finish.log 2>&1`，用 `wait_for_run.py BOOK BOOK/finish.log` 等；exit 碼照七。
 6. **交付同清走**：exit 0 之後，有 `WARNING` 先 `grep -n WARNING BOOK/finish/finish-book.log`；跟住 `"$JYUT_OCR_PYTHON" scripts/clean_book.py BOOK --all`（成個 `BOOK` 刪走，淨係留 PDF 隔籬嘅交付檔），再照九交付。掃描圖資料夾開嘅書唔跑佢（冇 PDF，佢 exit 3：交付檔淨係喺 `BOOK`）。
 
-**單引擎**（淨係得 HunyuanOCR 嘅機，例如 Intel Mac；明確例外）：第 2 步加 `--single-engine`；跳過第 3 步；第 4 步 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`；第 5 步 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`；工作檔留低，唔跑 `--all`。
+**單引擎**（淨係得 HunyuanOCR 嘅機，例如 Intel Mac；明確例外）：第 2 步加 `--single-engine`；跳過第 3 步；第 4 步 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`；第 5 步 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`；工作檔留低，唔跑 `--all`。`env.sh` 嘅 `JYUT_OCR_ENGINES` 係 `vision`（Mac 安裝嗰陣揀咗淨用 Apple Vision）一樣行單引擎：第 2 步改做 `"$JYUT_OCR_PYTHON" scripts/run_apple_vision_ocr.py BOOK/renders BOOK/ocr-vision --first-page 1 --last-page N --workers auto --report BOOK/reports/vision-run.json`（`N` 係 `BOOK/renders` 入面嘅頁數：呢個 runner 一定要講明頁範圍）（冇 `ocr_book.py`，亦冇未校對草稿），第 4、5 步嘅 `BOOK/ocr-hunyuan` 換成 `BOOK/ocr-vision`。
 
 ## 五、長步驟同 GPU 交接
 

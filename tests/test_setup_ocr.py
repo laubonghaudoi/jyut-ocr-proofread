@@ -4,6 +4,7 @@ import contextlib
 from dataclasses import replace
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 from pathlib import Path
@@ -84,8 +85,9 @@ class SetupTest(unittest.TestCase):
             config.write_text("export HUNYUAN_MODEL=" + value + "\n")
             with self.assertRaises(setup.SetupError):
                 setup.read_environment(config)
-    def test_engines_follow_the_platform_without_a_prompt_and_an_override_resumes(self):
-        # Decision 2: both engines by default, no prompt (Intel Macs: Hunyuan only).
+    def test_engines_follow_the_platform_and_an_override_resumes(self):
+        # Decision 2: "auto" is both engines (Intel Macs: Hunyuan only).  Linux
+        # takes it with no prompt; a Mac's first setup asks first (the next tests).
         for system, machine, engines in (("Linux", "x86_64", ("hunyuan", "paddle")),
                                          ("Darwin", "arm64", ("hunyuan", "paddle")),
                                          ("Darwin", "x86_64", ("hunyuan",))):
@@ -99,6 +101,61 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(setup.engine_request("default", {"JYUT_OCR_ENGINE": "hunyuan"}), "auto")
         with self.assertRaises(setup.SetupError):
             setup.choose_engines("vision", system="Linux", machine="x86_64")
+    def test_a_first_setup_on_macos_has_the_engines_to_choose_and_linux_never_does(self):
+        fresh = replace(self.options, engine="default", device="default")
+        self.assertTrue(setup.engine_choice_pending(fresh, {}, "Darwin"))
+        self.assertFalse(setup.engine_choice_pending(fresh, {}, "Linux"))
+        # An explicit --engine, or the choice an earlier setup saved, is the answer.
+        for engine in setup.ENGINE_REQUESTS:
+            self.assertFalse(setup.engine_choice_pending(replace(fresh, engine=engine), {}, "Darwin"))
+            saved = {"JYUT_OCR_ENGINE": engine, "JYUT_OCR_ENGINES": "vision" if engine == "vision" else "hunyuan"}
+            self.assertFalse(setup.engine_choice_pending(fresh, saved, "Darwin"))
+        # An older single-engine installer's automatic pick is not a choice.
+        self.assertTrue(setup.engine_choice_pending(fresh, {"JYUT_OCR_ENGINE": "hunyuan"}, "Darwin"))
+    def test_macos_setup_with_no_terminal_names_both_answers_and_what_each_takes(self):
+        fresh = replace(self.options, engine="default", device="default")
+        lock = setup.load_lock(ROOT)
+        with self.assertRaisesRegex(
+                setup.SetupError,
+                r"--engine auto \(HunyuanOCR and PaddleOCR-VL, downloaded from Hugging Face: about \d+\.\d GB more disk; "
+                r"two drafts a page.* or --engine vision \(Apple Vision only, built into macOS: no model download"):
+            setup.ask_engine_choice(fresh, {}, lock, system="Darwin", machine="arm64")
+        # An Intel Mac's downloaded engine is HunyuanOCR alone (no Paddle wheel).
+        with self.assertRaisesRegex(setup.SetupError, r"--engine auto \(HunyuanOCR, downloaded from Hugging Face: .*one draft a page"):
+            setup.ask_engine_choice(fresh, {}, lock, system="Darwin", machine="x86_64")
+        self.assertIs(setup.ask_engine_choice(fresh, {}, lock, system="Linux", machine="x86_64"), fresh)
+        chosen = replace(fresh, engine="vision")
+        self.assertIs(setup.ask_engine_choice(chosen, {}, lock, system="Darwin", machine="arm64"), chosen)
+    def test_macos_first_setup_installs_nothing_until_the_engines_are_chosen(self):
+        fresh = replace(self.options, engine="default", device="default")
+        with patch.object(setup, "platform_name", return_value="Darwin"), patch.object(setup, "machine_name", return_value="arm64"), \
+                patch.object(setup, "ensure_dependencies") as dependencies, patch.object(setup, "ensure_python") as python:
+            with self.assertRaisesRegex(setup.SetupError, "not chosen yet, and nothing has been downloaded"):
+                setup.setup(fresh)
+            # --check says the same, read-only.
+            result = setup.inspect_setup(fresh)
+        dependencies.assert_not_called()
+        python.assert_not_called()
+        self.assertEqual(result["status"], "action-required")
+        self.assertIn("--engine auto", result["reason"])
+        self.assertIn("--engine vision", result["reason"])
+        self.assertEqual(sorted(path.name for path in self.base.rglob("*") if path.is_file()), [".setup.lock", ".setup.lock"])
+    def test_at_a_terminal_the_person_is_asked_and_the_answer_is_the_engine_request(self):
+        asked = replace(self.options, engine="default", device="default", interactive=True)
+        lock = setup.load_lock(ROOT)
+        for typed, engine in (("1\n", "auto"), ("2\n", "vision"), ("x\nvision\n", "vision")):
+            with self.subTest(typed=typed), patch.object(setup.sys, "stdin", io.StringIO(typed)), \
+                    contextlib.redirect_stderr(io.StringIO()) as shown:
+                self.assertEqual(setup.ask_engine_choice(asked, {}, lock, system="Darwin", machine="arm64").engine, engine)
+            self.assertIn("1) HunyuanOCR and PaddleOCR-VL, downloaded from Hugging Face", shown.getvalue())
+            self.assertIn("2) Apple Vision only", shown.getvalue())
+        # Nobody answers (end of input), or three answers that are neither: the
+        # stop a setup with no terminal makes.
+        for typed in ("", "3\nno\n?\n"):
+            with self.subTest(typed=typed), patch.object(setup.sys, "stdin", io.StringIO(typed)), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(setup.SetupError, "not chosen yet"):
+                    setup.ask_engine_choice(asked, {}, lock, system="Darwin", machine="arm64")
     def test_device_auto_falls_back_without_installing_driver(self):
         with patch.object(setup, "cuda_available", return_value=False), patch.object(setup, "metal_available", return_value=False):
             self.assertEqual(setup.choose_device("auto", {}, engine="hunyuan", system="Linux"), "cpu")

@@ -40,7 +40,7 @@
     },
     {
       "id": "engine",
-      "label": "OCR 引擎（預設兩個都裝）"
+      "label": "OCR 引擎（Linux 兩個都裝；macOS 先問用戶）"
     }
   ],
   "mainPath": [
@@ -133,7 +133,7 @@
       "col": 2,
       "type": "messagebus",
       "label": "Apple Vision",
-      "sublabel": "Intel Mac 做提示"
+      "sublabel": "macOS 可以淨用佢"
     },
     {
       "id": "hunyuan",
@@ -189,7 +189,7 @@
       "id": "platform-vision",
       "from": "platform",
       "to": "vision",
-      "label": "Intel Mac",
+      "label": "Mac 淨用",
       "variant": "dashed",
       "role": "branch"
     },
@@ -235,8 +235,8 @@
       "title": "平台同裝置",
       "items": [
         "Linux／WSL2 有 NVIDIA：兩個引擎用 CUDA；卡細或者舊，Paddle 轉 CPU",
-        "Apple Silicon：Hunyuan 用 Metal，Paddle 用 CPU",
-        "Intel Mac：淨係 HunyuanOCR，Apple Vision 做提示",
+        "macOS 首次安裝先問：下載兩個引擎（--engine auto），定係淨用 Apple Vision（--engine vision，唔下載模型）",
+        "Apple Silicon 揀下載：Hunyuan 用 Metal，Paddle 用 CPU；Intel Mac 淨係 HunyuanOCR",
         "原生 Windows 唔支援，用 WSL2"
       ]
     },
@@ -244,7 +244,7 @@
       "dot": "amber",
       "title": "明確覆蓋同本機模型",
       "items": [
-        "--engine hunyuan 淨裝 Hunyuan；--device cpu 全部用 CPU",
+        "--engine hunyuan 淨裝 Hunyuan；--device cpu 全部用 CPU；冇 terminal 嘅 macOS 安裝要傳 --engine auto 或者 vision",
         "--local-model-* 聲明本機校對模型同佢嘅停／開命令",
         "GPU 唔夠空位：兩個引擎嘅試跑放喺一次交接入面"
       ]

@@ -1,5 +1,12 @@
 # 更新摘要
 
+## Unreleased — macOS 首次安裝先問用戶揀引擎
+
+- Mac 有內置嘅 Apple Vision，所以 macOS 首次安裝（冇傳 `--engine`，`env.sh` 又未有上次揀嘅結果）喺下載任何嘢之前先問：`--engine auto` 由 Hugging Face 下載 HunyuanOCR 同 PaddleOCR-VL（Apple Silicon 約 5.7 GB），定係 `--engine vision` 淨用 Apple Vision（唔下載模型，約 0.2 GB）。喺 terminal 跑會列出兩個選擇等你答 `1` 或者 `2`；冇 terminal（agent 嘅 shell、pipe）就停低，exit `2`，`ACTION REQUIRED` 行講明兩個 `--engine` 同各自要幾多磁碟，agent 問咗用戶先加 `--engine` 重跑，唔代用戶揀。`--check` 未揀之前報同一段。
+- 揀過一次記入 `env.sh`，之後唔再問；Linux／WSL2 照舊唔問、兩個都裝；`--engine hunyuan` 照舊係明確覆蓋。
+- `SKILL.md` 三講明 agent 見到嗰行要問用戶；四〈單引擎〉補返淨用 Apple Vision 嗰陣第 2 步跑 `run_apple_vision_ocr.py`。`references/local-ocr.md` 嗰條 Vision command 原本漏咗 runner 一定要嘅頁範圍，照抄會 exit 2：兩處都寫返 `--first-page 1 --last-page N`。
+- 實機驗證（Apple M5，macOS，2026-11-16，由清空狀態開始）：`--engine vision` 32 秒裝好、佔 27 MB；`--engine auto` 下載同核驗約 9 分鐘、試跑 32 秒、佔 5.8 GB（包括約 1 GB uv cache）；兩條路線 `--check` 都報 `ready`，唔傳 `--engine` 重跑唔再問。
+
 ## Unreleased — GPU 交接：模型本身停咗就唔郁；顯存唔夠就講邊個佔住
 
 - 停咗模型之後顯存仍然唔夠（exit 1，RESULT 行 `GPU FULL`）：照舊即刻開返模型，另外逐個列 GPU 上面嘅 compute 程序（pid、使用者、程序名、MiB、systemd unit）同釋放佢嘅命令（`systemctl --user stop UNIT`、`kill PID`）。技能乜都唔殺、唔停，由用戶決定。

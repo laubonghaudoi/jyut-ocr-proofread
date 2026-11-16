@@ -12,7 +12,7 @@ not by a prompt; --engine stays as an explicit override.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import fcntl
@@ -2225,6 +2225,103 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
     return engines, devices, plan, gpus, notes, engine_wanted, device_wanted
 
 
+# --- the engine choice on macOS ---------------------------------------------------------
+#
+# A Mac has an OCR engine built in (Apple Vision), so the engines downloaded
+# from Hugging Face - several GB of weights and a Paddle environment - are a
+# choice there, not a default: a first setup on macOS asks the person which
+# they want before anything is downloaded.  Linux and WSL2 never ask (no
+# built-in engine: both engines are the default).
+
+ENGINE_LABELS = {"hunyuan": "HunyuanOCR", "paddle": "PaddleOCR-VL", "vision": "Apple Vision"}
+# The two answers, as --engine takes them: the downloaded engines, or Apple
+# Vision alone.  (--engine hunyuan stays an explicit override, not an answer.)
+ENGINE_CHOICES = ("auto", "vision")
+ENGINE_CHOICE_TRIES = 3
+
+
+def engine_choice_pending(options: SetupOptions, existing: Mapping[str, str], system: str) -> bool:
+    """Whether the person still has to choose this Mac's OCR engines: macOS,
+    no --engine on this call, and no choice an earlier setup saved
+    (engine_request's rule: JYUT_OCR_ENGINE counts only beside
+    JYUT_OCR_ENGINES, which setup writes once the chosen engines are in
+    place)."""
+    if system != "Darwin" or options.engine not in (None, "default"):
+        return False
+    saved = existing.get("JYUT_OCR_ENGINE") if existing.get("JYUT_OCR_ENGINES") else None
+    return saved not in ENGINE_REQUESTS
+
+
+def engine_choice_options(options: SetupOptions, existing: Mapping[str, str], lock: Mapping[str, Any], *,
+                          system: str, machine: str) -> list[tuple[str, str]]:
+    """The answers a Mac picks from, each (its --engine value, what it sets
+    up here and the disk that still takes).  The disk is disk_needs() for
+    that answer: what is here already (weights, a runtime) is not counted.
+    Read-only, as disk_needs is."""
+    described = []
+    for request in ENGINE_CHOICES:
+        asked = replace(options, engine=request)
+        try:
+            engines, devices, plan, _, _, _, _ = plan_engines(asked, existing, lock, system=system, machine=machine)
+            release = (release_binary(lock, system=system, machine=machine, device=devices["hunyuan"], gpu=None)
+                       if "hunyuan" in engines else None)
+            needs = disk_needs(asked, existing, lock, engines, release, plan, device=devices.get("hunyuan"), gpu=None)
+            disk = f"about {sum(size for _, size in needs) / 1e9:.1f} GB more disk"
+        except SetupError:
+            # The size is a courtesy: a --device this answer cannot take is
+            # reported when the answer is given, not here.
+            engines, disk = choose_engines(request, system=system, machine=machine)[0], "disk not estimated"
+        names = " and ".join(ENGINE_LABELS[engine] for engine in engines)
+        if request == "vision":
+            text = (f"{names} only, built into macOS: no model download, {disk} for the Python environment; "
+                    "one draft a page, the single-engine workflow")
+        else:
+            text = (f"{names}, downloaded from Hugging Face: {disk}; "
+                    + ("two drafts a page, the full workflow" if len(engines) > 1 else
+                       "one draft a page, the single-engine workflow"))
+        described.append((request, text))
+    return described
+
+
+def engine_choice_message(choices: Sequence[tuple[str, str]]) -> str:
+    """What a setup that cannot ask says (no terminal: an agent's shell, a
+    pipe), and what --check says, while the choice is pending."""
+    return ("The OCR engines of this Mac are not chosen yet, and nothing has been downloaded. Rerun the same "
+            "command with "
+            + " or ".join(f"--engine {request} ({text})" for request, text in choices)
+            + ". An agent running setup asks the person which one and never chooses for them.")
+
+
+def ask_engine_choice(options: SetupOptions, existing: Mapping[str, str], lock: Mapping[str, Any], *,
+                      system: str, machine: str) -> SetupOptions:
+    """OPTIONS with the engines chosen: unchanged unless the choice is pending
+    (engine_choice_pending).  At a terminal the person is asked, 1 or 2; a
+    setup with no terminal stops with engine_choice_message.  Either way
+    before any download or dependency install, and before env.sh says which
+    engines there are."""
+    if not engine_choice_pending(options, existing, system):
+        return options
+    choices = engine_choice_options(options, existing, lock, system=system, machine=machine)
+    if not options.interactive:
+        raise SetupError(engine_choice_message(choices))
+    print("Which OCR engines should this Mac use?", file=sys.stderr)
+    for number, (request, text) in enumerate(choices, 1):
+        print(f"  {number}) {text}  [--engine {request}]", file=sys.stderr)
+    for _ in range(ENGINE_CHOICE_TRIES):
+        print(f"Enter 1 or {len(choices)}: ", end="", file=sys.stderr, flush=True)
+        answer = sys.stdin.readline()
+        if not answer:
+            break  # end of input: nobody is there to answer
+        answer = answer.strip().lower()
+        for number, (request, _) in enumerate(choices, 1):
+            if answer in (str(number), request):
+                # Saved in env.sh only once these engines are in place: a
+                # setup that stops before then asks again unless told.
+                print(f"Chosen: --engine {request} (pass it to setup to skip this question).", file=sys.stderr)
+                return replace(options, engine=request)
+    raise SetupError(engine_choice_message(choices))
+
+
 def summary(engines: Sequence[str], devices: Mapping[str, str], config_path: Path, **extra: Any) -> dict[str, Any]:
     return {"status": "ready", "engines": list(engines), "devices": dict(devices), "engine": ",".join(engines),
             "device": devices.get("hunyuan") or devices.get("vision") or next(iter(devices.values()), None),
@@ -2267,8 +2364,12 @@ def inspect_setup(options: SetupOptions) -> dict[str, Any]:
         if saved is not None:
             (engines, devices), notes = saved, []
         else:
-            engines, devices, _, _, notes, _, _ = plan_engines(options, config, lock, system=system,
-                                                               machine=machine_name(system))
+            machine = machine_name(system)
+            if engine_choice_pending(options, config, system):
+                # Not set up, and on macOS the engines are the person's choice.
+                raise SetupError(engine_choice_message(
+                    engine_choice_options(options, config, lock, system=system, machine=machine)))
+            engines, devices, _, _, notes, _, _ = plan_engines(options, config, lock, system=system, machine=machine)
         missing = missing_dependencies(engines)
         if missing:
             raise SetupError("Missing dependencies: " + ", ".join(missing))
@@ -2305,6 +2406,8 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
         write_environment(environment_path, changed_keys(existing, local_model_updates(options.local_model, existing)))
         existing = read_environment(environment_path)
     lock = load_lock(options.repo_root)
+    # macOS, first setup: the person chooses the engines before anything else.
+    options = ask_engine_choice(options, existing, lock, system=system, machine=machine)
     engines, devices, plan, gpus, notes, engine_wanted, device_wanted = plan_engines(
         options, existing, lock, system=system, machine=machine)
     agent = os.environ.get("QWEN_CODE_MODEL", "").strip()

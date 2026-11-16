@@ -7,8 +7,12 @@ Repo 根目錄係唯一技能來源。將整個目錄放入 agent 嘅技能集�
 喺技能根目錄執行 `./install.sh --help` 睇全部參數：
 
 ```bash
-# 預設 generic 技能位置；兩個 OCR 引擎（HunyuanOCR 同 PaddleOCR-VL）都裝，唔使揀。
+# 預設 generic 技能位置；兩個 OCR 引擎（HunyuanOCR 同 PaddleOCR-VL）都裝，Linux／WSL2 唔使揀。
 ./install.sh
+
+# macOS 首次安裝要先揀引擎（見〈macOS：先揀引擎〉）：下載兩個引擎，或者淨用 Apple Vision。
+./install.sh --engine auto
+./install.sh --engine vision
 
 # 重複 --agent 安裝到多個平台；qwen 係 Qwen Code。唔預設安裝 custom agents。
 ./install.sh --agent codex --agent claude --agent gemini --agent antigravity --agent qwen
@@ -36,7 +40,7 @@ Repo 根目錄係唯一技能來源。將整個目錄放入 agent 嘅技能集�
 | `--agent` | 可重複：`generic`、`codex`、`claude`、`gemini`、`antigravity`、`qwen`；冇指定預設 `generic` |
 | `--skill-dir` | 自訂技能集合目錄，唔係 `SKILL.md` 所在葉目錄 |
 | `--with-agents` | 另裝所選 Codex／Claude 嘅可選 writer／auditor adapters |
-| `--engine` | 只係明確覆蓋：`auto`（預設，兩個引擎；Intel Mac 淨係 Hunyuan）、`hunyuan`（淨係 Hunyuan，例如細機）、`vision`（淨係 Apple Vision，只限 macOS）。唔傳就沿用上次明確揀嘅覆蓋，冇就 `auto` |
+| `--engine` | 只係明確覆蓋：`auto`（預設，兩個引擎；Intel Mac 淨係 Hunyuan）、`hunyuan`（淨係 Hunyuan，例如細機）、`vision`（淨係 Apple Vision，只限 macOS，唔下載模型）。唔傳就沿用上次揀嘅，冇就 `auto`；macOS 未揀過就先問（見〈macOS：先揀引擎〉） |
 | `--device` | `auto`（預設：有 NVIDIA GPU 用 CUDA，Apple Silicon 用 Metal，否則 CPU）、`cpu`、`cuda`、`metal`；兩個引擎都跟。唔傳就沿用上次明確揀嘅裝置 |
 | `--env-only` | 唔放置技能，只做環境初始化或檢查 |
 | `--skill-only` | 只放置或檢查技能入口，唔配置 OCR 環境 |
@@ -57,14 +61,30 @@ Generic 同 Codex 共用 `~/.agents/skills/`；Claude 用 `~/.claude/skills/`；
 
 ## 兩個引擎、裝置同平台
 
-安裝器唔問揀邊個引擎：Linux／WSL2 同 Apple Silicon 都裝 HunyuanOCR（GGUF，經 llama.cpp）同 PaddleOCR-VL，一齊做底稿。預設用 GPU，冇可用 GPU 先用 CPU。
+Linux／WSL2 上安裝器唔問揀邊個引擎：HunyuanOCR（GGUF，經 llama.cpp）同 PaddleOCR-VL 都裝，一齊做底稿。macOS 首次安裝先問用戶（下一節）；揀咗下載（`--engine auto`）就同樣裝呢兩個。預設用 GPU，冇可用 GPU 先用 CPU。
 
 | 平台 | HunyuanOCR | PaddleOCR-VL |
 |---|---|---|
 | Linux／WSL2，有 NVIDIA GPU | CUDA | GPU；卡太細或者太舊就 CPU（見下表） |
 | Linux／WSL2，冇 NVIDIA GPU | CPU | CPU |
-| macOS Apple Silicon | Metal | CPU（Paddle 喺 macOS 只有 CPU 版） |
-| macOS Intel | CPU | 唔裝：PaddleOCR-VL 要 PaddlePaddle 3.2.1 或以上，macOS x86_64 最新只有 3.0.0；可以另用 Apple Vision 做提示底稿 |
+| macOS Apple Silicon（揀 `--engine auto`） | Metal | CPU（Paddle 喺 macOS 只有 CPU 版） |
+| macOS Intel（揀 `--engine auto`） | CPU | 唔裝：PaddleOCR-VL 要 PaddlePaddle 3.2.1 或以上，macOS x86_64 最新只有 3.0.0；可以另用 Apple Vision 做提示底稿 |
+| macOS（揀 `--engine vision`） | 唔裝 | 唔裝；淨用 Apple Vision，唔下載模型 |
+
+### macOS：先揀引擎
+
+Mac 有內置嘅 OCR（Apple Vision），所以由 Hugging Face 下載嘅引擎（幾 GB 權重加 Paddle 環境）喺 macOS 係用戶嘅選擇，唔係預設。首次安裝（冇傳 `--engine`，`env.sh` 又未有上次揀嘅結果）喺下載任何嘢、裝任何依賴之前先問：
+
+| 選擇 | 裝乜 | 約佔磁碟 | 之後點跑書 |
+|---|---|---:|---|
+| `--engine auto` | HunyuanOCR 同 PaddleOCR-VL（Intel Mac 淨係 HunyuanOCR），由 Hugging Face 下載 | Apple Silicon 約 5.7 GB，Intel 約 2.4 GB | 每頁兩份底稿，完整流程 |
+| `--engine vision` | 淨係 Apple Vision，唔下載模型 | 0.2 GB 以內（核心 Python 環境） | 每頁一份底稿，單引擎流程（`SKILL.md` 四〈單引擎〉） |
+
+- **喺 terminal 跑**（stdin 係 terminal）：安裝器列出兩個選擇同各自要幾多磁碟，等你輸入 `1` 或者 `2`。答三次都唔係，或者冇人答，就當冇 terminal 處理。
+- **冇 terminal**（agent 嘅 shell、pipe、背景）：安裝器即刻停低，exit `2`，`ACTION REQUIRED` 行以 `The OCR engines of this Mac are not chosen yet` 開頭，列出兩個 `--engine` 同各自要幾多磁碟；乜都未下載。Agent 見到呢行要**問用戶揀邊個，唔准代佢揀**，再喺同一條命令加嗰個 `--engine` 重跑。`--check` 喺未揀之前報同一段（`action-required`）。
+- 揀過一次就記入 `env.sh`（`JYUT_OCR_ENGINE`），之後唔傳 `--engine` 都唔再問。想轉就明確傳另一個 `--engine`：由 Vision 轉 `auto` 會下載兩個引擎；由 `auto` 轉 `vision` 唔會刪已下載嘅模型，要自己清走資料目錄入面嘅 `models/`、`paddle-models/`、`paddle-python/`、`runtimes/`。
+- `--engine hunyuan`（淨裝 Hunyuan）照舊係明確覆蓋，唔喺問題入面。
+- Linux／WSL2 冇內置引擎，唔問，照舊兩個都裝。
 
 - AMD、Intel 等非 NVIDIA GPU 暫時當冇 GPU，用 CPU。
 - 判斷有冇 GPU 只靠 NVIDIA driver（`nvidia-smi` 答到），唔使裝 CUDA toolkit（`nvcc`）：llama.cpp 用固定版本嘅現成 CUDA 二進制，Paddle 嘅 GPU wheel 自帶 CUDA。
@@ -130,8 +150,9 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 |---|---:|---|
 | Linux／WSL2，NVIDIA GPU（`cu130`） | 約 12 GB | Paddle GPU 環境 6.3 GB（實測：paddle 2.9 GB、NVIDIA 函式庫 2.6 GB）、兩個模型權重約 4.1 GB、llama.cpp CUDA 版連 runtime 約 1.5 GB（估計）、Python 約 0.3 GB。用源碼建置嘅 llama.cpp 約 0.3 GB，總數約 10.6 GB（實測） |
 | Linux／WSL2，CPU | 約 6 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.5 GB（估計；wheel 195 MB）、llama.cpp 約 41 MB |
-| macOS Apple Silicon | 約 5.5 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB |
-| macOS Intel | 約 2.4 GB | Hunyuan 權重約 2.1 GB、llama.cpp、Python |
+| macOS Apple Silicon（`--engine auto`） | 約 5.5 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB |
+| macOS Intel（`--engine auto`） | 約 2.4 GB | Hunyuan 權重約 2.1 GB、llama.cpp、Python |
+| macOS（`--engine vision`） | 0.2 GB 以內 | 核心 Python 環境，唔下載模型；估計上限 0.2 GB（計埋 uv 要下載 Python 3.12），uv 已經有 3.12 嗰陣實測 27 MB（Apple M5，2026-11-16） |
 
 ## 設定、初始化同就緒狀態
 
@@ -166,7 +187,7 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 - 已聲明本機模型嘅停／開命令（`OCR_PHASE_RELEASE_CMD`、`OCR_PHASE_RESTORE_CMD`），而 GPU 唔夠空位：兩個引擎嘅試跑放喺**一次** GPU 交接入面（`scripts/run_ocr_phase.py`）：停模型、試跑、開返模型。需要 `OCR_PHASE_MAX_SECONDS`（`--local-model-release-cmd` 冇設就寫 540），而且一定要喺前景跑。呢個預算係 agent 成個 shell call 嘅：安裝器記住自己幾時開始，核驗、uv 等等用咗嘅時間會扣除，交畀 `run_ocr_phase.py` 嘅 `--max-seconds` 係淨低嘅時間；淨低少過 240 秒（預算細過 480 秒就係預算嘅一半）就唔停模型、唔試跑，報錯叫你喺前景再跑同一條命令（已下載、已核驗嘅保留）。`OCR_PHASE_SWAP=always` 每次都交接，`never` 永遠唔交接。交接結果：exit `75` 係時間預算用完、模型已開返，重跑同一條安裝命令繼續；`76` 係 GPU 忙（另一份工、另一個交接，或者模型嘅其他 client 仲有請求），通常乜都冇停；窗口入面試跑一頁都冇封到亦報 `76`（模型停過又開返，RESULT 行會講）：等一陣再重跑；`3` 係模型冇開返，即刻用 restore 命令開返；`2` 係設定錯誤。
 - Agent 本身就係嗰個本機模型（例如 Qwen Code 經本機服務）嗰陣：下載同建置可能長過 shell 上限，先跑 `./install.sh --env-only --prepare-only`（可以放背景；佢下載、核驗同寫設定，唔試跑，所以唔會交接），完成之後喺前景跑 `./install.sh --env-only`：已核驗嘅部分會跳過，淨低試跑經交接做。唔好喺背景跑會交接嘅命令。
 
-**下載長過 shell 上限（任何 agent，唔止上面講嘅本機模型）**：第一次裝要下載同建置幾 GB（見〈磁碟〉），而 Claude Code、Codex、Gemini CLI、Qwen Code 呢類 harness 一個 shell call 都有時限（Qwen Code 600 秒）；agent 唔理係咪本機模型都分三步，喺技能根目錄做：
+**下載長過 shell 上限（任何 agent，唔止上面講嘅本機模型）**：第一次裝要下載同建置幾 GB（見〈磁碟〉），而 Claude Code、Codex、Gemini CLI、Qwen Code 呢類 harness 一個 shell call 都有時限（Qwen Code 600 秒）；agent 唔理係咪本機模型都分三步，喺技能根目錄做。macOS 首次安裝先問用戶揀引擎（〈macOS：先揀引擎〉），下面每條 `./install.sh` 都加嗰個 `--engine`；揀 `--engine vision` 冇模型要下載，直接做第 3 步：
 
 1. **背景準備**：用 harness 自己嘅背景方式（Claude Code 嘅 `run_in_background`、Qwen Code 嘅 `is_background`）跑 `./install.sh --env-only --prepare-only > "${TMPDIR:-/tmp}/jyut-ocr-prepare.log" 2>&1; echo "[prepare] exit=$?" >> "${TMPDIR:-/tmp}/jyut-ocr-prepare.log"`；冇背景 tool 就成條包喺 `nohup sh -c '…' >/dev/null 2>&1 &` 入面。佢下載、核驗同寫設定，唔試跑，所以唔使 GPU、唔會交接。
 2. **等佢做完**：harness 背景 call 完會通知就等通知；冇通知就隔幾分鐘睇一次 `tail -1 "${TMPDIR:-/tmp}/jyut-ocr-prepare.log"`，見到 `[prepare] exit=N` 先算完，唔好不停讀成個 log。`[prepare] exit=2` 加上面 JSON 嘅 `"status": "pending-smoke"` 即係準備好；有 `ACTION REQUIRED` 就照佢講補齊，再跑同一條（已核驗嘅檔跳過，中斷咗嘅下載續傳）。
