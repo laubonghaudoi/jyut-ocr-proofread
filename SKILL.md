@@ -64,6 +64,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - 逐個 `bundle-*.json`：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。
 - 答晒成個 wave 先跑嗰條 command，加 `--answered-by` 你確實嘅 model ID，再重跑同一條步驟 command，直到 exit `0`。
 - 一個 bundle 最多 20 題（`--max-items-per-bundle`）。長書可以一個 subagent 答一個 bundle，淨係寫自己嗰份 answers，由你跑 apply。
+- 雙引擎短文件可選用每包一個新 worker。先確認佢睇到 PNG 同有指定嘅實際 effort。主 agent 淨係派工同推進，worker 一次過開包內圖片，寫一份齊晒嘅答案檔。平台能力唔夠就沿用同模型、同 effort 嘅主 session 順序作答。詳見 `references/subagent-orchestration.md`。
 - 答錯咗：同一條 apply command 加 `--amend --reason "..."`；已封嘅頁要 `--overwrite --pages N` 重做先用新答案。
 - 唔准手改 `answers.jsonl` 或者封存頁；bundle 冇問嘅頁唔使自己覆核。格式見 `references/subagent-orchestration.md`。
 

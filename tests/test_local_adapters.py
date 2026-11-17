@@ -604,9 +604,10 @@ class LocalAdapterInstallerTests(unittest.TestCase):
             repo_root=self.repo, agents=["codex", "claude", "gemini"],
             with_agents=True, home=home,
         )
-        self.assertEqual(len(specs), 7)
+        self.assertEqual(len(specs), 8)
         codex_roles = [spec for spec in specs if spec["id"].startswith("codex-")]
-        self.assertEqual(len(codex_roles), 2)
+        self.assertEqual({spec["id"] for spec in codex_roles},
+                         {"codex-segment-writer", "codex-visual-auditor", "codex-packet-worker"})
         self.assertTrue(all(spec["target"].parent == home / ".codex/agents" for spec in codex_roles))
         self.assertTrue(all(spec["install_mode"] == "sealed-copy" for spec in codex_roles))
         only_gemini = INSTALLER.build_portable_specs(

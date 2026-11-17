@@ -61,6 +61,13 @@ def comma_list(value: object) -> list[str]:
 
 
 class CodexAgentAdapterTests(unittest.TestCase):
+    def test_packet_worker_explicitly_keeps_xhigh_with_an_inherited_model(self) -> None:
+        worker = tomllib.loads((CODEX_AGENTS / "jyut-ocr-packet-worker.toml").read_text(encoding="utf-8"))
+        self.assertEqual(worker["name"], "jyut-ocr-packet-worker")
+        self.assertEqual(worker["model_reasoning_effort"], "xhigh")
+        self.assertNotIn("model", worker)
+        self.assertFalse(worker["agents"]["enabled"])
+
     def test_toml_agents_are_valid_and_inherit_model_resolution(self) -> None:
         for name in AGENT_NAMES:
             with self.subTest(agent=name):

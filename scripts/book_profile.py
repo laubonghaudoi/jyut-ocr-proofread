@@ -50,6 +50,7 @@ from _packet_client import (  # noqa: E402
     packet_page_context,
 )
 import proofread_pages as pp  # noqa: E402
+import _packet_events  # noqa: E402
 
 SCHEMA_VERSION = 2
 DEFAULT_PROBE_PAGES = 8
@@ -620,7 +621,7 @@ def survey_layout(pool: Sequence[int], drafts: Path, learned_heads: bool = False
 
 def build_parser() -> argparse.ArgumentParser:
     parser = pp.AgentTransportParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__, epilog=_packet_events.HELP, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("render_directory", type=Path)
     parser.add_argument("draft_directory", type=Path, help="engine A drafts (with layout JSON)")
@@ -775,6 +776,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
         if arguments.packets_dir
         else profile_path.parent / "packets"
     )
+    events = _packet_events.PacketEvents(packets_dir, "book-profile", enabled=arguments.backend == "packet")
     if arguments.backend == "packet":
         client: Any = PacketClient(
             packets_dir,
@@ -789,6 +791,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
                 "doubled_notation": not arguments.no_doubled_notation,
             },
         )
+        events.record("resume", checkpoint_answers=len(client.answers), candidate_pages=len(candidates))
     else:
         try:
             # No model named: the server's first listed one (pp.resolve_http_model).
@@ -917,6 +920,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
     if packet_pending:
         assert isinstance(client, PacketClient)
         summary = client.write_wave_bundles(stage="book-profile")
+        events.emit(summary)
         print(
             f"[packets] PENDING {summary['pending']} question(s) in {summary['waveDir']} "
             f"({len(summary['bundles'])} bundle(s)); answer and run:\n"
@@ -971,6 +975,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
     temporary = profile_path.with_name(profile_path.name + ".tmp")
     temporary.write_bytes(pp.canonical_json_bytes(profile))
     os.replace(temporary, profile_path)
+    events.record("seal", artifact="profile")
     print(f"  profile: {profile_path} ({profile['seconds']}s)")
     return 0
 

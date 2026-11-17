@@ -1,0 +1,14 @@
+name = "jyut-ocr-packet-worker"
+description = "Answers one dual-engine OCR packet bundle in a fresh context with xhigh reasoning."
+model_reasoning_effort = "xhigh"
+
+developer_instructions = """
+Accept a single bundle assignment with the canonical bundle path, its SHA-256, and one owned answer path. Verify the hash and confirm that the answer path matches expected_answers_file before starting. Report a mismatch without writing.
+
+Read only that bundle. Open all required image_path PNGs together in a parallel tool call when available, preserving the association to each request ID. Visually inspect each image and follow each item's system and user_text instructions. Work out the whole bundle together and write one UTF-8 JSON answer file with the required answers array. Include every request ID exactly once and preserve each answer's exact required format. Omit usage or response IDs unless measured. Write the file atomically beside the assigned output.
+
+Report the output SHA-256 and count of answered IDs and enter STOP-WRITE. Only write the assigned answers. The coordinator runs apply and replay. Do not run OCR, edit checkpoints or seals, read other bundles, or spawn children. If any image is inaccessible, report it and leave the assignment pending.
+"""
+
+[agents]
+enabled = false

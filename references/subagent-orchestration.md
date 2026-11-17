@@ -32,7 +32,7 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
 
 兩條路線都出 packet：兩份真實底稿就先跑 `book_profile.py`，再將 profile 同兩個底稿目錄交畀 `proofread_pages.py`；淨係一份真實底稿就 `proofread_pages.py --single-engine`，唔使 profile。唔可以將一份底稿複製成假嘅第二引擎證據。題目寫成 `packets/wave-NN/bundle-XX.json`，裁圖喺 `packets/crops/`，腳本 exit `10`（`proofread_pages.py` 同時有頁 failed／blocked 就 exit `11`）。
 
-1. **分工**：主 agent 最多開上面講嘅上限咁多個普通 packet worker，或者自己順序做。每個 assignment 擁有一個輸入 `bundle-XX.json`（連佢嘅 SHA-256）同一個輸出：bundle 嘅 `expected_answers_file`（`packets/wave-NN/answers-XX.json`）。一個 wave 分成最多 `--max-bundles` 個 bundle（預設 8）；一個 bundle 最多 `--max-items-per-bundle` 條題（`proofread_pages.py`，預設 20，env `PROOFREAD_MAX_ITEMS_PER_BUNDLE`），題多過呢個數就多開 bundle，唔會將幾百張頁圖塞落同一個 bundle。
+1. **分工**：主 agent 最多開上面講嘅上限咁多個普通 packet worker，或者自己順序做。每個 assignment 擁有一個輸入 `bundle-XX.json`（連佢嘅 SHA-256）同一個輸出：bundle 嘅 `expected_answers_file`（`packets/wave-NN/answers-XX.json`）。`--max-bundles` 係題量容許時嘅分包目標（預設 8）。逐頁校對每包上限由 `--max-items-per-bundle` 設（預設 20，env `PROOFREAD_MAX_ITEMS_PER_BUNDLE`），profile 每包上限 20。題多過總容量就多開包。
 2. **答題**：每條題睇佢 `image_path` 指嘅 PNG（裁圖，或者整頁 render），照佢自己嘅 `system` 同 `user_text` 寫答案，`answer` 係原原本本嘅答案文字。常見嘅題：
    - `adjudicate`（裁決）：直接睇裁圖上標住嘅字位，照 prompt 嘅格式答（`字: ...`）；兩個候選都唔係就照實答，睇唔清就照 prompt 講。
    - `census+punctuate`（重試係 `punctuate-retry`、`punctuate-shape`）：喺放大嘅 block 圖數印咗嘅標點（census），再將嗰啲符號加入鎖定嘅字串（唔准加、刪、換任何字）。A 套預設一題做晒點算同加標點；分開問嘅 `census`、`punctuate` 係 B 套（http）嘅預設問法，見到就照各自嘅 prompt 答。
@@ -46,6 +46,10 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
 3. **寫答案**：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次。`usage`、`response_id` 淨係寫量度到嘅；冇就唔寫（記做未知，唔當零）。可以寫 `answered_by`（答題 model 嘅確實 ID）。Worker 淨係寫自己嗰份 answers、計佢嘅 SHA-256、報答咗幾多個 `request_id`，然後即刻**停寫**（STOP-WRITE）；唔准掂 `packets/answers.jsonl`、`page-NNNN.md`、`page-NNNN.json`。
 4. **交答案**：答晒成個 wave，主 agent 跑 `[packets] PENDING` 行（或者 wave 嘅 `manifest.json`）列出嘅 `apply_packet_answers.py PACKETS_DIR WAVE_DIR`，加 `--answered-by MODEL`（答題模型嘅確實 ID；run report 嘅 `packetAnsweredBy` 按模型數，用嚟核全書係咪同一個模型答）。佢驗證後原子追加入 `answers.jsonl`。之後重跑同一條步驟命令：腳本重播答案，跑晒決定論守門（`verify_characters`、`restore_merged_characters`、`check_rebuilt_table`、`punctuation_pass_ok`、`deleted_runs`），出下一個 wave，或者封 `page-NNNN.md` 同 `page-NNNN.json`。直到 exit `0` 先去下一步。
 5. **exit 11**：照答個 wave；另外 run report 嘅 `pages` 有 failed／blocked 嘅頁，重跑修唔好佢哋，要按原因處理（例如補底稿之後 `--overwrite --pages N`）。
+
+**短文件合併跑法（雙引擎，可選）**：由主 agent 只讀 wave manifest 嘅分工資料，逐包派一個冇前文嘅新 worker。每包只派一次，等佢停寫並驗 hash 先 apply。Worker 只載入自己嗰包，有批量開圖能力就一次過開指定 PNG，視覺核對晒先寫一份答案。可用 `--max-bundles 1` 減少細 wave 嘅包數。先驗 worker 嘅讀圖能力同實際 effort。只有 worker 保持指定模型同 effort 時，先調低主 agent 嘅 effort。用主 session 作答嗰陣沿用原本嘅答題模型同 effort。
+
+**量度**：設定 `JYUT_OCR_PACKET_EVENTS` 指向 packets 目錄外嘅 JSONL 檔（父目錄要先存在），`JYUT_OCR_PACKET_CASE` 可選填個案 ID。每行係發包、apply、resume 或封存事件，有 stage、invocation ID 同時間。重播同一個 wave 會再記一次 emit，按 stage 同 wave 分辨。用原生 session log 核 worker 啟停、模型、實際 effort 同用量。Sidecar 只供分析，續跑按原有 manifest、答案同封條。
 
 規矩：
 

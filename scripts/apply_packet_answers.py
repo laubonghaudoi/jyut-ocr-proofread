@@ -37,6 +37,7 @@ from _packet_client import (  # noqa: E402
     PACKET_SCHEMA_VERSION, _atomic_write_bytes, _sha256_bytes, amendment_response_id, answer_response_id,
     answer_sha256, load_answers_map, normalize_fused_answer, normalize_usage, validate_answer_compatibility,
 )
+import _packet_events  # noqa: E402
 
 MAX_MODEL_ID = 256
 
@@ -158,7 +159,8 @@ def parse_answer_file(path: Path) -> list[dict[str, Any]]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, epilog=_packet_events.HELP,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("packets_dir", type=Path)
     parser.add_argument("sources", nargs="*", type=Path, help="wave directory or answer JSON (default: latest wave)")
     parser.add_argument("--allow-partial", action="store_true", help="allow incomplete wave answers")
@@ -201,6 +203,7 @@ def _apply(args: argparse.Namespace) -> int:
     default_model = model_id(args.answered_by, "(--answered-by)") if args.answered_by is not None else None
     if args.reason is not None and not args.amend:
         raise ApplyAnswersError("--reason goes with --amend")
+    events = _packet_events.PacketEvents(packets_dir)
     # The same lock covers validation, conflict detection and publication. No
     # competing process can pass validation against stale checkpoint bytes.
     with (packets_dir / ".packets.lock").open("a", encoding="utf-8") as lock_handle:
@@ -306,6 +309,9 @@ def _apply(args: argparse.Namespace) -> int:
             new_bytes = b"".join((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8") for row in new_records)
             _atomic_write_bytes(answers_path, prefix + new_bytes)
         total_known = len(set(already_answered) | set(submitted))
+        events.applied(wave_dirs, added=len(new_records) - len(amended), amended=len(amended),
+                       unchanged=len(submitted) - len(new_records), remaining=len(missing),
+                       checkpoint_answers=total_known)
     models: dict[str, int] = {}
     for record in new_records:
         key = record.get("answered_by") or "unrecorded"

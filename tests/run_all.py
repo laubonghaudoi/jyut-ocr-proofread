@@ -13,7 +13,8 @@ listens on (so no request reaches a model server), PYTHONDONTWRITEBYTECODE=1,
 none of the variables that say which model the calling agent is or
 proofreads with (AGENT_MODEL_VARIABLES: under Qwen Code, say, its shell's
 QWEN_CODE_MODEL would make the scripts take the agent for the local model),
-and none of the machine's GPU hand-over settings (OCR_PHASE_*).
+none of the machine's GPU hand-over settings (OCR_PHASE_*), and no inherited
+packet event sink from a live run.
 No GPU and no model are needed.  The script prints PASS or FAIL per file, then a
 summary, and exits 1 when any file fails.
 
@@ -53,6 +54,7 @@ AGENT_MODEL_VARIABLES = ("QWEN_CODE_MODEL", "QWEN_CODE_MODEL_IDENTITY", "JYUT_OC
 # them).  With OCR_PHASE_RELEASE_CMD set the runners defer outside a hand-over
 # window, and no test may run the machine's real release or restore command.
 HANDOVER_PREFIX = "OCR_PHASE_"
+PACKET_EVENT_VARIABLES = ("JYUT_OCR_PACKET_EVENTS", "JYUT_OCR_PACKET_CASE")
 TAIL_LINES = 30
 
 UNIT_RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
@@ -110,7 +112,8 @@ def unit_count(output: str) -> int:
 def child_environment(environ: dict[str, str] | None = None) -> dict[str, str]:
     """ENVIRON (default os.environ) as one test file runs with it."""
     env = {key: value for key, value in (os.environ if environ is None else environ).items()
-           if key not in AGENT_MODEL_VARIABLES and not key.startswith(HANDOVER_PREFIX)}
+           if key not in AGENT_MODEL_VARIABLES and key not in PACKET_EVENT_VARIABLES
+           and not key.startswith(HANDOVER_PREFIX)}
     env.update(PROOFREAD_ENDPOINT=CLOSED_ENDPOINT, PYTHONDONTWRITEBYTECODE="1")
     return env
 

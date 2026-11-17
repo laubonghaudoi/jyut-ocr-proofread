@@ -92,6 +92,7 @@ import _tables  # noqa: E402
 import _loop_watch  # noqa: E402
 import _content_fidelity  # noqa: E402
 import _note_markers  # noqa: E402
+import _packet_events  # noqa: E402
 from _packet_client import (  # noqa: E402
     DEFAULT_MAX_ITEMS_PER_BUNDLE,
     EXIT_PACKETS_PENDING,
@@ -13167,7 +13168,7 @@ def _proofread_page_inner(
         }
         record["provenance"]["jsonPayloadSha256"] = sha256_bytes(
             canonical_json_bytes(record))
-        seal_page(job, writer_text.encode("utf-8"), record)
+        seal_page(job, writer_text.encode("utf-8"), record, events=getattr(arguments, "packet_events", None))
         return record
 
     # Transcribed, not merged: one engine only, or text with no CJK to merge.
@@ -16314,7 +16315,7 @@ def _proofread_page_inner(
         "markdownSha256": sha256_bytes(writer_text.encode("utf-8")),
     }
     record["provenance"]["jsonPayloadSha256"] = sha256_bytes(canonical_json_bytes(record))
-    seal_page(job, writer_text.encode("utf-8"), record)
+    seal_page(job, writer_text.encode("utf-8"), record, events=getattr(arguments, "packet_events", None))
     return record
 
 
@@ -16337,11 +16338,14 @@ def output_lock(directory: Path) -> Iterator[None]:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def seal_page(job: PageJob, markdown: bytes, record: Mapping[str, Any]) -> None:
+def seal_page(job: PageJob, markdown: bytes, record: Mapping[str, Any],
+              *, events: _packet_events.PacketEvents | None = None) -> None:
     """Write a page's Markdown and its seal, under the output directory's lock."""
     with output_lock(job.out_json.parent):
         job.out_md.write_bytes(markdown)
         job.out_json.write_bytes(canonical_json_bytes(record))
+    if events is not None:
+        events.record("seal", artifact="page", scan_page=job.scan_page)
 
 
 # The two engines of the default route as their runners name themselves in
@@ -16484,7 +16488,7 @@ class AgentTransportParser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = AgentTransportParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__, epilog=_packet_events.HELP, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("render_directory", type=Path)
     parser.add_argument("draft_directory", type=Path, help="OCR runner output (page-NNNN.txt/.json)")
@@ -17107,6 +17111,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     packets_dir = (arguments.packets_dir.expanduser().resolve()
                    if arguments.packets_dir is not None else output.parent / "packets")
+    events = _packet_events.PacketEvents(packets_dir, "proofread",
+                                        enabled=arguments.backend == "packet" and drafts2 is not None)
+    arguments.packet_events = events
     # Made once the pages are sorted, and only when one is to be proofread: a
     # run that finds every page current asks no model, and so needs none.
     client: Any = None
@@ -17215,6 +17222,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         # The model the seals record (proofreadModel) and the report names.
         arguments.model = getattr(client, "model", None) or arguments.model
+    events.record("resume", checkpoint_answers=len(client.answers) if isinstance(client, PacketClient) else None,
+                  queued_pages=len(jobs), current_pages=skipped)
 
     completed = pending_pages = 0
     # A page with no render, or with no draft of either engine, cannot be
@@ -17369,6 +17378,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     wave_summary: dict[str, Any] | None = None
     if pending_pages > 0 and isinstance(client, PacketClient):
         wave_summary = client.write_wave_bundles(stage="proofread")
+        events.emit(wave_summary)
     elif pending_pages == 0:
         # When this file runs as a script, the stitch's own import of it must
         # find this module, not load a second copy.
@@ -17380,6 +17390,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         stitched = stitch_tables.stitch_directory(
             output, renders, drafts, drafts2,
             sorted(set(profile_section(arguments, "layout").get("runningHeads") or [])), furniture)
+        if stitched.get("pagesRewritten"):
+            events.record("seal", artifact="stitched-pages", scan_pages=stitched["pagesRewritten"])
         # The pages it rewrote carry other doubts now; the report says so.
         for entry in results:
             if entry["scanPage"] not in stitched.get("pagesRewritten", []):

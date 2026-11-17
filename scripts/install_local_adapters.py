@@ -206,6 +206,13 @@ def build_portable_specs(
         legacy = build_specs(user_home / ".codex", user_home / ".claude", repo_root=root)
         specs.extend(spec for spec in legacy if spec["source_type"] == "regular-file"
                      and spec["id"].split("-", 1)[0] in requested)
+        if "codex" in requested:
+            role = "jyut-ocr-packet-worker.toml"
+            specs.append({
+                "id": "codex-packet-worker", "source": root / "adapters/codex/agents" / role,
+                "target": user_home / ".codex/agents" / role, "source_type": "regular-file",
+                "install_mode": "sealed-copy", "repo_root": root,
+            })
     return specs
 
 

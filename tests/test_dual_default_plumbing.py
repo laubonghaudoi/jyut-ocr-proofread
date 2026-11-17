@@ -402,6 +402,54 @@ class PacketPlumbingTests(unittest.TestCase):
         code, _, _, report = self.packet()
         self.assertEqual((code, report["exitStatus"]), (pc.EXIT_PACKETS_PENDING, 10))
 
+    def test_packet_events_follow_apply_and_resume_without_republishing(self):
+        write_book(self.root)
+        # Western-only drafts ask the image writer once per page in the dual
+        # route, so the fixture can replay simple answers through actual apply.
+        for folder in ("ocr-paddle", "ocr-hunyuan"):
+            for scan in (1, 2):
+                (self.root / folder / f"page-{scan:04d}.txt").write_text(f"Page {scan}\n")
+        def packet():
+            return run(self.root, backend="packet")
+
+        log = self.root / "events.jsonl"
+        code, _, _, report = packet()
+        self.assertEqual(code, 10)
+        self.assertFalse(log.exists())
+        wave = Path(report["packetWave"]["waveDir"])
+        published = {path: path.read_bytes() for path in wave.iterdir()}
+        with mock.patch.dict(os.environ, {"JYUT_OCR_PACKET_EVENTS": str(log), "JYUT_OCR_PACKET_CASE": "case-1"}):
+            self.assertEqual(packet()[0], 10)
+            self.assertTrue(all(path.read_bytes() == contents for path, contents in published.items()))
+            self.answer_wave()
+            checkpoint = self.root / "packets" / "answers.jsonl"
+            answers = checkpoint.read_bytes()
+            self.answer_wave()
+            self.assertEqual(checkpoint.read_bytes(), answers)
+            code, _, error, _ = packet()
+            self.assertEqual(code, 0, error)
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([row["event"] for row in rows], ["resume", "emit", "apply", "apply", "resume", "seal", "seal"])
+        self.assertEqual({row["case"] for row in rows}, {"case-1"})
+        self.assertEqual({row["stage"] for row in rows}, {"proofread"})
+        self.assertEqual(rows[0]["invocation_id"], rows[1]["invocation_id"])
+        self.assertEqual(rows[1]["wave"], wave.name)
+        self.assertEqual(rows[1]["bundles"][0]["sha256"], report["packetWave"]["bundles"][0]["sha256"])
+        self.assertEqual((rows[2]["added"], rows[3]["added"], rows[3]["unchanged"]), (2, 0, 2))
+        self.assertEqual(rows[4]["checkpoint_answers"], 2)
+        self.assertEqual({row["scan_page"] for row in rows if row["event"] == "seal"}, {1, 2})
+
+    def test_packet_event_log_cannot_target_the_answer_checkpoint(self):
+        self.assertEqual(self.packet()[0], 10)
+        checkpoint = self.root / "packets" / "answers.jsonl"
+        with mock.patch.dict(os.environ, {"JYUT_OCR_PACKET_EVENTS": str(checkpoint)}), \
+                contextlib.redirect_stderr(io.StringIO()) as warning:
+            self.answer_wave()
+        self.assertIn("packet event log unavailable", warning.getvalue())
+        rows = [json.loads(line) for line in checkpoint.read_text().splitlines()]
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all("request_id" in row and "event" not in row for row in rows))
+
     def test_answering_model_and_its_usage_reach_the_page_and_the_report(self):
         self.assertEqual(self.packet()[0], 10)
         said = self.answer_wave(usage={"prompt_tokens": 100, "completion_tokens": 20,
@@ -628,6 +676,8 @@ class SuiteEnvironmentTests(unittest.TestCase):
                                          "PROOFREAD_ENDPOINT": "http://127.0.0.1:8090/v1/chat/completions",
                                          "OCR_PHASE_RELEASE_CMD": "systemctl --user stop x",
                                          "OCR_PHASE_RESTORE_CMD": "systemctl --user start x",
+                                         "JYUT_OCR_PACKET_EVENTS": "/live/packet-events.jsonl",
+                                         "JYUT_OCR_PACKET_CASE": "live-case",
                                          "KEPT": "1"})
         self.assertEqual(env, {"KEPT": "1", "PROOFREAD_ENDPOINT": CLOSED_ENDPOINT, "PYTHONDONTWRITEBYTECODE": "1"})
 

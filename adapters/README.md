@@ -6,7 +6,9 @@
 
 目前提供 Codex TOML 同 Claude Code Markdown writer／auditor 角色。透過 `./install.sh --agent codex --with-agents` 或 `--agent claude --with-agents` 安裝；唔加 `--with-agents` 就只裝技能。`agents/openai.yaml` 只係可選展示 metadata，唔係其他 agent 執行技能嘅前提。
 
-Codex adapters 省略 `model`／`model_reasoning_effort`，沿用平台有效解析結果；Claude adapters 用 `model: inherit`。使用者或平台嘅更高優先權 override 仍然有效，主 agent 要如實交代，唔假稱必然同模型。技能唔鎖固定 model ID。
+通用 Codex writer／auditor 省略 `model` 同 `model_reasoning_effort`，沿用平台有效設定。Claude adapters 用 `model: inherit`。用戶或平台嘅高優先權設定仍可覆蓋。
+
+Codex 嘅 `jyut-ocr-packet-worker` 係雙引擎 packet 分工嘅可選角色，設定 `model_reasoning_effort = "xhigh"`，模型沿用平台有效設定。每次只交一個 bundle，同一份答案一次寫齊。先用合成圖題同原生 log 驗讀圖同實際 model／effort，再用低 effort 主 agent 派工。
 
 Codex custom-agent 敏感檔案讀取曾拒絕 leaf symlink，所以安裝器用 byte-for-byte、SHA-256／mode 封存嘅 regular-file projection；Claude agent 檔同 skill 用 exact symlink。改 adapter 後用安裝器 `--check` 檢查，再重新安裝刷新 projection。Repo 仍係唯一 canonical source。
 
