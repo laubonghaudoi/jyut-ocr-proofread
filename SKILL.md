@@ -26,7 +26,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 ## 三、本書目錄同交付檔
 
-- 首次用先跑 `./install.sh --env-only --check`（即係 `scripts/install.py`）；未就緒就照 `references/install.md` 裝：長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑。macOS 上嗰行講 `The OCR engines of this Mac are not chosen yet`：**問用戶**要原生雙引擎（`--engine auto`）、橫排嘅 Apple Vision + HunyuanOCR（`--engine vision,hunyuan`，淨係下載 HunyuanOCR），定係淨用內置嘅 Apple Vision（`--engine vision`，唔下載模型），照嗰行講各自要幾多磁碟；唔准代佢揀。之後每條 `./install.sh` 都加用戶揀嗰個 `--engine`。
+- 首次用先跑 `./install.sh --env-only --check`（即係 `scripts/install.py`）；未就緒照 `references/install.md` 處理。macOS 只支援原生 Apple Silicon，首次安裝先問用戶：`--engine apple-vision`（純 Vision，唔下載 HF 模型）或者 `--engine hunyuan-paddle`（下載兩個引擎）。舊名稱須明確重選；唔代用戶揀，唔自動轉換舊書。長嘅下載先背景跑 `--prepare-only`，做完再前景跑 `./install.sh --env-only` 試跑；純 Vision 冇模型下載。
 - 每個 shell call 都係新 shell，開頭寫：`. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; cd SKILL_DIR`（呢份檔所在目錄）。你本身就係本機模型（一 B）就寫 `. "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"; export JYUT_OCR_AGENT_IS_LOCAL_MODEL=1; cd SKILL_DIR`，Qwen Code 都照加：上一個 call export 嘅唔會留低。下面 `BOOK`、`PDF` 換做實際路徑（有空格就加引號）。
 - `BOOK` 開喺 `"${JYUT_OCR_WORK_ROOT:-$HOME/jyut-ocr-books}/<名>"`，**唔好開喺 PDF 隔籬**（render 成幾 GB，PDF 嗰個資料夾可能係用戶嘅 git repo）。名用冇聲調嘅粵拼或者簡單英文，唔好用普通話拼音。
 - 用戶睇 PDF 隔籬嘅 `X-draft.md`（未校對草稿）、`X.md`（定稿）、`X-doubts.md`（疑問清單），加咗 `--extract-figures` 先有 `X-圖/`：腳本自己抄，抄唔到嗰行會講原因。由掃描圖資料夾開嘅書冇 PDF：唔抄，用戶睇 `BOOK/draft.md`、`BOOK/final.md`、`BOOK/doubts.md`（抽圖就加 `BOOK/figures/`），`BOOK` 唔清走。
@@ -40,9 +40,9 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 5. **定稿**（一律放背景，唔好前景跑）：`"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK > BOOK/finish.log 2>&1`，用 `wait_for_run.py BOOK BOOK/finish.log` 等；exit 碼照七。
 6. **交付同清走**：exit 0 之後，有 `WARNING` 先 `grep -n WARNING BOOK/finish/finish-book.log`；跟住 `"$JYUT_OCR_PYTHON" scripts/clean_book.py BOOK --all`（成個 `BOOK` 刪走，淨係留 PDF 隔籬嘅交付檔），再照九交付。掃描圖資料夾開嘅書唔跑佢（冇 PDF，佢 exit 3：交付檔淨係喺 `BOOK`）。
 
-**Vision + HunyuanOCR 雙引擎**（橫排）：安裝用 `--engine vision,hunyuan`，`env.sh` 記低 `JYUT_OCR_ENGINES=vision,hunyuan`。第 2 步仍然用上面嗰條 `ocr_book.py`／交接 command；亦可以明確加 `--engines vision,hunyuan`。引擎 A 寫入 `BOOK/ocr-vision`，B 照舊係 `BOOK/ocr-hunyuan`；**第 3、4 步兩條 command 嘅 `BOOK/ocr-paddle` 都換成 `BOOK/ocr-vision`**。第 5 步照舊：`finish_book.py` 會讀 profile，短檔冇 profile 就讀 `BOOK/reports/ocr-engines.json`，唔會因為殘留 `ocr-paddle` 而揀錯。續跑選擇次序係明確 `--engines`、`env.sh`、本書記錄、原生預設；用過明確參數就每次照加。Vision 能力同準確度唔係啟動門檻；B-only 表格會交視覺重建／整頁覆核，補讀只處理漏讀文字。
+**純 Apple Vision**：第 2 步直接跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine apple-vision`，唔包 `run_ocr_phase.py`，唔加 OCR 嘅 `--single-engine`，冇 HF 模型／Hunyuan 補讀／未校對草稿。跳過第 3 步；第 4 步用 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-vision BOOK/proofread --single-engine`；第 5 步用 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision`。B 套校對加 `--backend http`；工作檔保留，唔跑 `--all`。
 
-**單引擎**（淨係得 HunyuanOCR 嘅機，例如 Intel Mac；明確例外）：第 2 步加 `--single-engine`；跳過第 3 步；第 4 步 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`；第 5 步 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`；工作檔留低，唔跑 `--all`。`env.sh` 嘅 `JYUT_OCR_ENGINES` 係 `vision`（Mac 安裝嗰陣揀咗淨用 Apple Vision）一樣行單引擎：第 2 步照上面嘅 `ocr_book.py`／交接 command，加 `--engines vision`（唔加 `--single-engine`，亦冇未校對草稿），第 4、5 步嘅 `BOOK/ocr-hunyuan` 換成 `BOOK/ocr-vision`。
+**Hunyuan＋Paddle**：第 2 步可明確加 `--engine hunyuan-paddle`，其餘按上面雙引擎步驟。Linux／WSL2 保留單引擎例外：第 2 步用 `ocr_book.py BOOK --engine hunyuan`（有模型交接就包 `run_ocr_phase.py`）；跳過第 3 步，第 4、5 步按純 Vision 單引擎命令，但底稿目錄用 `BOOK/ocr-hunyuan`。macOS 唔接受 Hunyuan-only。
 
 ## 五、長步驟同 GPU 交接
 

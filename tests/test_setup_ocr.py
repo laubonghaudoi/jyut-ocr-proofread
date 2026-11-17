@@ -85,46 +85,49 @@ class SetupTest(unittest.TestCase):
             config.write_text("export HUNYUAN_MODEL=" + value + "\n")
             with self.assertRaises(setup.SetupError):
                 setup.read_environment(config)
-    def test_engines_follow_the_platform_and_an_override_resumes(self):
-        # Decision 2: "auto" is both engines (Intel Macs: Hunyuan only).  Linux
-        # takes it with no prompt; a Mac's first setup asks first (the next tests).
-        for system, machine, engines in (("Linux", "x86_64", ("hunyuan", "paddle")),
-                                         ("Darwin", "arm64", ("hunyuan", "paddle")),
-                                         ("Darwin", "x86_64", ("hunyuan",))):
-            with self.subTest(system=system, machine=machine):
-                request = setup.engine_request("default", {})
-                self.assertEqual(setup.choose_engines(request, system=system, machine=machine)[0], engines)
-        saved = {"JYUT_OCR_ENGINE": "vision", "JYUT_OCR_ENGINES": "vision"}
-        self.assertEqual(setup.engine_request("default", saved), "vision")
-        self.assertEqual(setup.engine_request("auto", saved), "auto")
-        # An older single-engine installer's automatic pick is not an override.
-        self.assertEqual(setup.engine_request("default", {"JYUT_OCR_ENGINE": "hunyuan"}), "auto")
+    def test_engines_follow_the_platform_and_explicit_reselection(self):
+        for system, machine in (("Linux", "x86_64"), ("Darwin", "arm64")):
+            request = setup.engine_request("default", {})
+            self.assertEqual(setup.choose_engines(request, system=system, machine=machine)[0], ("hunyuan", "paddle"))
+        saved = {"JYUT_OCR_ENGINE": "apple-vision", "JYUT_OCR_ENGINES": "vision"}
+        self.assertEqual(setup.engine_request("default", saved), "apple-vision")
+        self.assertEqual(setup.engine_request("hunyuan-paddle", saved), "hunyuan-paddle")
+        for retired in ("auto", "vision", "vision,hunyuan", "hunyuan,paddle"):
+            with self.assertRaisesRegex(setup.SetupError, "--engine apple-vision"):
+                setup.engine_request("default", {"JYUT_OCR_ENGINE": retired})
+        self.assertEqual(setup.engine_request("default", {"JYUT_OCR_ENGINE": "hunyuan"}), "hunyuan")
+        with self.assertRaisesRegex(setup.SetupError, "Intel Macs"):
+            setup.choose_engines("hunyuan-paddle", system="Darwin", machine="x86_64")
         with self.assertRaises(setup.SetupError):
-            setup.choose_engines("vision", system="Linux", machine="x86_64")
+            setup.choose_engines("apple-vision", system="Linux", machine="x86_64")
+        with self.assertRaisesRegex(setup.SetupError, "Hunyuan-only"):
+            setup.choose_engines("hunyuan", system="Darwin", machine="arm64")
+
     def test_a_first_setup_on_macos_has_the_engines_to_choose_and_linux_never_does(self):
         fresh = replace(self.options, engine="default", device="default")
         self.assertTrue(setup.engine_choice_pending(fresh, {}, "Darwin"))
         self.assertFalse(setup.engine_choice_pending(fresh, {}, "Linux"))
         # An explicit --engine, or the choice an earlier setup saved, is the answer.
-        for engine in setup.ENGINE_REQUESTS:
+        for engine in setup.ENGINE_CHOICES:
             self.assertFalse(setup.engine_choice_pending(replace(fresh, engine=engine), {}, "Darwin"))
-            saved = {"JYUT_OCR_ENGINE": engine, "JYUT_OCR_ENGINES": "vision" if engine == "vision" else "hunyuan"}
+            saved = {"JYUT_OCR_ENGINE": engine, "JYUT_OCR_ENGINES": "vision" if engine == "apple-vision" else "hunyuan,paddle"}
             self.assertFalse(setup.engine_choice_pending(fresh, saved, "Darwin"))
-        # An older single-engine installer's automatic pick is not a choice.
-        self.assertTrue(setup.engine_choice_pending(fresh, {"JYUT_OCR_ENGINE": "hunyuan"}, "Darwin"))
+        # Retired configurations require explicit reselection.
+        with self.assertRaises(setup.SetupError):
+            setup.engine_choice_pending(fresh, {"JYUT_OCR_ENGINE": "auto"}, "Darwin")
     def test_macos_setup_with_no_terminal_names_both_answers_and_what_each_takes(self):
         fresh = replace(self.options, engine="default", device="default")
         lock = setup.load_lock(ROOT)
         with self.assertRaisesRegex(
                 setup.SetupError,
-                r"--engine auto \(HunyuanOCR and PaddleOCR-VL, downloaded from Hugging Face: about \d+\.\d GB more disk; "
-                r"two drafts a page.* or --engine vision \(Apple Vision only, built into macOS: no model download"):
+                r"--engine hunyuan-paddle \(HunyuanOCR and PaddleOCR-VL, downloaded from Hugging Face: about \d+\.\d GB more disk; "
+                r"two drafts a page.* or --engine apple-vision \(Apple Vision only, built into macOS: no model download"):
             setup.ask_engine_choice(fresh, {}, lock, system="Darwin", machine="arm64")
-        # An Intel Mac's downloaded engine is HunyuanOCR alone (no Paddle wheel).
-        with self.assertRaisesRegex(setup.SetupError, r"--engine auto \(HunyuanOCR, downloaded from Hugging Face: .*one draft a page"):
+        # Intel and Rosetta do not silently select a degraded route.
+        with self.assertRaisesRegex(setup.SetupError, "Intel Macs"):
             setup.ask_engine_choice(fresh, {}, lock, system="Darwin", machine="x86_64")
         self.assertIs(setup.ask_engine_choice(fresh, {}, lock, system="Linux", machine="x86_64"), fresh)
-        chosen = replace(fresh, engine="vision")
+        chosen = replace(fresh, engine="apple-vision")
         self.assertIs(setup.ask_engine_choice(chosen, {}, lock, system="Darwin", machine="arm64"), chosen)
     def test_macos_first_setup_installs_nothing_until_the_engines_are_chosen(self):
         fresh = replace(self.options, engine="default", device="default")
@@ -137,13 +140,13 @@ class SetupTest(unittest.TestCase):
         dependencies.assert_not_called()
         python.assert_not_called()
         self.assertEqual(result["status"], "action-required")
-        self.assertIn("--engine auto", result["reason"])
-        self.assertIn("--engine vision", result["reason"])
+        self.assertIn("--engine hunyuan-paddle", result["reason"])
+        self.assertIn("--engine apple-vision", result["reason"])
         self.assertEqual(sorted(path.name for path in self.base.rglob("*") if path.is_file()), [".setup.lock", ".setup.lock"])
     def test_at_a_terminal_the_person_is_asked_and_the_answer_is_the_engine_request(self):
         asked = replace(self.options, engine="default", device="default", interactive=True)
         lock = setup.load_lock(ROOT)
-        for typed, engine in (("1\n", "auto"), ("2\n", "vision"), ("x\nvision\n", "vision")):
+        for typed, engine in (("1\n", "hunyuan-paddle"), ("2\n", "apple-vision"), ("x\napple-vision\n", "apple-vision")):
             with self.subTest(typed=typed), patch.object(setup.sys, "stdin", io.StringIO(typed)), \
                     contextlib.redirect_stderr(io.StringIO()) as shown:
                 self.assertEqual(setup.ask_engine_choice(asked, {}, lock, system="Darwin", machine="arm64").engine, engine)
@@ -201,7 +204,7 @@ class SetupTest(unittest.TestCase):
             smoke.assert_not_called()
     def test_environment_storage_cannot_be_inside_repository(self):
         with self.assertRaisesRegex(setup.SetupError, "outside"):
-            setup.setup(replace(self.options, data_dir=ROOT / "scratch-runtime"))
+            setup.setup(replace(self.options, engine="hunyuan-paddle", data_dir=ROOT / "scratch-runtime"))
     def test_failed_smoke_cannot_mark_ready(self):
         with patch.object(setup, "platform_name", return_value="Linux"), patch.object(setup, "check_free_disk"), patch.object(setup, "ensure_dependencies"), patch.object(setup, "ensure_python", return_value=Path("/isolated/python")), patch.object(setup, "ensure_models", return_value={}), patch.object(setup, "ensure_runtime", return_value=(Path("/runtime/llama-server"), {})), patch.object(setup, "environment_identity", return_value={"id": "test"}), patch.object(setup, "smoke_test", side_effect=setup.SetupError("no OCR output")):
             with self.assertRaisesRegex(setup.SetupError, "no OCR"):

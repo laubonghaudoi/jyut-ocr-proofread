@@ -131,14 +131,20 @@ def phase_order() -> None:
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
         for name in ("run_hunyuanocr.py", "build_draft.py", "run_paddleocr_vl.py", "run_hunyuanocr_second_look.py"):
             (scripts / name).write_text(STAND_IN_RUNNER, encoding="utf-8")
-        book = root / "book"
-        (book / "renders").mkdir(parents=True)
         env = {key: value for key, value in os.environ.items() if not key.startswith("OCR_PHASE_")}
+        # Hunyuan-only remains a Linux/WSL2 exception. Each route owns a fresh
+        # book; an existing book's engine record must never be overwritten.
+        launcher = ("import platform,runpy,sys; platform.system=lambda:'Linux'; "
+                    "sys.path.insert(0,sys.argv[1]); sys.argv=sys.argv[2:]; "
+                    "runpy.run_path(sys.argv[0],run_name='__main__')")
         said = {}
         for extra in ((), ("--single-engine",)):
+            book = root / ("single" if extra else "dual") / "book"
+            (book / "renders").mkdir(parents=True)
             calls = root / f"calls{len(extra)}.txt"
             calls.write_text("", encoding="utf-8")
-            done = subprocess.run([sys.executable, str(scripts / "ocr_book.py"), str(book), *extra],
+            done = subprocess.run([sys.executable, "-c", launcher, str(scripts),
+                                   str(scripts / "ocr_book.py"), str(book), *extra],
                                   env=dict(env, STAND_IN_CALLS=str(calls)), capture_output=True, text=True,
                                   timeout=120)
             said[extra] = (done.returncode, calls.read_text(encoding="utf-8").splitlines())

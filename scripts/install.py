@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Install one portable Agent Skill and prepare its local OCR environment.
+"""Install/check the portable skill and its OCR environment.
 
-Both draft engines, HunyuanOCR and PaddleOCR-VL, are installed by default (an
-Intel Mac gets HunyuanOCR only); --engine is an explicit override.  A Mac has
-Apple Vision built in, so its first setup asks which the person wants - the
-downloaded engines (--engine auto) or Apple Vision alone (--engine vision) -
-before anything is downloaded; with no terminal to ask at, it stops and says
-to rerun with one of the two."""
+Apple Silicon chooses --engine apple-vision (no model downloads) or
+--engine hunyuan-paddle (both engines). Linux/WSL2 defaults to hunyuan-paddle
+and also supports --engine hunyuan. Intel Macs are unsupported.
+"""
 from __future__ import annotations
 
 import argparse
@@ -36,13 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "qwen is Qwen Code (~/.qwen/skills)")
     parser.add_argument("--skill-dir", type=Path, help="custom skill collection parent; appends jyut-ocr-proofread")
     parser.add_argument("--with-agents", action="store_true", help="also install optional Codex/Claude custom-agent adapters")
-    parser.add_argument("--engine", choices=("auto", "hunyuan", "vision", "vision,hunyuan"),
-                        help="override the engines: auto (the default: HunyuanOCR and PaddleOCR-VL; an Intel Mac "
-                             "gets HunyuanOCR only), hunyuan (HunyuanOCR alone, e.g. for a small machine) or "
-                             "vision (Apple Vision alone, macOS: no model download), or vision,hunyuan "
-                             "(macOS horizontal-text fast mode). Without it the saved choice "
-                             "is kept; on macOS, with none saved yet, setup asks (auto or vision) and without a "
-                             "terminal stops until one of them is passed")
+    parser.add_argument("--engine", choices=("apple-vision", "hunyuan-paddle", "hunyuan"),
+                        help="OCR route: apple-vision (Apple Silicon, no model downloads), "
+                             "hunyuan-paddle (both engines), hunyuan (Linux/WSL2 only). "
+                             "macOS first setup asks before downloading; retired auto/vision names are rejected")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "metal"),
                         help="override the device: auto (the default: the NVIDIA GPU, or Metal on Apple Silicon, "
                              "else CPU), cpu, cuda or metal. Without it the saved choice is kept")
@@ -116,6 +111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                            interactive=sys.stdin.isatty(), local_model=local, prepare_only=args.prepare_only,
                            started_at=STARTED, paddle_vl_backend=args.paddle_vl_backend or "default")
     try:
+        from _setup_ocr import platform_name, machine_name, choose_engines, engine_request, read_environment
+        system = platform_name()
+        existing = read_environment(options.config_dir / "env.sh")
+        if args.engine or existing.get("JYUT_OCR_ENGINE") or existing.get("JYUT_OCR_ENGINES"):
+            choose_engines(engine_request(options.engine, existing), system=system, machine=machine_name(system))
         current = True
         if not args.env_only:
             specs = build_portable_specs(repo_root=REPO_ROOT, agents=args.agent or ["generic"],

@@ -18,6 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class InstallEntryTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        directories = patch.object(install, "default_directories", return_value=(base / "config", base / "data"))
+        directories.start()
+        self.addCleanup(directories.stop)
+
     def test_shell_entry_works_from_another_working_directory_and_spaces(self):
         with tempfile.TemporaryDirectory(prefix="portable skill ") as directory:
             link = Path(directory) / "skill"
@@ -79,7 +87,7 @@ class InstallEntryTest(unittest.TestCase):
             self.assertTrue((target / "scripts/run_hunyuanocr.py").is_file())
     def test_env_only_does_not_install_agent_targets(self):
         with patch.object(install, "setup", return_value={"status": "ready"}) as setup_call, patch.object(install, "perform_install") as mutation, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main(["--env-only", "--engine", "hunyuan", "--device", "cpu"]), 0)
+            self.assertEqual(install.main(["--env-only", "--engine", "hunyuan-paddle", "--device", "cpu"]), 0)
         mutation.assert_not_called()
         self.assertEqual(setup_call.call_args[0][0].device, "cpu")
     def test_check_uses_inspection_not_initialization(self):

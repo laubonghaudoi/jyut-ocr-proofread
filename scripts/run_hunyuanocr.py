@@ -670,6 +670,12 @@ def recognize_pages(pages, server, budget, max_tokens, timeout, workers):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     arguments = build_parser().parse_args(argv)
     exit_on_sigterm()
     started_at, started = utc_now(), time.monotonic()

@@ -46,6 +46,8 @@
 
 ## OCR 階段（ocr_book.py）
 
+macOS 只支援原生 Apple Silicon。安裝同跑書統一用 `--engine apple-vision`（純 Vision，唔下載 HF 模型）或 `--engine hunyuan-paddle`（Hunyuan＋Paddle，保留 Metal／MLX）。純 Vision 只寫 `ocr-vision/`，唔做模型交接、草稿交付或 Hunyuan 補讀，跳過 book profile；之後用 `proofread_pages.py --single-engine`，再用 `finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision`。Linux／WSL2 另保留 `--engine hunyuan` 例外。舊路線名稱同 `--engines` 已移除；舊混合書目保持原樣，轉路線用新工作目錄。以下 OCR 次序描述雙引擎路線。
+
 Render 由 `survey_pdf.py PDF BOOK` 做（純 CPU，`--jobs` 係同時幾多個 process，預設 16）；之後 `ocr_book.py BOOK` 一條命令、一個時限做晒：
 
 1. 引擎 B（HunyuanOCR）：`run_hunyuanocr.py BOOK/renders BOOK/ocr-hunyuan`；

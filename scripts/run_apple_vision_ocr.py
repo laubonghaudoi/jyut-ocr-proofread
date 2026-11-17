@@ -31,7 +31,6 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _phase_budget import Budget, EXIT_INCOMPLETE, record_child
-from _gpu_queue import GPUQueue, GPUQueueTimeout, LocalModelOwnsGPU, add_queue_arguments
 from _mlx_vlm_server import SupervisedProcess
 from _vision_layout import adapt_observations
 from _draft_contract import layout_problem
@@ -415,7 +414,7 @@ def atomic_promote(
 
 
 class SwiftPersistentWorker:
-    def __init__(self, binary: Path, worker_id: int, lease_fds: tuple[int, ...] = ()):
+    def __init__(self, binary: Path, worker_id: int):
         self.budget = Budget()
         self.response_buffer = b""
         self.worker_id = worker_id
@@ -427,7 +426,6 @@ class SwiftPersistentWorker:
             text=True,
             encoding="utf-8",
             bufsize=1,
-            lease_fds=lease_fds,
         )
         self.process_handle = self.supervisor.process
         record_child("vision-worker", self.process_handle.pid)
@@ -765,7 +763,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path(__file__).with_name("apple_vision_ocr.swift"),
         help=argparse.SUPPRESS,
     )
-    add_queue_arguments(parser)
     return parser
 
 
@@ -880,7 +877,6 @@ def _main(
         assignments = [pending[index::worker_count] for index in range(worker_count)]
 
     budget = Budget()
-    lease = None
     model_ready_at = None
     compiler_metadata: dict[str, Any] = {}
     staging_root: Path | None = None
@@ -896,11 +892,9 @@ def _main(
         selected_factory = worker_factory
         try:
             if _STOP.is_set() or not budget.allows_next_page():
-                raise GPUQueueTimeout("phase deadline reached before Vision startup")
-            lease = GPUQueue(arguments.gpu_queue_dir, arguments.gpu_resource)
-            lease.acquire(timeout=arguments.gpu_queue_timeout, phase_deadline=budget.deadline, cancel_event=_STOP)
+                raise BudgetExpired("phase deadline reached before Vision startup")
             if selected_factory is None:
-                selected_factory = lambda binary, worker_id: SwiftPersistentWorker(binary, worker_id, lease.pass_fds)
+                selected_factory = SwiftPersistentWorker
             binary, compiler_metadata = selected_compiler(
                 tool.swift_file, build_directory
             )
@@ -914,11 +908,9 @@ def _main(
                 selected_factory,
             )
             page_results.extend(pool_results)
-        except (GPUQueueTimeout, subprocess.TimeoutExpired) as error:
+        except (BudgetExpired, subprocess.TimeoutExpired) as error:
             page_results.extend({"scanPage": page.scan_page, "status": "deferred", "reason": str(error)}
                                 for page in pending)
-            if isinstance(error, LocalModelOwnsGPU) and lease:
-                lease.status = "deferred-local-model"
         except Exception as error:
             page_results.extend(
                 {
@@ -931,8 +923,6 @@ def _main(
                 for page in pending
             )
         finally:
-            if lease:
-                lease.close()
             shutil.rmtree(staging_root, ignore_errors=True)
 
     page_results.sort(key=lambda item: item["scanPage"])
@@ -954,7 +944,6 @@ def _main(
         "status": "partial-failure" if failed_pages else "incomplete" if deferred_pages else "pass",
         "counts": {"completed": len(completed_pages), "skipped": len(skipped_pages), "failed": len(failed_pages), "deferred": len(deferred_pages)},
         "modelReadyAt": model_ready_at,
-        "gpuQueue": lease.report if lease else {"status": "not-requested"},
         "textAuthority": TEXT_AUTHORITY,
         "fallbackPolicy": {
             "used": [],
@@ -1026,6 +1015,12 @@ def _main(
 
 
 def main(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     _STOP.clear()
     previous_signals = {}
     if threading.current_thread() is threading.main_thread():

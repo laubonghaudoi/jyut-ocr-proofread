@@ -88,7 +88,6 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _draft_contract
-import _table_candidates
 import _tables  # noqa: E402
 import _loop_watch  # noqa: E402
 import _content_fidelity  # noqa: E402
@@ -7534,8 +7533,7 @@ UNREAD_NOTE = ("呢個位係一個表格：乙係重建表格嗰陣寫低嘅字�
 
 
 def check_rebuilt_table(answer: str, allowed: Counter, required: Counter,
-                        source: str, unread: dict[str, Any] | None = None, *,
-                        literal: bool = False) -> tuple[str | None, str]:
+                        source: str, unread: dict[str, Any] | None = None) -> tuple[str | None, str]:
     """A rebuilt table, or why it cannot stand.
 
     `allowed` is what may appear (every character either engine read in the
@@ -7559,15 +7557,14 @@ def check_rebuilt_table(answer: str, allowed: Counter, required: Counter,
     if len(tables) > 1:
         return None, f"{len(tables)} tables in the answer, one region"
     table = _tables.simplify(tables[0])
-    characters = _table_candidates.characters if literal else CJK
-    rows = len({cell.row for cell in table.cells if characters(cell.text)})
+    rows = len({cell.row for cell in table.cells if CJK(cell.text)})
     if rows < TABLE_MINIMUM_ROWS:
         return None, f"{rows} row(s) holding text"
     markup = _tables.render(table)
-    invented = Counter(characters(markup)) - allowed
+    invented = Counter(CJK(markup)) - allowed
     if invented:
         repaired = restore_merged_characters(source, markup)
-        if repaired is not None and not Counter(characters(repaired)) - allowed:
+        if repaired is not None and not Counter(CJK(repaired)) - allowed:
             markup, invented = repaired, Counter()
     # An acceptable variant of a character an engine read is that character
     # (variant_fold: the user's list, then OpenCC's).  Measured on a textbook
@@ -7577,18 +7574,18 @@ def check_rebuilt_table(answer: str, allowed: Counter, required: Counter,
     # form each site prints is no count's to say.
     folded = False
     if invented:
-        invented = Counter(variant_fold(characters(markup))) - Counter(variant_fold("".join(allowed.elements())))
+        invented = Counter(variant_fold(CJK(markup))) - Counter(variant_fold("".join(allowed.elements())))
         folded = not invented
-    lost = Counter(variant_fold("".join(required.elements()))) - Counter(variant_fold(characters(markup)))
+    lost = Counter(variant_fold("".join(required.elements()))) - Counter(variant_fold(CJK(markup)))
     if invented:
-        named = fold_named(invented, characters(markup), "".join(allowed.elements()))
+        named = fold_named(invented, CJK(markup), "".join(allowed.elements()))
         if unread is not None and not lost:
             unread.update({"markup": markup, "characters": named,
                            "accepted": f"{table.rows} rows x {table.cols} columns"})
         return None, "characters neither engine read here: " + "".join(sorted(named))[:30]
     if lost:
         return None, ("characters both engines read here left out: "
-                      + "".join(sorted(fold_named(lost, "".join(required.elements()), characters(markup))))[:30])
+                      + "".join(sorted(fold_named(lost, "".join(required.elements()), CJK(markup))))[:30])
     return markup, f"{table.rows} rows x {table.cols} columns" + ("; acceptable variants folded" if folded else "")
 
 
@@ -7932,7 +7929,7 @@ def confirm_unread(answer: str, allowed: Counter, required: Counter, source: str
 
 def rebuild_table(client: "Client", crop: bytes | None, text: str, required: Counter,
                   max_tokens: int, confirm: Callable[[str, str, int], dict[str, Any]] | None = None,
-                  table_orientation: str = "auto", *, literal: bool = False
+                  table_orientation: str = "auto"
                   ) -> tuple[str | None, dict[str, Any]]:
     """Ask the formatter to write one region as a table, from its crop, with its
     characters locked to `text` (what may appear) and `required` (what must).
@@ -7947,7 +7944,7 @@ def rebuild_table(client: "Client", crop: bytes | None, text: str, required: Cou
     sealed in tablesRebuilt.
     """
     rebuild_system = REBUILD_AS_PRINTED_SYSTEM if table_orientation == "as-printed" else REBUILD_SYSTEM
-    allowed = Counter(_table_candidates.characters(text) if literal else CJK(text))
+    allowed = Counter(CJK(text))
     record: dict[str, Any] = {"locked": sum(allowed.values()), "required": sum(required.values())}
     ask = (f"呢個區域兩個引擎讀到嘅字（次序可能亂咗）：\n---\n{text}\n---\n"
            "睇裁圖：係表格就用上面啲字寫出個表，唔係就答「唔係表格」。")
@@ -7955,7 +7952,7 @@ def rebuild_table(client: "Client", crop: bytes | None, text: str, required: Cou
     notes: list[str] = []
 
     def judged(answer: str, table: str | None, why: str) -> tuple[str | None, str]:
-        if table is not None or confirm is None or literal:
+        if table is not None or confirm is None:
             return table, why
         confirmed, how = confirm_unread(answer, allowed, required, text, confirm, asked)
         if confirmed is not None:
@@ -7965,13 +7962,13 @@ def rebuild_table(client: "Client", crop: bytes | None, text: str, required: Cou
         return None, why
 
     answer, _ = client.ask_answering(rebuild_system, ask, crop, max_tokens, kind="table-rebuild")
-    table, why = judged(answer, *check_rebuilt_table(answer, allowed, required, text, literal=literal))
+    table, why = judged(answer, *check_rebuilt_table(answer, allowed, required, text))
     refused = [] if table is not None else [answer or ""]
     if table is None and not why.startswith(("not a table", "no table")):
         answer, _ = client.ask_answering(
             rebuild_system, ask + f"\n你上一次嘅答案唔收得，原因：{why}。淨係用上面啲字，一個都唔好漏，重新寫。",
             crop, max_tokens, kind="table-rebuild-retry")
-        table, again = judged(answer, *check_rebuilt_table(answer, allowed, required, text, literal=literal))
+        table, again = judged(answer, *check_rebuilt_table(answer, allowed, required, text))
         why = again if table is not None else f"{why}; retry: {again}"
         if table is None:
             refused.append(answer or "")
@@ -12965,9 +12962,6 @@ def _proofread_page_inner(
     table_grouping: list[str] = []
     cell_direction: list[dict[str, Any]] = []
     table_nominations: list[dict[str, Any]] = []
-    witness_tables = (_table_candidates.candidates(load_blocks(job.draft_json), draft2 or "")
-                      if not _draft_contract.has_native_table_layout(
-                          _draft_contract.read_record(job.draft_json)) else [])
     table_rebuilds: list[dict[str, Any]] = []
     # Switch --keep-arabic-numerals: engine A's figures the merge writes, with
     # their gaps in the merged text, and every figure of the page, kept or not
@@ -13187,10 +13181,6 @@ def _proofread_page_inner(
         hint = (f"OCR 底稿（提示，非權威）：\n---\n{draft}\n---\n\n" if draft2 is None else
                 f"OCR 底稿 A（提示，非權威）：\n---\n{draft}\n---\n\n"
                 f"OCR 底稿 B（提示，非權威）：\n---\n{draft2}\n---\n\n")
-        # Numeric-only pages already require a whole-image transcription.
-        for candidate in witness_tables:
-            candidate["fallback"] = "whole-image transcription; no CJK stream to align"
-        hint += _table_candidates.fallback_hint(witness_tables)
         writer_text, m = client.ask_answering(
             WRITER_SYSTEM, hint + "睇頁圖，輸出呢一頁嘅忠實 Markdown 轉錄。",
             render_bytes, arguments.max_tokens, kind="writer")
@@ -13711,20 +13701,6 @@ def _proofread_page_inner(
                                          (marks_a, marks_b, aliases) if mark_rule else None)
                      for x, a_at, b_at in zip(segments, starts, b_starts)] if table_work else []
         nominations = nominate_tables(blocks, draft2) if table_work and mode == "merge" else []
-        # Explicit B markup is a candidate even without the CJK anchors used
-        # by the legacy order-conflict heuristic. Recompute after quarantine,
-        # because its block indices may differ from the original draft.
-        if witness_tables:
-            witness_tables = _table_candidates.candidates(blocks, draft2 or "")
-            for candidate in witness_tables:
-                if candidate["route"] == "union-crop" and table_work and mode == "merge":
-                    k = candidate["blocks"][0]
-                    nominations = [n for n in nominations if n["block"] not in candidate["blocks"]]
-                    nominations.append({"block": k, "label": blocks[k].get("label"),
-                                        "characters": len(_table_candidates.characters(candidate["text"])),
-                                        "signal": candidate["signal"], "explicitTable": candidate})
-                else:
-                    candidate["fallback"] = "no reliable merged block spans; use full-page image"
         if table_work and mode == "merge":
             # Decision D21: the witness is engine B's reading with the glyphs
             # this page's rules settle as marks left out (marks_left_out).
@@ -14692,8 +14668,6 @@ def _proofread_page_inner(
         if spans is None:
             for nomination in table_nominations:
                 nomination["outcome"] = "not rebuilt: the page has no block spans"
-                if nomination.get("explicitTable"):
-                    nomination["explicitTable"]["fallback"] = nomination["outcome"]
         agreed_text = agreed_block_text(blocks, agreed_segments) if candidates else []
         # Characters the rebuilt tables hold beyond the merged text (D20): the
         # structure pass writes the tables as they stand, so its character
@@ -14744,19 +14718,17 @@ def _proofread_page_inner(
             # Sealed as the layout's block number, as every block number is
             # (layout_index); k stays the block's position here.
             layout = layout_index(blocks, k)
-            explicit = next((n.get("explicitTable") for n in table_nominations
-                             if n["block"] == k and source == "nominated"), None)
             if k in absorbed_into:
                 for nomination in table_nominations:
                     if nomination["block"] == k:
                         nomination["outcome"] = (f"taken into block {layout_index(blocks, absorbed_into[k])}'s "
                                                  "rebuilt table")
                 continue
-            region = list(explicit["blocks"]) if explicit else [k]
+            region = [k]
             # What of each block taken in engine B read inside the region
             # (region_witness): the evidence that took it in.
             witnessed: dict[int, str] = {}
-            if source == "nominated" and agreed_aligned and not explicit:
+            if source == "nominated" and agreed_aligned:
                 if render_size is None:
                     from PIL import Image
                     with Image.open(job.render) as image:
@@ -14802,20 +14774,10 @@ def _proofread_page_inner(
                 need = {j: Counter(agreed_text[j]) | (Counter(witnessed.get(j, "")) & allowed)
                         for j in region if j != k}
                 required = sum(need.values(), Counter(agreed_text[k]))
-                if explicit:
-                    # The mapping accounted for complete A blocks, including
-                    # figures. Lock all their letters/digits, not just CJK.
-                    raw = "\n".join(str(blocks[j]["text"]) for j in region)
-                    chars = _table_candidates.characters
-                    required = Counter(chars(raw))
-                    deficit = (required | Counter(chars(explicit["text"]))
-                               | Counter(chars(text))) - Counter(chars(text))
-                    text += "\n" + "".join(deficit.elements())
                 table, rebuild = rebuild_table(client, crop, text, required, arguments.max_tokens,
                                                confirm=None if no_unread else lambda char, cell, at: confirm_spot(
                                                    region, char, cell, at),
-                                               table_orientation=table_orientation_mode,
-                                               **({"literal": True} if explicit else {}))
+                                               table_orientation=table_orientation_mode)
                 held = {}
                 for j, counts in need.items():
                     chars = []
@@ -14872,7 +14834,7 @@ def _proofread_page_inner(
             try:
                 text, merged_text, lock_runs, table, rebuild, held = ask_region(region)
                 region_refused = None
-                if table is None and len(region) > 1 and not explicit:
+                if table is None and len(region) > 1:
                     # The region refused (not a table, a block taken in not in
                     # the table, two tables in the answer): the nominated block
                     # alone, the rebuild D22 off asks, before the block is given
@@ -14966,8 +14928,6 @@ def _proofread_page_inner(
                     if region_refused:
                         nomination["regionRefused"] = region_refused
             if table is None:
-                if explicit:
-                    explicit["fallback"] = "union-crop rebuild refused: " + rebuild["reason"]
                 if not rebuild["reason"].startswith("not a table"):
                     doubts.append({"kind": "table-rebuild-refused", "detail": (
                         f"TABLE REBUILD REFUSED: block {layout} ({source}): {rebuild['reason']}")})
@@ -15541,7 +15501,6 @@ def _proofread_page_inner(
         # (removable_text) - the hint asking it to delete running heads was
         # left beside a prompt and a check that forbade any deletion, so a
         # formatter that did as the hint said was refused.
-        table_hint += _table_candidates.fallback_hint(witness_tables)
         furniture_reviewed = content_recovery is not None
         if furniture_reviewed:
             format_system = {FORMAT_SYSTEM: FORMAT_SYSTEM_REVIEWED,
@@ -16340,7 +16299,6 @@ def _proofread_page_inner(
         # were allowed and required, the outcome.
         "tableNominations": [dict(nomination, block=layout_index(blocks, nomination["block"]))
                              for nomination in table_nominations],
-        "engineBTableCandidates": witness_tables,
         "tablesRebuilt": table_rebuilds,
         "tablesRejected": tables_rejected,
         "degraded": bool(m.get("degraded")),
@@ -16753,7 +16711,7 @@ def draft_engine_evidence(folder: Path, sample: int = ROLE_SAMPLE_PAGES) -> dict
     whole-page labels.  Lines with no label say nothing."""
     names: set[str] = set()
     layout = whole = 0
-    contract_roles: set[str] = set()
+    has_contract = False
     contract_errors: list[str] = []
     paths = sorted(path for path in folder.glob("page-*.json") if re.fullmatch(r"page-\d{4,}\.json", path.name))
     for path in paths:
@@ -16773,7 +16731,7 @@ def draft_engine_evidence(folder: Path, sample: int = ROLE_SAMPLE_PAGES) -> dict
             if problem:
                 contract_errors.append(f"{path.name}: {problem}")
             else:
-                contract_roles.add("A")
+                has_contract = True
         name = record.get("engine")
         if not (isinstance(name, str) and name) and isinstance(record.get("ocrProfile"), dict):
             name = record["ocrProfile"].get("engine")
@@ -16786,14 +16744,14 @@ def draft_engine_evidence(folder: Path, sample: int = ROLE_SAMPLE_PAGES) -> dict
                 layout += 1
             else:
                 whole += 1
-    if contract_roles or contract_errors:
+    if has_contract or contract_errors:
         # A new layout backend cannot silently turn a missing completion JSON
         # into the legacy TXT-only fallback on another page of the same run.
         for text_path in sorted(folder.glob("page-*.txt")):
             if re.fullmatch(r"page-\d{4,}\.txt", text_path.name) and not text_path.with_suffix(".json").is_file():
                 contract_errors.append(f"{text_path.name}: paired layout JSON missing")
     return {"names": sorted(names), "layoutPages": layout, "wholePagePages": whole,
-            "contractRoles": sorted(contract_roles), "contractErrors": contract_errors}
+            "contractErrors": contract_errors}
 
 
 def draft_role(evidence: Mapping[str, Any]) -> str | None:
@@ -16802,8 +16760,6 @@ def draft_role(evidence: Mapping[str, Any]) -> str | None:
     engine (or of several), or None when the drafts do not say."""
     if evidence.get("contractErrors"):
         return "invalid layout contract: " + "; ".join(evidence["contractErrors"])
-    if evidence.get("contractRoles") == ["A"] and not evidence.get("wholePagePages"):
-        return "A"
     names = list(evidence.get("names") or [])
     keys = {_engine_key(name) for name in names}
     if keys:
@@ -16830,7 +16786,7 @@ def engine_roles_problem(drafts_a: Path, drafts_b: Path, a_name: str = "DRAFT_DI
     role_a, role_b = draft_role(draft_engine_evidence(drafts_a)), draft_role(draft_engine_evidence(drafts_b))
     if role_a in (None, "A") and role_b in (None, "B"):
         return None
-    rule = (f"engine A must supply the normalized layout/text contract or native {ENGINE_A_NAME} drafts (its layout labels drive the merge, the crops and the running "
+    rule = (f"engine A must be {ENGINE_A_NAME} (its layout labels drive the merge, the crops and the running "
             f"heads) and engine B {ENGINE_B_NAME}")
     if role_a == "B" and role_b == "A":
         return (f"engine roles swapped: {a_name} {drafts_a} holds {ENGINE_B_NAME}'s drafts and {b_name} "
@@ -16912,6 +16868,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = time.monotonic()
     try:
         renders = arguments.render_directory.expanduser().resolve()
+        from _ocr_engines import read_book_engine_record
+        try:
+            read_book_engine_record(renders.parent)
+        except ValueError as exc:
+            raise ProofreadError(str(exc)) from exc
         pages = parse_pages(arguments, renders)
         drafts = arguments.draft_directory.expanduser().resolve()
         output = arguments.output_directory.expanduser().resolve()

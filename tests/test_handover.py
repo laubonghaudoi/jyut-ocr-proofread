@@ -287,7 +287,7 @@ class NeedAndPolicyTests(unittest.TestCase):
             self.assertEqual(phase.engine_need(['python3', 'scripts/run_paddleocr_vl.py', 'R', 'O'])[0], 12288)
             self.assertEqual(phase.engine_need(['python3', 'run_hunyuanocr_second_look.py', 'R', 'A', 'B',
                                                 '--server-slots', '2'])[0], 6572)
-        with mock.patch.dict(os.environ, {'OCR_HUNYUAN_SLOTS': '1'}, clear=True):
+        with mock.patch('platform.system', return_value='Linux'), mock.patch.dict(os.environ, {'OCR_HUNYUAN_SLOTS': '1'}, clear=True):
             self.assertEqual(phase.engine_need(['python3', 'ocr_book.py', 'BOOK'])[0], 12288)
             self.assertEqual(phase.engine_need(['python3', 'ocr_book.py', 'BOOK', '--single-engine'])[0], 5036)
             self.assertEqual(phase.engine_need(['true'])[0], phase.DEFAULT_REQUIRED_MIB)
@@ -321,12 +321,15 @@ class NeedAndPolicyTests(unittest.TestCase):
         small = text.replace('page size of 16384 bytes', 'page size of 4096 bytes')
         self.assertEqual(phase.parse_vm_stat(small), (65536 + 131072 + 1024) * 4096 // (1024 * 1024))
 
-    def test_vision_pair_and_mlx_budget_only_the_selected_engines(self):
-        with mock.patch.dict(os.environ, {'JYUT_OCR_ENGINES': 'vision,hunyuan', 'OCR_HUNYUAN_SLOTS': '1'}, clear=True):
+    @mock.patch("platform.system", return_value="Darwin")
+    @mock.patch("platform.machine", return_value="arm64")
+    def test_vision_and_mlx_budget_only_the_selected_engines(self, *_):
+        with mock.patch.dict(os.environ, {'JYUT_OCR_ENGINES': 'vision', 'OCR_HUNYUAN_SLOTS': '1'}, clear=True):
             need, note = phase.engine_need(['ocr_book.py', 'BOOK'])
-            self.assertEqual(need, 5036)
+            self.assertEqual(need, 0)
+            self.assertNotIn('Hunyuan', note)
             self.assertNotIn('Paddle', note)
-            self.assertEqual(phase.engine_need(['ocr_book.py', 'BOOK', '--engines', 'hunyuan,paddle'])[0], 12288)
+            self.assertEqual(phase.engine_need(['ocr_book.py', 'BOOK', '--engine', 'hunyuan-paddle'])[0], 12288)
             self.assertEqual(phase.engine_need(['run_apple_vision_ocr.py', 'R', 'O'])[0], 0)
         with mock.patch.dict(os.environ, {'OCR_PADDLE_DEVICE': 'cpu', 'OCR_PADDLE_VL_BACKEND': 'mlx-vlm-server'}, clear=True):
             need, note = phase.engine_need(['run_paddleocr_vl.py', 'R', 'O'])
@@ -339,31 +342,33 @@ class NeedAndPolicyTests(unittest.TestCase):
             command = ['python', '_setup_ocr.py', '--run-smoke-plan', str(plan)]
             plan.write_text(json.dumps({'commands': [['python', 'run_apple_vision_ocr.py', 'R', 'O']]}))
             self.assertEqual(phase.engine_need(command)[0], 0)
-            plan.write_text(json.dumps({'commands': [['run_apple_vision_ocr.py', 'R', 'O'],
+            plan.write_text(json.dumps({'commands': [['run_paddleocr_vl.py', 'R', 'O'],
                                                      ['run_hunyuanocr.py', 'R', 'O', '--server-slots', '2']]}))
-            self.assertEqual(phase.engine_need(command)[0], 6572)
+            self.assertEqual(phase.engine_need(command)[0], 12288)
             plan.write_text(json.dumps({'commands': [command]}))
             with self.assertRaises(phase.PhaseError):
                 phase.engine_need(command)
 
-    def test_book_record_is_a_fallback_for_memory_and_startup_estimates(self):
+    @mock.patch("platform.system", return_value="Darwin")
+    @mock.patch("platform.machine", return_value="arm64")
+    def test_book_record_is_a_fallback_for_memory_and_startup_estimates(self, *_):
         import ocr_book
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
             book = Path(directory)
             (book / 'reports').mkdir()
-            (book / 'reports/ocr-engines.json').write_text(json.dumps(
-                {'schemaVersion': 1, 'engines': ['vision', 'hunyuan']}))
+            record = book / 'reports/ocr-engines.json'
+            record.write_text(json.dumps({'schemaVersion': 1, 'engines': ['vision']}))
             command = ['ocr_book.py', str(book)]
-            self.assertEqual(phase.engine_need(command)[0], 5036)
-            measured = {'vision': 2, 'hunyuan': 10, 'second-look': 12, 'paddle': 90}
-            with mock.patch.object(ocr_book, 'startup_seconds', side_effect=lambda _times, engine: measured[engine]):
-                self.assertEqual(phase.startup_need(command)[0], 12)
-                with mock.patch.dict(os.environ, {'JYUT_OCR_ENGINES': 'hunyuan,paddle'}):
-                    self.assertEqual(phase.engine_need(command)[0], 12288)
-                    self.assertEqual(phase.startup_need(command)[0], 90)
-                    explicit = [*command, '--engines', 'vision,hunyuan']
-                    self.assertEqual(phase.engine_need(explicit)[0], 5036)
-                    self.assertEqual(phase.startup_need(explicit)[0], 12)
+            self.assertEqual(phase.engine_need(command)[0], 0)
+            with mock.patch.object(ocr_book, 'startup_seconds', return_value=2):
+                self.assertEqual(phase.startup_need(command)[0], 2)
+            for reader in (phase.engine_need, phase.startup_need):
+                with self.assertRaisesRegex(phase.PhaseError, 'new work directory'):
+                    reader([*command, '--engine', 'hunyuan-paddle'])
+                record.write_text(json.dumps({'schemaVersion': 1, 'engines': ['vision', 'hunyuan']}))
+                with self.assertRaisesRegex(phase.PhaseError, 'retired'):
+                    reader([*command, '--engine', 'hunyuan-paddle'])
+                record.write_text(json.dumps({'schemaVersion': 1, 'engines': ['vision']}))
 
     def test_the_first_budget_question_needs_the_startup_time(self):
         with mock.patch.dict(os.environ, {'OCR_PHASE_DEADLINE': str(time.time() + 30),
@@ -1155,8 +1160,9 @@ class OtherClientTests(HandoverBase):
             ['--max-seconds', '90', '--', PY, str(SCRIPTS / 'ocr_book.py'), str(book)]),
             [PY, str(SCRIPTS / 'ocr_book.py'), str(book)], self.state, 10)
         self.assertEqual(floor[0], 6.5 + 60)
-        self.assertEqual(phase.startup_need([PY, str(SCRIPTS / 'ocr_book.py'), str(book), '--single-engine'])[0],
-                         2 * 1.2)
+        with mock.patch('platform.system', return_value='Linux'):
+            self.assertEqual(phase.startup_need([PY, str(SCRIPTS / 'ocr_book.py'), str(book), '--single-engine'])[0],
+                             2 * 1.2)
         slept = []
 
         def slow(*args, timeout_s, **kwargs):
@@ -1625,7 +1631,7 @@ class OcrBookTests(HandoverBase):
         self.slow_server(30)
         env = {key: value for key, value in self.env.items() if not key.startswith('OCR_PHASE_')}
         env['OCR_HUNYUAN_MODE'] = 'shared'
-        result = subprocess.run(self.book_command(book, '--max-seconds', '4', '--single-engine'), env=env,
+        result = subprocess.run(self.book_command(book, '--max-seconds', '4'), env=env,
                                 capture_output=True, text=True, timeout=90)
         output = result.stdout + result.stderr
         self.assertEqual(result.returncode, 1, output)
@@ -1644,16 +1650,17 @@ class OcrBookTests(HandoverBase):
         book = self.fake_book(pages=2)
         self.slow_paddle(30)
         env = {key: value for key, value in self.env.items() if not key.startswith('OCR_PHASE_')}
-        first = subprocess.run(self.book_command(book, '--single-engine'), env=env, capture_output=True,
-                               text=True, timeout=120)
-        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         times_path = book / 'reports' / 'ocr-times.json'
+        times_path.parent.mkdir()
+        times_path.write_text(json.dumps({'engines': {'paddle': {'loadSeconds': 500, 'longestPageSeconds': 10}}}))
+        first = subprocess.run(self.book_command(book, '--max-seconds', '300'), env=env, capture_output=True,
+                               text=True, timeout=120)
+        self.assertEqual(first.returncode, 75, first.stdout + first.stderr)
         times = json.loads(times_path.read_text())
         times['engines']['paddle'] = {'loadSeconds': 2, 'longestPageSeconds': 1}
         times_path.write_text(json.dumps(times))
-        # The warm-up records Hunyuan-only. Explicitly select both engines
-        # to exercise Paddle's estimate rather than resume that selection.
-        dual = self.book_command(book, '--engines', 'hunyuan,paddle', '--max-seconds', '8')
+        # Warm up Hunyuan within the dual route, then exercise Paddle's estimate.
+        dual = self.book_command(book, '--engine', 'hunyuan-paddle', '--max-seconds', '8')
         short = subprocess.run(dual, env=env, capture_output=True,
                                text=True, timeout=120)
         self.assertEqual(short.returncode, 75, short.stdout + short.stderr)

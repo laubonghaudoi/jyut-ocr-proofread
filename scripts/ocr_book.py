@@ -7,6 +7,10 @@
 In this order, under one deadline (OCR_PHASE_DEADLINE, which run_ocr_phase.py
 sets, or --max-seconds):
 
+With --engine apple-vision, only Apple Vision runs, with no downloaded model,
+second look or model hand-over. Use --single-engine in proofread_pages.py and
+finish_book.py afterwards. The hunyuan-paddle route runs these steps:
+
 1. engine B, HunyuanOCR: scripts/run_hunyuanocr.py BOOK/renders BOOK/ocr-hunyuan;
 2. the early draft for the user, scripts/build_draft.py BOOK, as soon as engine
    B has read every page (again only when engine B sealed pages in this call or
@@ -23,8 +27,8 @@ sets, or --max-seconds):
 Each runner skips the pages it sealed before, so the same command, run again,
 carries on where the last one stopped.  Under run_ocr_phase.py one window
 covers all of them: the agent's model is stopped and started once per call,
-not once per engine.  --single-engine leaves out steps 3 and 4 (a host with
-engine B only).
+not once per engine. Linux/WSL2 also supports --engine hunyuan (or the
+legacy --single-engine flag), which leaves out steps 3 and 4.
 
 Starting an engine late in a call would spend the rest of it loading a model
 and seal nothing (the runner then fails: "time budget ran out before a single
@@ -279,11 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--renders", default="renders", help="render folder in BOOK (default renders)")
     parser.add_argument("--hunyuan-dir", default="ocr-hunyuan", help="engine B's drafts (default ocr-hunyuan)")
     parser.add_argument("--paddle-dir", default="ocr-paddle", help="engine A's drafts (default ocr-paddle)")
-    parser.add_argument("--engines", help="hunyuan,paddle (default), vision,hunyuan, hunyuan, or vision; also JYUT_OCR_ENGINES")
+    parser.add_argument("--engine", choices=("apple-vision", "hunyuan-paddle", "hunyuan"),
+                        help="OCR route; defaults to saved route or hunyuan-paddle. hunyuan is Linux/WSL2 only")
     parser.add_argument("--vision-dir", default="ocr-vision", help="Apple Vision layout drafts")
     parser.add_argument("--reports", default="reports", help="run reports and ocr-times.json (default reports)")
     parser.add_argument("--single-engine", action="store_true",
-                        help="engine B and the draft only: no PaddleOCR-VL, no second look")
+                        help="Linux/WSL2 only: equivalent to --engine hunyuan; proofreading/finishing have their own --single-engine flag")
     parser.add_argument("--max-seconds", type=float,
                         help="time budget when no OCR_PHASE_DEADLINE is set (run_ocr_phase.py sets one)")
     parser.add_argument("--round", type=int, default=1,
@@ -294,7 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 RESULT_MEANING = {
-    0: "DONE - both engines and the second look have read the book",
+    0: "DONE - the selected OCR route has read the book",
     EXIT_INCOMPLETE: "INCOMPLETE - time ran out; finished pages are sealed: run the SAME command again",
     1: "FAILED - read the runner's summary and ERROR lines above; do not just repeat",
     2: "CONFIGURATION ERROR",
@@ -302,8 +307,12 @@ RESULT_MEANING = {
 
 
 def main(argv: list[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
-    arguments.argv = list(sys.argv[1:] if argv is None else argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    if any(arg == "--engines" or arg.startswith("--engines=") for arg in raw):
+        parser.error("--engines was removed; use --engine apple-vision or --engine hunyuan-paddle")
+    arguments = parser.parse_args(raw)
+    arguments.argv = raw
     code = run(arguments)
     meaning = getattr(arguments, "result_meaning", None) or RESULT_MEANING.get(code, "see the output above")
     # Run directly and to be repeated as it is, the next call differs from
@@ -351,7 +360,7 @@ def run(arguments: argparse.Namespace) -> int:
         say(f"ERROR no render folder: {renders}")
         return 2
     try:
-        engines = resolve_engines(arguments.engines, single_engine=arguments.single_engine, book=book)
+        engines = resolve_engines(arguments.engine, single_engine=arguments.single_engine, book=book)
     except ValueError as error:
         say(f"ERROR {error}")
         return 2
@@ -374,7 +383,7 @@ def run(arguments: argparse.Namespace) -> int:
     python = sys.executable
 
     a_engine = engine_a(engines)
-    a_dir = book / arguments.vision_dir if a_engine == "vision" else paddle_dir
+    a_dir = paddle_dir
     steps = []
     if "hunyuan" in engines:
         steps.extend([("hunyuan", [str(renders), str(hunyuan_dir)]), ("draft", [])])

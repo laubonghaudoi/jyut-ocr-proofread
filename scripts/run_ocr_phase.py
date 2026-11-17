@@ -622,13 +622,13 @@ def _engine_options(arguments: list[str]) -> argparse.Namespace:
         slots = int(os.environ.get("OCR_HUNYUAN_SLOTS") or 1)
     except ValueError:
         slots = 1
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--server-slots", type=int, default=slots)
     parser.add_argument("--ctx-size", type=int, default=HUNYUAN_DEFAULT_CTX)
     parser.add_argument("--device", default=None)
     parser.add_argument("--endpoint", default=os.environ.get("HUNYUAN_ENDPOINT") or None)
     parser.add_argument("--single-engine", action="store_true")
-    parser.add_argument("--engines", default=None)
+    parser.add_argument("--engine", default=None)
     parser.add_argument("--vl-backend", default=os.environ.get("OCR_PADDLE_VL_BACKEND", "native"))
     try:
         known, _ = parser.parse_known_args(arguments)
@@ -659,6 +659,8 @@ def _paddle_need(options: argparse.Namespace) -> tuple[int, str]:
 def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
     """The GPU memory (MiB) the engines of RUNNER need: the largest of them,
     since one call runs its engines one after another, and what it is."""
+    if any(arg == "--engines" or arg.startswith("--engines=") for arg in runner):
+        raise PhaseError("--engines was removed; use --engine apple-vision or --engine hunyuan-paddle")
     for index, argument in enumerate(runner):
         name = os.path.basename(argument)
         options = _engine_options(runner[index + 1:])
@@ -688,7 +690,7 @@ def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
             engine_options = argparse.Namespace(**dict(vars(options), device=None))
             try:
                 book_options, _ = ocr_book.build_parser().parse_known_args(runner[index + 1:])
-                engines = resolve_engines(options.engines, single_engine=options.single_engine,
+                engines = resolve_engines(options.engine, single_engine=options.single_engine,
                                            book=book_options.book.expanduser())
             except SystemExit as exc:
                 raise PhaseError("Cannot read ocr_book.py arguments for its memory estimate") from exc
@@ -1250,7 +1252,7 @@ def startup_need(runner: list[str]) -> tuple[float, str]:
             times = ocr_book.read_json(Path(options.book).expanduser() / options.reports / ocr_book.TIMES_NAME)
             from _ocr_engines import resolve_engines
             try:
-                names = list(resolve_engines(options.engines, single_engine=options.single_engine,
+                names = list(resolve_engines(options.engine, single_engine=options.single_engine,
                                              book=Path(options.book).expanduser()))
             except ValueError as exc:
                 raise PhaseError(str(exc)) from exc
@@ -1964,6 +1966,12 @@ def next_round(argv: list[str], runner: list[str], current: int) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     raw = list(sys.argv[1:] if argv is None else argv)
     arguments = build_parser().parse_args(raw)
     if arguments.watchdog_fd is not None:
@@ -2011,6 +2019,18 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
     clock = Clock(started + arguments.max_seconds if budgeted else None)
     env = dict(os.environ)
     env.pop(DEADLINE_ENV, None)
+
+    # Validate known OCR routes before any health probe or hand-over state write,
+    # even with a memory override. Vision never stops a configured model.
+    try:
+        detected_need, detected_note = engine_need(runner)
+    except PhaseError as error:
+        say(f"ERROR {error}", error=True)
+        return 2
+    if "Apple Vision" in detected_note and "Hunyuan" not in detected_note and "Paddle" not in detected_note:
+        arguments.gpu = {"mode": "no-tenant"}
+        say("[ocr-phase] Apple Vision: running directly without model hand-over")
+        return run_plain(arguments, runner, env, clock)
 
     if not tenant:
         if swap_mode == "always":

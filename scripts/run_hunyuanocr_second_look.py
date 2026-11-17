@@ -421,6 +421,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
     """SERVER, for offline tests: an object with ocr(path, max_tokens, timeout)
     and close(), used instead of starting llama-server or SharedHunyuanClient."""
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     arguments = build_parser().parse_args(argv)
     exit_on_sigterm()
     started_at, started = hy.utc_now(), time.monotonic()

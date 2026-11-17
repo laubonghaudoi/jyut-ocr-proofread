@@ -4,11 +4,10 @@ This module never sources shell configuration, installs GPU drivers, or treats
 file presence as evidence that an OCR engine is ready. Expensive work is opt-in
 through setup(); inspect_setup() is read-only and never starts an OCR model.
 
-Both draft engines are installed by default: HunyuanOCR (GGUF through a pinned
+Linux/WSL2 installs both draft engines by default: HunyuanOCR (GGUF through a pinned
 llama.cpp llama-server) and PaddleOCR-VL (its own Python 3.12 environment and
-pinned weights).  Intel Macs get Hunyuan only, because PaddlePaddle publishes no
-macOS x86_64 wheel of 3.2.1 or later.  The engine set is decided by the platform,
-not by a prompt; --engine stays as an explicit override.
+pinned weights). macOS requires native Apple Silicon and first asks the user
+to choose apple-vision or hunyuan-paddle. Intel Macs are unsupported.
 """
 from __future__ import annotations
 
@@ -104,7 +103,7 @@ STATE_SCHEMA = 2
 LOCK_SCHEMA = 2
 
 PYTHON_VERSION = "3.12"
-ENGINE_REQUESTS = ("auto", "hunyuan", "vision", "vision,hunyuan")
+ENGINE_REQUESTS = ("hunyuan-paddle", "apple-vision", "hunyuan")
 DEVICE_REQUESTS = ("auto", "cpu", "cuda", "metal")
 PADDLE_VL_BACKENDS = ("auto", "native", "mlx-vlm-server")
 # run_hunyuanocr.py's default --ctx-size; the context is per slot.
@@ -550,6 +549,11 @@ def platform_name() -> str:
     system = platform.system()
     if system not in {"Linux", "Darwin"}:
         raise SetupError("Supported hosts are Linux, macOS and Windows WSL2. Run this installer inside WSL2 on Windows.")
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host(system, machine_name(system))
+    except ValueError as exc:
+        raise SetupError(str(exc)) from exc
     return system
 
 
@@ -660,10 +664,19 @@ def requested_value(requested: str | None, saved: str | None, choices: Sequence[
 
 
 def engine_request(requested: str | None, existing: Mapping[str, str]) -> str:
-    # An env.sh without JYUT_OCR_ENGINES was written by an older single-engine
-    # installer, whose JYUT_OCR_ENGINE was its automatic pick: ask for auto.
-    saved = existing.get("JYUT_OCR_ENGINE") if existing.get("JYUT_OCR_ENGINES") else None
-    return requested_value(requested, saved, ENGINE_REQUESTS)
+    from _ocr_engines import DEFAULT_ROUTE, ROUTE_GUIDANCE, ROUTES
+    value = requested if requested not in (None, "default") else existing.get("JYUT_OCR_ENGINE")
+    if value is None:
+        if existing.get("JYUT_OCR_ENGINES"):
+            raise SetupError("Saved OCR configuration has no public route name. " + ROUTE_GUIDANCE)
+        return DEFAULT_ROUTE
+    if value not in ENGINE_REQUESTS:
+        raise SetupError(f"Retired or unknown OCR route {value!r}. " + ROUTE_GUIDANCE)
+    if requested in (None, "default") and existing.get("JYUT_OCR_ENGINES"):
+        effective = tuple(existing["JYUT_OCR_ENGINES"].split(","))
+        if len(effective) != len(ROUTES[value]) or set(effective) != set(ROUTES[value]):
+            raise SetupError("Saved route and engines disagree or use a retired combination. " + ROUTE_GUIDANCE)
+    return value
 
 
 def device_request(requested: str | None, existing: Mapping[str, str]) -> str:
@@ -701,20 +714,14 @@ def choose_paddle_backend(request: str, device: str, lock: Mapping[str, Any], *,
 
 
 def choose_engines(request: str, *, system: str, machine: str) -> tuple[tuple[str, ...], list[str]]:
-    """The engine set for REQUEST on this platform, and notes for the person."""
-    if request in {"vision", "vision,hunyuan"}:
-        if system != "Darwin":
-            raise SetupError("Apple Vision requires macOS; on Linux/WSL2 the default installs HunyuanOCR and PaddleOCR-VL.")
-        return tuple(request.split(",")), []
-    if request == "hunyuan":
-        return ("hunyuan",), ["--engine hunyuan: HunyuanOCR only, no PaddleOCR-VL (an explicit override)."]
-    if request != "auto":
-        raise SetupError(f"Unknown engine request {request!r}; use auto, hunyuan, vision or vision,hunyuan.")
-    if system == "Darwin" and machine != "arm64":
-        return ("hunyuan",), ["Intel Mac: PaddleOCR-VL cannot be installed (PaddlePaddle has no macOS x86_64 wheel of "
-                              "3.2.1 or later), so only HunyuanOCR is set up. Apple Vision can add a hint draft: "
-                              "scripts/run_apple_vision_ocr.py (needs Swift and the Command Line Tools)."]
-    return ("hunyuan", "paddle"), []
+    """Resolve the public route without downloading or changing configuration."""
+    from _ocr_engines import route_engines
+    try:
+        engines = route_engines(request, system=system, machine=machine)
+    except ValueError as exc:
+        raise SetupError(str(exc)) from exc
+    return engines, (["--engine hunyuan: HunyuanOCR only (Linux/WSL2 override)."]
+                     if request == "hunyuan" else [])
 
 
 def choose_device(requested: str, existing: dict[str, str], *, engine: str, system: str) -> str:
@@ -1897,8 +1904,7 @@ def tool_hashes(root: Path, engine: str | Iterable[str]) -> dict[str, str]:
     names = ["scripts/_setup_ocr.py", "scripts/run_ocr_phase.py", "scripts/_ocr_engines.py", *ENVIRONMENT_FILES]
     if "vision" in engines:
         names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift", "scripts/_draft_contract.py",
-                  "scripts/_vision_layout.py", "scripts/_mlx_vlm_server.py",
-                  "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
+                  "scripts/_vision_layout.py", "scripts/_mlx_vlm_server.py", "scripts/_phase_budget.py"]
     if "hunyuan" in engines:
         names += ["scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
     if "paddle" in engines:
@@ -2107,7 +2113,7 @@ def prepare_smoke(options: SetupOptions, config: Mapping[str, str], engine: str,
             vl = next(model for model in locked["paddle"]["models"] if model["role"] == "vl")
             command += ["--model-revision", vl["revision"]]
     else:
-        command += ["--workers", "1", "--gpu-queue-timeout", str(SMOKE_QUEUE_TIMEOUT)]
+        command += ["--workers", "1"]
     return directory, command
 
 
@@ -2153,11 +2159,13 @@ def smoke_test(options: SetupOptions, config: dict[str, str], engine: str, devic
             raise gpu_busy_error(engine, free, need)
     directory, command = prepare_smoke(options, config, engine, device, fingerprint)
     label = {"hunyuan": "HunyuanOCR", "paddle": "PaddleOCR-VL", "vision": "Apple Vision"}[engine]
-    print(f"Running the {label} setup test on {device} (one synthetic page; a GPU queue wait is capped at {SMOKE_QUEUE_TIMEOUT} s).")
+    detail = ("system-managed compute; no model hand-over" if engine == "vision" else
+              f"a GPU queue wait is capped at {SMOKE_QUEUE_TIMEOUT} s")
+    print(f"Running the {label} setup test on {device} (one synthetic page; {detail}).")
     try:
         run(command, env=smoke_environment(config), timeout=SMOKE_TIMEOUT, own_group=True)
     except SetupError as exc:
-        if exc.returncode == 75:
+        if exc.returncode == 75 and engine != "vision":
             raise SetupError(f"The {label} setup test waited {SMOKE_QUEUE_TIMEOUT} s for the GPU queue: another OCR job "
                              "holds it. Nothing was stopped; rerun setup when that job finishes.") from exc
         raise
@@ -2257,6 +2265,8 @@ def run_smokes(options: SetupOptions, config: dict[str, str], engines: Sequence[
     hand-over when a configured local model holds it (OCR_PHASE_RELEASE_CMD and
     OCR_PHASE_RESTORE_CMD, OCR_PHASE_SWAP auto or always); never by moving an
     engine to the CPU."""
+    if tuple(engines) == ("vision",):
+        return {"vision": smoke_test(options, config, "vision", devices["vision"], fingerprint)}
     gpu_engines = [engine for engine in engines if gpu_device(engine, devices[engine], config)]
     swap = (config.get("OCR_PHASE_SWAP") or "auto").strip().lower()
     tenant = bool(config.get("OCR_PHASE_RELEASE_CMD") and config.get("OCR_PHASE_RESTORE_CMD"))
@@ -2384,7 +2394,9 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
     engines, notes = choose_engines(engine_wanted, system=system, machine=machine)
     devices: dict[str, str] = {}
     if "vision" in engines:
-        devices["vision"] = choose_device("auto" if len(engines) > 1 else device_wanted, {}, engine="vision", system=system)
+        # A saved HF device does not configure Vision's system-managed compute.
+        vision_device = "auto" if options.device in (None, "default") else device_wanted
+        devices["vision"] = choose_device(vision_device, {}, engine="vision", system=system)
     if "hunyuan" in engines:
         devices["hunyuan"] = choose_device(device_wanted, {}, engine="hunyuan", system=system)
     # nvidia-smi is asked only when Paddle's device depends on it.
@@ -2396,7 +2408,7 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
         plan, paddle_notes = paddle_plan(lock, system=system, machine=machine, request=device_wanted, gpus=gpus)
         notes += paddle_notes
         if plan is None:
-            engines = tuple(engine for engine in engines if engine != "paddle")
+            raise SetupError("The hunyuan-paddle route requires both engines on this platform; Linux/WSL2 can explicitly select --engine hunyuan.")
         else:
             plan = replace(plan, backend=backend)
             devices["paddle"] = plan.device
@@ -2410,11 +2422,6 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
             and legacy_device != devices.get("hunyuan", legacy_device)):
         notes.append(f"The saved OCR_HUNYUAN_DEVICE={legacy_device} came from an older installer and is detected again "
                      f"({devices['hunyuan']} now); pass --device {legacy_device} to keep it.")
-    if (options.engine in (None, "default") and existing.get("JYUT_OCR_ENGINE") and not existing.get("JYUT_OCR_ENGINES")
-            and existing["JYUT_OCR_ENGINE"] != ",".join(engines)):
-        notes.append(f"The saved JYUT_OCR_ENGINE={existing['JYUT_OCR_ENGINE']} came from an older single-engine installer; "
-                     f"both engines are now the default ({', '.join(engines)}). Pass --engine "
-                     f"{existing['JYUT_OCR_ENGINE']} to keep only that one.")
     return engines, devices, plan, gpus, notes, engine_wanted, device_wanted
 
 
@@ -2429,7 +2436,7 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
 ENGINE_LABELS = {"hunyuan": "HunyuanOCR", "paddle": "PaddleOCR-VL", "vision": "Apple Vision"}
 # The two answers, as --engine takes them: the downloaded engines, or Apple
 # Vision alone.  (--engine hunyuan stays an explicit override, not an answer.)
-ENGINE_CHOICES = ("auto", "vision")
+ENGINE_CHOICES = ("hunyuan-paddle", "apple-vision")
 ENGINE_CHOICE_TRIES = 3
 
 
@@ -2441,8 +2448,10 @@ def engine_choice_pending(options: SetupOptions, existing: Mapping[str, str], sy
     place)."""
     if system != "Darwin" or options.engine not in (None, "default"):
         return False
-    saved = existing.get("JYUT_OCR_ENGINE") if existing.get("JYUT_OCR_ENGINES") else None
-    return saved not in ENGINE_REQUESTS
+    if existing.get("JYUT_OCR_ENGINE") or existing.get("JYUT_OCR_ENGINES"):
+        engine_request(options.engine, existing)
+        return False
+    return True
 
 
 def engine_choice_options(options: SetupOptions, existing: Mapping[str, str], lock: Mapping[str, Any], *,
@@ -2465,7 +2474,7 @@ def engine_choice_options(options: SetupOptions, existing: Mapping[str, str], lo
             # reported when the answer is given, not here.
             engines, disk = choose_engines(request, system=system, machine=machine)[0], "disk not estimated"
         names = " and ".join(ENGINE_LABELS[engine] for engine in engines)
-        if request == "vision":
+        if request == "apple-vision":
             text = (f"{names} only, built into macOS: no model download, {disk} for the Python environment; "
                     "one draft a page, the single-engine workflow")
         else:
@@ -2527,7 +2536,12 @@ def saved_plan(options: SetupOptions, config: Mapping[str, str]) -> tuple[tuple[
     if (options.engine not in (None, "default") or options.device not in (None, "default")
             or options.paddle_vl_backend not in (None, "default")):
         return None
-    engines = engine_set(config.get("JYUT_OCR_ENGINES", ""))
+    wanted = engine_request(options.engine, config)
+    engines, _ = choose_engines(wanted, system=platform_name(), machine=machine_name())
+    if not config.get("JYUT_OCR_ENGINES"):
+        return None
+    if engines != engine_set(config.get("JYUT_OCR_ENGINES", "")):
+        raise SetupError("Saved route and effective engines disagree; rerun setup with --engine.")
     if not engines:
         return None
     keys = {"hunyuan": "OCR_HUNYUAN_DEVICE", "paddle": "OCR_PADDLE_DEVICE"}
@@ -2702,7 +2716,10 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
 
 def setup(options: SetupOptions) -> dict[str, Any]:
     """Serialize changes to both shared asset storage and machine configuration."""
-    platform_name()
+    system = platform_name()
+    existing = read_environment(options.config_dir / "env.sh")
+    if options.engine not in (None, "default") or existing.get("JYUT_OCR_ENGINE") or existing.get("JYUT_OCR_ENGINES"):
+        choose_engines(engine_request(options.engine, existing), system=system, machine=machine_name(system))
     for directory in (options.data_dir, options.config_dir):
         if directory.resolve().is_relative_to(options.repo_root.resolve()):
             raise SetupError("Environment data/config must be outside the skill repository.")

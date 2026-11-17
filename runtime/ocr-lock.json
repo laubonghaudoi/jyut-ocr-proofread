@@ -50,8 +50,7 @@
       },
       {"name": "llama-b10969-bin-ubuntu-x64.tar.gz", "size": 16845032, "sha256": "6bffedea73f638db186d48113aee84478157743a68812f5d6de9da610f1b5092", "system": "Linux", "machine": "x86_64", "device": "cpu"},
       {"name": "llama-b10969-bin-ubuntu-arm64.tar.gz", "size": 13469485, "sha256": "a3be0935ecac3ef18e23ce99e83cb6bf3200a07c06585111326e10faccf3b808", "system": "Linux", "machine": "aarch64", "device": "cpu"},
-      {"name": "llama-b10969-bin-macos-arm64.tar.gz", "size": 11149693, "sha256": "61390a8acf93126860471f3430ad0f790f17df369122154753169d2ce27a3827", "system": "Darwin", "machine": "arm64", "device": "metal"},
-      {"name": "llama-b10969-bin-macos-x64.tar.gz", "size": 11199990, "sha256": "85f346d1a9baaaba53b36339575e25111c3768824e42cc2c0f1aedaf14cb01cd", "system": "Darwin", "machine": "x86_64", "device": "cpu"}
+      {"name": "llama-b10969-bin-macos-arm64.tar.gz", "size": 11149693, "sha256": "61390a8acf93126860471f3430ad0f790f17df369122154753169d2ce27a3827", "system": "Darwin", "machine": "arm64", "device": "metal"}
     ]
   },
   "paddle": {

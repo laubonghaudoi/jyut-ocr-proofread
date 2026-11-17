@@ -389,11 +389,9 @@ class PlatformTests(unittest.TestCase):
         self.assertIn("no CPU wheel", notes[-1])
         self.assertEqual(self.plan(machine="aarch64", gpus=[gpu()])[0].index, "cu129")
 
-    def test_intel_mac_gets_hunyuan_with_a_vision_hint(self):
-        engines, notes = setup.choose_engines("auto", system="Darwin", machine="x86_64")
-        self.assertEqual(engines, ("hunyuan",))
-        self.assertIn("3.2.1", notes[0])
-        self.assertIn("run_apple_vision_ocr.py", notes[0])
+    def test_intel_mac_is_rejected_and_linux_keeps_hunyuan_exception(self):
+        with self.assertRaisesRegex(setup.SetupError, "native arm64"):
+            setup.choose_engines("hunyuan-paddle", system="Darwin", machine="x86_64")
         self.assertEqual(setup.choose_engines("hunyuan", system="Linux", machine="x86_64")[0], ("hunyuan",))
 
     def test_release_binary_follows_the_driver_and_needs_no_toolkit(self):
@@ -408,7 +406,7 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(name(system="Linux", machine="x86_64", device="cpu", gpu=None), "llama-b10969-bin-ubuntu-x64.tar.gz")
         self.assertEqual(name(system="Darwin", machine="arm64", device="metal", gpu=None), "llama-b10969-bin-macos-arm64.tar.gz")
         self.assertEqual(name(system="Darwin", machine="arm64", device="cpu", gpu=None), "llama-b10969-bin-macos-arm64.tar.gz")
-        self.assertEqual(name(system="Darwin", machine="x86_64", device="cpu", gpu=None), "llama-b10969-bin-macos-x64.tar.gz")
+        self.assertIsNone(name(system="Darwin", machine="x86_64", device="cpu", gpu=None))
 
     def test_gpu_detection_needs_the_driver_only_and_metal_no_offline_compiler(self):
         output = "0, 580.95.05, 32607, 1182, 12.0, NVIDIA GeForce RTX 5090\n"
@@ -689,7 +687,7 @@ class EnvironmentTests(Case):
         with patch.object(install, "build_portable_specs", return_value=[]), patch.object(install, "perform_install"), \
                 patch.object(install, "setup", return_value={"status": "ready"}) as setup_call, \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main(["--env-only", "--local-model-endpoint", local.endpoint,
+            self.assertEqual(install.main(["--config-dir", str(self.options.config_dir), "--env-only", "--local-model-endpoint", local.endpoint,
                                            "--local-model-name", "local-27b", "--local-model-concurrency", "2"]), 0)
         self.assertEqual(setup_call.call_args[0][0].local_model.concurrency, 2)
         for argv in (["--local-model-concurrency", "0"], ["--local-model-concurrency", "two"],
@@ -711,7 +709,7 @@ class EnvironmentTests(Case):
                 patch.object(install, "perform_install"), \
                 patch.object(install, "setup", return_value={"status": "ready"}) as setup_call, \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main(["--agent", "qwen", "--local-model-endpoint", "http://127.0.0.1:8080/v1/chat/completions",
+            self.assertEqual(install.main(["--config-dir", str(self.options.config_dir), "--agent", "qwen", "--local-model-endpoint", "http://127.0.0.1:8080/v1/chat/completions",
                                            "--local-model-name", "local-27b", "--local-model-release-cmd", "stop-llm",
                                            "--local-model-restore-cmd", "start-llm"]), 0)
         self.assertEqual(build.call_args.kwargs["agents"], ["qwen"])
@@ -1399,18 +1397,17 @@ class SetupFlowTests(Case):
                 patch.object(setup, "ensure_paddle_python", side_effect=paddle), \
                 patch.object(setup, "environment_identity", return_value={"id": 1}), \
                 patch.object(setup, "run_smokes", side_effect=smokes), contextlib.redirect_stdout(io.StringIO()) as out:
-            result = setup.setup(self.options)
+            result = setup.setup(replace(self.options, engine="hunyuan-paddle"))
         self.assertEqual((result["status"], result["engines"]), ("ready", ["hunyuan", "paddle"]))
         self.assertEqual(result["devices"], {"hunyuan": "cuda", "paddle": "gpu:0"})
         self.assertEqual(calls["runtime"], ("cuda", "llama-b10969-bin-ubuntu-cuda-13.3-x64.tar.gz"))
         self.assertEqual(calls["paddle"], ("gpu:0", "cu130", str(Path.home() / ".venvs/paddleocr/bin/python")))
-        self.assertIn("older single-engine installer", out.getvalue())
         self.assertIn("older installer", out.getvalue())
         text = env.read_text()
         self.assertIn('export OCR_PHASE_RELEASE_CMD="stop $LLM_UNIT"\n', text)
         self.assertIn("export OCR_HUNYUAN_SLOTS=16\n", text)
         values = setup.read_environment(env)
-        for key, value in {"JYUT_OCR_ENGINE": "auto", "JYUT_OCR_ENGINES": "hunyuan,paddle", "JYUT_OCR_DEVICE": "auto",
+        for key, value in {"JYUT_OCR_ENGINE": "hunyuan-paddle", "JYUT_OCR_ENGINES": "hunyuan,paddle", "JYUT_OCR_DEVICE": "auto",
                            "OCR_HUNYUAN_DEVICE": "cuda", "OCR_PADDLE_DEVICE": "gpu:0",
                            "PADDLEOCR_PYTHON": "/data/paddle-python/bin/python",
                            "PADDLE_VL_MODEL_DIR": "/w/vl", "PADDLE_LAYOUT_MODEL_DIR": "/w/layout"}.items():
@@ -1454,7 +1451,7 @@ class SetupFlowTests(Case):
         self.assertEqual(state["status"], "pending-smoke")
         self.assertEqual(setup.read_environment(self.options.config_dir / "env.sh")["OCR_HUNYUAN_DEVICE"], "cpu")
         with patch.object(install, "setup", return_value=result), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(install.main(["--env-only", "--prepare-only"]), 2)
+            self.assertEqual(install.main(["--config-dir", str(self.options.config_dir), "--env-only", "--prepare-only"]), 2)
 
     def test_a_short_disk_stops_before_any_download(self):
         usage = type("Usage", (), {"free": 3 * 10**9})()
@@ -1533,7 +1530,7 @@ class InspectTests(Case):
     def test_check_verifies_the_saved_engines_and_every_engine_smoke(self):
         self.options.config_dir.mkdir()
         (self.options.config_dir / "env.sh").write_text(
-            "export JYUT_OCR_ENGINE=auto\nexport JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_DEVICE=auto\n"
+            "export JYUT_OCR_ENGINE=hunyuan-paddle\nexport JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_DEVICE=auto\n"
             "export OCR_HUNYUAN_DEVICE=cuda\nexport OCR_PADDLE_DEVICE=gpu:0\n")
         identity = {"id": 1}
         state = {"schema_version": setup.STATE_SCHEMA, "status": "ready", "fingerprint": setup.canonical_hash(identity),
@@ -1557,7 +1554,7 @@ class InspectTests(Case):
         # "absent or stale" and asked to rerun setup.
         self.options.config_dir.mkdir()
         (self.options.config_dir / "env.sh").write_text(
-            "export JYUT_OCR_ENGINE=auto\nexport JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_DEVICE=auto\n"
+            "export JYUT_OCR_ENGINE=hunyuan-paddle\nexport JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_DEVICE=auto\n"
             "export OCR_HUNYUAN_DEVICE=cuda\nexport OCR_PADDLE_DEVICE=gpu:0\n")
         identity = {"id": 1}
         state = {"schema_version": setup.STATE_SCHEMA, "status": "pending-smoke", "identity": identity,

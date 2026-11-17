@@ -354,6 +354,11 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
     assert book is not None
     if not book.is_dir():
         raise FinishError(EXIT_USAGE, f"{book} is not a folder")
+    from _ocr_engines import read_book_engine_record
+    try:
+        read_book_engine_record(book)
+    except ValueError as exc:
+        raise FinishError(EXIT_USAGE, str(exc)) from exc
     notes: list[str] = []
     single_engine = bool(getattr(arguments, "single_engine", False))
     if single_engine:

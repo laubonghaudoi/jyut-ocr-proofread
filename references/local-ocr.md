@@ -2,28 +2,29 @@
 
 ## macOS 快速路線
 
-Apple Silicon macOS 14+ 安裝 `--engine auto` 時，Paddle 預設由 CPU 做 PP-DocLayoutV3 版面分析，原裝、未量化嘅 PaddleOCR-VL-1.6 權重交獨立 `mlx-vlm==0.8.0` 服務用 Metal 識別。Linux 同舊環境直接調 runner 而冇新設定，仍然行 native。安裝器嘅 `--paddle-vl-backend auto|native|mlx-vlm-server` 記住要求；明確 `--device cpu` 或 `native` 唔會轉 MLX。
+Apple Silicon macOS 14+ 安裝 `--engine hunyuan-paddle` 時，Paddle 預設由 CPU 做 PP-DocLayoutV3 版面分析，原裝、未量化嘅 PaddleOCR-VL-1.6 權重交獨立 `mlx-vlm==0.8.0` 服務用 Metal 識別。Linux 同舊環境直接調 runner 而冇新設定，仍然行 native。安裝器嘅 `--paddle-vl-backend auto|native|mlx-vlm-server` 記住要求；明確 `--device cpu` 或 `native` 唔會轉 MLX。
 
 `JYUT_OCR_PADDLE_VL_BACKEND` 係安裝要求，`OCR_PADDLE_VL_BACKEND` 係實際後端。`PADDLEOCR_PYTHON` 負責版面 pipeline，`MLX_VLM_PYTHON` 係獨立 MLX venv（runner 可用 `--mlx-python` 覆蓋）。`OCR_PADDLE_DEVICE=cpu` 只講 Paddle 嗰邊，唔代表 MLX 用 CPU。直接執行可用 `run_paddleocr_vl.py --vl-backend mlx-vlm-server` 或 `--vl-backend native`。
 
 MLX 服務由 runner 自己開喺隨機 loopback port，入咗 GPU 隊先載入權重；等自己個程序完成指定模型預載先接頁。版面 pipeline 一次只送一個識別請求，唔開多 worker。服務失敗會明確報錯，唔會暗中改用 CPU。正常完成、限時、訊號中斷同父程序被殺，都先清理 worker／服務再放隊列；全部頁已 current 就唔開服務。依賴版本同 hash 喺 `runtime/mlx-requirements.txt`。
 
-另一條橫排快速路線係 `./install.sh --engine vision,hunyuan`，再用 `ocr_book.py BOOK --engines vision,hunyuan`：依次跑 Hunyuan B、交未校對草稿、Vision A、Hunyuan 補讀。底稿放 `ocr-vision/` 同 `ocr-hunyuan/`，選擇記喺 `reports/ocr-engines.json`，定稿會按呢個記錄揀 A，唔會畀舊 `ocr-paddle/` 蓋過。`--engine vision` 仍然係原有單引擎選項。Vision 識別語言同糾字設定保持原樣；直排同高 CER 唔係執行閘。
 
-Vision 原始 observations 同 line IDs 保留；供下游用嘅 box 統一係左上角原點、相對頁面嘅 `[x,y,width,height]`，TXT 同分組區塊次序一致。邊緣位置只係家具候選，唔會單憑位置授權刪字。Vision 冇原生表格格網：Hunyuan 嘅 HTML／Markdown 表只提出候選，可靠對應完整 A 區塊先用聯合裁圖重建；否則明確交全頁圖處理，包含純數字表。補讀仍然負責漏讀，唔冒充表格結構驗證。
+Vision 原始 observations 同 line IDs 保留；供下游用嘅 box 統一係左上角原點、相對頁面嘅 `[x,y,width,height]`，TXT 同分組區塊次序一致。邊緣位置只係家具候選，唔會單憑位置授權刪字。純 Vision 經單引擎流程對整頁原圖轉錄，唔參與雙引擎表格候選。
 
-新版封條另外綁定所用引擎、後端、版面契約、區塊文字、box、label 同次序；改時間或搬檔案位置唔會令頁過期。新 Vision／MLX 底稿必須符合呢個契約；未變嘅舊 native 底稿同封頁繼續接受。明確換後端／引擎會報 stale，要按既有 `--overwrite` 流程重跑，唔會自動覆寫舊書。
+新版封條另外綁定所用引擎、後端、版面契約、區塊文字、box、label 同次序；改時間或搬檔案位置唔會令頁過期。新 Vision／MLX 底稿必須符合呢個契約；未變嘅舊 native 底稿同封頁繼續接受。同一路線明確換後端會報 stale，要按既有 `--overwrite` 流程重跑。轉換引擎路線必須用新工作目錄，保留舊書、封條同評測證據。
 
 macOS 記憶體用 `vm_stat` 嘅 free + inactive + speculative 作可回收估計，唔額外加 purgeable。Paddle 暫保留 12,288 MiB 預算（MLX VLM 同 CPU layout 同時存活）；順序引擎用最大值，Vision 路線唔計 Paddle。手動 memory override 同 Hunyuan slots 保留。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
 
-安裝器預設兩個引擎都裝：**引擎 B，HunyuanOCR**（GGUF，經 llama.cpp）同**引擎 A，PaddleOCR-VL**（Intel Mac 裝唔到 Paddle，淨係 Hunyuan，Apple Vision 可以做提示）；`--engine hunyuan` 先係淨裝 Hunyuan。macOS 首次安裝先問用戶：下載呢兩個引擎（`--engine auto`），定係淨用內置嘅 Apple Vision（`--engine vision`，唔下載模型，行單引擎流程），見 `install.md`〈macOS：先揀引擎〉。所有輸出都只係底稿：讀法由校對者定，校對者係當前 agent（packet）或者本機模型（http），見 `SKILL.md` 第一節；揀 OCR 引擎唔會改校對模型。
+Linux／WSL2 安裝器預設兩個引擎都裝：**引擎 B，HunyuanOCR**（GGUF，經 llama.cpp）同**引擎 A，PaddleOCR-VL**；Linux／WSL2 嘅 `--engine hunyuan` 先係淨裝 Hunyuan。macOS 首次安裝先問用戶：下載呢兩個引擎（`--engine hunyuan-paddle`），定係淨用內置嘅 Apple Vision（`--engine apple-vision`，唔下載模型，行單引擎流程），見 `install.md`〈macOS：先揀引擎〉。所有輸出都只係底稿：讀法由校對者定，校對者係當前 agent（packet）或者本機模型（http），見 `SKILL.md` 第一節；揀 OCR 引擎唔會改校對模型。
 
 首次使用先按 [install.md](install.md) 配置環境，再跑 `./install.sh --env-only --check`。以下命令從技能根目錄執行，使用設定嘅 `JYUT_OCR_PYTHON`。
 
-## 兩個引擎（預設）同單引擎
+macOS 只支援原生 Apple Silicon；Intel Mac 唔支援。純 Vision 跑 `ocr_book.py BOOK --engine apple-vision`，唔下載 HF 模型、唔做模型交接，之後按 `SKILL.md` 單引擎校對。
 
-- 預設兩個引擎讀全書：`ocr_book.py BOOK` 依次跑引擎 B、草稿、引擎 A 同引擎 B 補讀（見 `long-book-workflow.md`〈OCR 階段（ocr_book.py）〉），唔使揀，亦唔使問用戶。
-- `--single-engine` 係明確例外：淨係得 Hunyuan 嘅機（Intel Mac，或者用戶話淨裝 Hunyuan）。之後 `proofread_pages.py --single-engine`、`finish_book.py --single-engine --ocr-a` 一路用；唔將同一份底稿複製成假第二引擎。
+## 選路線：雙引擎同純 Vision
+
+- `hunyuan-paddle` 兩個引擎讀全書：`ocr_book.py BOOK --engine hunyuan-paddle` 依次跑引擎 B、草稿、引擎 A 同引擎 B 補讀（見 `long-book-workflow.md`〈OCR 階段（ocr_book.py）〉）；沿用已選路線，唔使每本重新問。
+- `apple-vision` 只執行 Vision，跳過 profile 同補讀；`hunyuan` 只限 Linux／WSL2，用戶明確要求。之後 `proofread_pages.py --single-engine`、`finish_book.py --single-engine --ocr-a` 一路用；唔將同一份底稿複製成假第二引擎。
 - 兩引擎分歧只係問題嘅位；一致亦可能一齊錯。唔自動投票、唔按多數字形全域替換。
 - 安裝／初始化負責下載及核驗模型；跑書期間引擎缺失、裝置暫時用唔到或者單頁失敗，runner 出 ERROR 講原因：照講畀用戶知，唔無限重試，唔自行換模型，亦唔 fallback 去 Tesseract。
 
@@ -38,7 +39,7 @@ Paddle runner 唔會畀 PaddleX 第一次用先下載權重：嗰陣下載會喺
 | 設定 | CLI | 用途 |
 |---|---|---|
 | `JYUT_OCR_PYTHON` | 啟動 interpreter | 通用腳本用嘅獨立 venv Python |
-| `JYUT_OCR_ENGINE` | 安裝器 `--engine` | 引擎要求：`auto`（兩個引擎）或者明確覆蓋 `hunyuan`／`vision` |
+| `JYUT_OCR_ENGINE` | 安裝器 `--engine` | 公開路線：`hunyuan-paddle`／`apple-vision`；Linux／WSL2 另可用 `hunyuan` |
 | `JYUT_OCR_ENGINES` | （安裝器寫） | 實際裝咗嘅引擎，例如 `hunyuan,paddle` |
 | `JYUT_OCR_DEVICE` | 安裝器 `--device` | 裝置要求：`auto` 或者明確揀嘅 `cpu`／`cuda`／`metal` |
 | `OCR_HUNYUAN_DEVICE` | `--device` | `auto`／`cpu`／`cuda`／`metal`；封入共用服務身份；續跑只記錄、唔比較 |
@@ -110,7 +111,7 @@ Agent 跑交接嘅規矩：
 - `OCR_PHASE_UNLIMITED_SHELL=1` 先可以唔設 tool call timeout、一個 call 做晒（設任何數都會有返時限）。呢個值淨係用戶喺 `env.sh` 設：佢拆咗 harness 嘅 shell 時限（例如 Qwen Code 嘅 `tools.shell.defaultTimeoutMs: 0`），再用一個長過舊上限、冇 timeout 嘅 call（例如 `sleep 700; echo ok`）試過。Agent 唔好自己設、唔好喺命令前面 export，亦唔好因為今次未撞過時限就當冇時限。咁樣都俾 harness 殺咗，即係設定冇生效：唔好再試，話畀用戶知，之後照有時限咁做。冇呢個設定，交接同 `wait_for_run.py` 嘅 tool call timeout 照開到最大（Qwen Code `600000`），`OCR_PHASE_MAX_SECONDS` 低過 shell 上限。
 - 背景有步驟（`book_profile.py`、`proofread_pages.py` 經 http）用緊模型嗰陣，唔好開交接：佢會等嗰啲請求，等唔切就 exit 76。
 
-`ocr_book.py` 喺同一個時限內按次序做 Hunyuan、`build_draft.py`（Hunyuan 讀完全書即刻出俾用戶睇嘅初稿）、Paddle 同補讀；封好嘅頁一律跳過，所以同一條命令再跑就由上次停低嘅位置繼續。一個交接窗口包晒所有引擎，每次 call 模型只停一次、開一次。前面嘅步驟喺今次 call 已經封咗頁，下一個引擎就要淨低嘅時間夠「載入模型加最長一頁」先開（量度值記喺 `BOOK/reports/ocr-times.json`，每個引擎封到頁就更新；載入時間由 runner 開始計到引擎自己話模型載好（run report 嘅 `modelReadyAt`：llama-server 答到模型、Paddle worker 嘅 ready），冇呢個訊號就用第一頁封好嘅時間減嗰頁自己用嘅秒數，`loadFrom` 講用咗邊個；未量度用預設值）；唔夠時間就唔載入，成條命令 exit 75。今次 call 第一個要載入嘅引擎唔受呢條限制（預算本身太細嘅話，要靠佢報錯）；但佢有足估計時間都喺第一頁之前用晒時間，就記低「載入最少要咁耐」（`loadAtLeast`），exit 75，下次 call 用返新估計；冇足估計時間就 exit 1，即係預算太細，要加大；RESULT 行會列出開始嗰陣淨低幾多秒、載入加最長一頁要幾多秒。Paddle 同 Hunyuan（dedicated 或者 shared）載入模型都最多等到時限，唔會超過。Shared Hunyuan 嘅 broker 攞到 GPU、開始載入 server 會話畀 client 知；到時限仲載緊，就唔當排隊（唔係 75，唔會喺交接窗口變成 76 再跑過無限次），runner exit 1，講明預算太細、載入用咗幾耐。只有 Hunyuan 嘅機（例如 Intel Mac）加 `--single-engine`。
+`ocr_book.py` 喺同一個時限內按次序做 Hunyuan、`build_draft.py`（Hunyuan 讀完全書即刻出俾用戶睇嘅初稿）、Paddle 同補讀；封好嘅頁一律跳過，所以同一條命令再跑就由上次停低嘅位置繼續。一個交接窗口包晒所有引擎，每次 call 模型只停一次、開一次。前面嘅步驟喺今次 call 已經封咗頁，下一個引擎就要淨低嘅時間夠「載入模型加最長一頁」先開（量度值記喺 `BOOK/reports/ocr-times.json`，每個引擎封到頁就更新；載入時間由 runner 開始計到引擎自己話模型載好（run report 嘅 `modelReadyAt`：llama-server 答到模型、Paddle worker 嘅 ready），冇呢個訊號就用第一頁封好嘅時間減嗰頁自己用嘅秒數，`loadFrom` 講用咗邊個；未量度用預設值）；唔夠時間就唔載入，成條命令 exit 75。今次 call 第一個要載入嘅引擎唔受呢條限制（預算本身太細嘅話，要靠佢報錯）；但佢有足估計時間都喺第一頁之前用晒時間，就記低「載入最少要咁耐」（`loadAtLeast`），exit 75，下次 call 用返新估計；冇足估計時間就 exit 1，即係預算太細，要加大；RESULT 行會列出開始嗰陣淨低幾多秒、載入加最長一頁要幾多秒。Paddle 同 Hunyuan（dedicated 或者 shared）載入模型都最多等到時限，唔會超過。Shared Hunyuan 嘅 broker 攞到 GPU、開始載入 server 會話畀 client 知；到時限仲載緊，就唔當排隊（唔係 75，唔會喺交接窗口變成 76 再跑過無限次），runner exit 1，講明預算太細、載入用咗幾耐。Linux／WSL2 嘅 Hunyuan-only 路線用 `--engine hunyuan`。
 
 退出碼：
 
@@ -190,7 +191,7 @@ Agent 跑交接嘅規矩：
 "$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK
 ```
 
-單引擎：第 2 步 `ocr_book.py BOOK --single-engine`；唔跑 profile；`proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`（逐頁對住頁圖轉錄，底稿做提示）；`finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`。macOS 選 Vision 時用 `run_apple_vision_ocr.py BOOK/renders BOOK/ocr-vision --first-page 1 --last-page N --workers auto --report BOOK/reports/vision-run.json`（`N` 係 `BOOK/renders` 入面嘅頁數；呢個 runner 一定要講明頁範圍，`--first-page` 同 `--last-page` 要一齊畀，或者用 `--pages`），再將上面嘅 `ocr-hunyuan` 換成 `ocr-vision`。
+Linux／WSL2 Hunyuan 單引擎：第 2 步 `ocr_book.py BOOK --engine hunyuan`；唔跑 profile；`proofread_pages.py BOOK/renders BOOK/ocr-hunyuan BOOK/proofread --single-engine`（逐頁對住頁圖轉錄，底稿做提示）；`finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-hunyuan`。macOS 純 Vision 第 2 步用 `ocr_book.py BOOK --engine apple-vision`，再將上面校對／定稿命令嘅 `ocr-hunyuan` 換成 `ocr-vision`。
 
 `finish_book.py --single-engine` 必須明確提供真實 `--ocr-a`，唔接受 `--ocr-b` 或 `--extract-figures`。佢驗逐頁 seals，再組裝及執行 final audit，**唔跑依賴兩引擎嘅 repair**；跨頁段落先保持分開，可能需要接續嘅位置記成疑點（`single-engine-boundary`），唔憑單一底稿自動黐段。工作檔同證據會保留（唔清走）。Final audit 嘅錯誤同雙引擎路線一樣，記入 `doubts.md` 做疑點，完成稿照交付，RESULT 行寫明有幾多個。
 

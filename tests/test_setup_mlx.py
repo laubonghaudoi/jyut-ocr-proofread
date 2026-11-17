@@ -24,7 +24,7 @@ class MlxSetupTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)
-        self.options = setup.SetupOptions(ROOT, self.base / "config", self.base / "data", engine="auto")
+        self.options = setup.SetupOptions(ROOT, self.base / "config", self.base / "data", engine="hunyuan-paddle")
         self.lock = copy.deepcopy(setup.load_lock(ROOT))
         self.lock["mlx"]["enabled_by_default"] = True
         mac = patch.object(setup.platform, "mac_ver", return_value=("14.0", (), "arm64"))
@@ -71,22 +71,21 @@ class MlxSetupTests(unittest.TestCase):
         self.assertEqual(setup.paddle_backend_request("default", {"JYUT_OCR_PADDLE_VL_BACKEND": "native"}), "native")
         self.assertEqual(setup.paddle_backend_request("auto", {"JYUT_OCR_PADDLE_VL_BACKEND": "native"}), "auto")
 
-    def test_vision_hunyuan_omits_paddle_installation(self):
-        options = replace(self.options, engine="vision,hunyuan", device="metal")
-        with patch.object(setup, "metal_available", return_value=True):
-            engines, devices, paddle, *_ = setup.plan_engines(options, {}, self.lock, system="Darwin", machine="arm64")
-        self.assertEqual(engines, ("vision", "hunyuan"))
-        self.assertEqual(devices, {"vision": "vision-managed", "hunyuan": "metal"})
+    def test_pure_vision_omits_all_downloaded_engines(self):
+        options = replace(self.options, engine="apple-vision")
+        engines, devices, paddle, *_ = setup.plan_engines(options, {}, self.lock, system="Darwin", machine="arm64")
+        self.assertEqual(engines, ("vision",))
+        self.assertEqual(devices, {"vision": "vision-managed"})
         self.assertIsNone(paddle)
         with self.assertRaises(setup.SetupError):
-            setup.choose_engines("vision,hunyuan", system="Linux", machine="x86_64")
+            setup.choose_engines("vision,hunyuan", system="Darwin", machine="arm64")
 
     def test_public_installer_forwards_backend_and_engine_request(self):
         with patch.object(install, "setup", return_value={"status": "ready"}) as run:
-            self.assertEqual(install.main(["--env-only", "--engine", "vision,hunyuan",
+            self.assertEqual(install.main(["--env-only", "--engine", "hunyuan-paddle",
                                            "--paddle-vl-backend", "native"]), 0)
         self.assertEqual(run.call_args.args[0].paddle_vl_backend, "native")
-        self.assertEqual(run.call_args.args[0].engine, "vision,hunyuan")
+        self.assertEqual(run.call_args.args[0].engine, "hunyuan-paddle")
 
     def test_metadata_probe_does_not_import_mlx(self):
         result = type("Result", (), {"stdout": json.dumps(self.probe())})()
@@ -197,7 +196,7 @@ class MlxSetupTests(unittest.TestCase):
     def test_check_reports_backend_migration_without_writing_or_loading(self):
         self.options.config_dir.mkdir()
         config = self.options.config_dir / "env.sh"
-        config.write_text("export JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_ENGINE=auto\n"
+        config.write_text("export JYUT_OCR_ENGINES=hunyuan,paddle\nexport JYUT_OCR_ENGINE=hunyuan-paddle\n"
                           "export JYUT_OCR_DEVICE=auto\nexport OCR_PADDLE_DEVICE=cpu\n"
                           "export OCR_HUNYUAN_DEVICE=metal\n")
         before = config.read_bytes()
@@ -240,9 +239,9 @@ class MlxSetupTests(unittest.TestCase):
         with patch.object(setup, "platform_name", return_value="Darwin"), \
                 patch.object(setup, "free_gpu_mib", side_effect=setup.SetupError("unknown")), \
                 patch.object(setup, "handover_smokes", return_value={}) as handover:
-            setup.run_smokes(self.options, config, ("vision", "hunyuan"),
-                             {"vision": "vision-managed", "hunyuan": "metal"}, "a" * 64)
-        self.assertEqual(handover.call_args.args[-1], setup.hunyuan_need_mib(1))
+            setup.run_smokes(self.options, config, ("hunyuan", "paddle"),
+                             {"hunyuan": "metal", "paddle": "cpu"}, "a" * 64)
+        self.assertEqual(handover.call_args.args[-1], setup.PADDLE_NEED_MIB)
         self.assertEqual(setup.smoke_need_mib("vision", {}), 0)
         self.assertEqual(setup.smoke_need_mib("paddle", {"OCR_PHASE_REQUIRED_MIB": "15000"}), 15000)
 

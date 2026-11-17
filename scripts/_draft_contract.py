@@ -88,9 +88,3 @@ def layout_problem(record: Mapping[str, Any], text: str | None = None) -> str | 
     if text is not None and text != "\n".join(line["text"] for line in lines) + "\n":
         return "layout JSON text/order differs from TXT"
     return None
-
-
-def has_native_table_layout(record: Mapping[str, Any]) -> bool:
-    """Vision's line aggregation supplies crops, never native table grids."""
-    contract = record.get("layoutContract") or {}
-    return not isinstance(contract, dict) or contract.get("nativeTableLayout", True) is not False

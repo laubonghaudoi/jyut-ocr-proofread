@@ -55,12 +55,12 @@ class VisionLayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             book = write_book(Path(temporary), pages=1, a="ocr-vision", a_json=layout)
             a, b = book / "ocr-vision", book / "ocr-hunyuan"
-            self.assertIsNone(pp.engine_roles_problem(a, b))
+            self.assertIsNotNone(pp.engine_roles_problem(a, b))
             path = a / "page-0001.json"
             record = json.loads(path.read_text())
             record["engine"] = "Another honest layout engine"
             path.write_text(json.dumps(record))
-            self.assertIsNone(pp.engine_roles_problem(a, b))
+            self.assertIsNotNone(pp.engine_roles_problem(a, b))
             record["layoutContract"]["coordinateSystem"] = "bottom-left"
             path.write_text(json.dumps(record))
             self.assertIn("invalid layout contract", pp.engine_roles_problem(a, b))
@@ -117,8 +117,8 @@ class VisionLayoutTests(unittest.TestCase):
 
     def test_model_off_proofread_seal_refuses_geometry_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
-            book = write_book(Path(temporary), pages=1, a="ocr-vision", a_json=layout)
-            code, _, error, _ = run(book, drafts="ocr-vision")
+            book = write_book(Path(temporary), pages=1, a="ocr-vision", b=None, a_json=layout)
+            code, _, error, _ = run(book, "--single-engine", drafts="ocr-vision")
             self.assertEqual(code, 0, error)
             record = json.loads((book / "out" / "page-0001.json").read_text())
             self.assertIn("draftSemanticsSha256", record["provenance"])
@@ -126,62 +126,82 @@ class VisionLayoutTests(unittest.TestCase):
             changed = json.loads(path.read_text())
             changed["lines"][0]["boundingBox"][0] = 0.11
             path.write_text(json.dumps(changed))
-            code, output, error, report = run(book, drafts="ocr-vision")
+            code, output, error, report = run(book, "--single-engine", drafts="ocr-vision")
             self.assertNotEqual(code, 0)
             self.assertIn("draftSemanticsSha256", output + error + json.dumps(report))
 
-    def test_finish_uses_recorded_vision_and_refuses_mutated_layout(self):
+    def test_single_vision_proofreads_finalizes_resumes_and_refuses_mutated_layout(self):
         import finish_book
-        from check_finish_book import phase3_book, reseal
-        import repair_fixture as fx
+        from test_single_engine_pipeline import make_book
         with tempfile.TemporaryDirectory() as temporary:
-            book = phase3_book(Path(temporary), spec={1: fx.make_spec()[1]})
-            (book / "book-profile.json").unlink()  # short documents need no profile
+            book, drafts = make_book(Path(temporary))
             a = book / "ocr-vision"
-            shutil.copytree(book / "ocr-paddle", a)  # old Paddle output stays behind
+            drafts.rename(a)
             path = a / "page-0001.json"
             text = (a / "page-0001.txt").read_text()
-            if not text.endswith("\n"):
-                text += "\n"
-                (a / "page-0001.txt").write_text(text)
-            path.write_text(json.dumps(layout(text[:-1])))
+            (a / "page-0001.txt").write_text(text + "\n")
+            path.write_text(json.dumps(layout(text)))
             (book / "reports").mkdir(exist_ok=True)
-            (book / "reports" / "ocr-engines.json").write_text(json.dumps({
-                "schemaVersion": 1, "engines": ["vision", "hunyuan"],
-                "draftA": "ocr-vision", "draftB": "ocr-hunyuan"}))
-            args = finish_book.build_parser().parse_args([str(book)])
+            record = book / "reports" / "ocr-engines.json"
+            record.write_text(json.dumps({"schemaVersion": 1, "engines": ["vision"], "draftA": "ocr-vision"}))
+            # Residual HF folders cannot change the chosen route.
+            for folder in ("ocr-paddle", "ocr-hunyuan"):
+                shutil.copytree(a, book / folder)
+            code, _, error, report = run(book, "--single-engine", drafts="ocr-vision")
+            self.assertEqual(code, 0, error)
+            self.assertTrue(report["singleEngine"])
+            self.assertFalse((book / "book-profile.json").exists())
+            argv = [str(book), "--single-engine", "--ocr-a", str(a), "--proofread", str(book / "out"), "--no-deliver"]
+            for _ in range(2):
+                self.assertEqual(finish_book.main(argv), 0)
+                self.assertEqual((book / "final.md").read_text().strip(), text)
+                code, _, error, _ = run(book, "--single-engine", drafts="ocr-vision")
+                self.assertEqual(code, 0, error)
+            result = json.loads((book / "finish/finish-report.json").read_text())
+            self.assertIsNone(result["inputs"]["ocr_b"])
+            self.assertEqual(result["steps"]["repair"]["status"], "skipped")
+            args = finish_book.build_parser().parse_args(argv)
             inputs = finish_book.resolve_inputs(book, args)
-            self.assertEqual(inputs.ocr_a, a)
-            def semantic_seal(record):
-                record["provenance"].update(draftSha256=pp.sha256_file(a / "page-0001.txt"),
-                    draftSemanticsSha256=contract.semantic_digest(path),
-                    draft2SemanticsSha256=contract.semantic_digest(book / "ocr-hunyuan" / "page-0001.json"))
-            reseal(book, 1, semantic_seal)
-            finish_book.read_sealed(inputs, finish_book.Log(io.StringIO()))
             changed = json.loads(path.read_text())
             changed["lines"][0]["blockLabel"] = "title"
             path.write_text(json.dumps(changed))
             with self.assertRaisesRegex(finish_book.FinishError, "layout/identity differs"):
                 finish_book.read_sealed(inputs, finish_book.Log(io.StringIO()))
-            # A stale long-book profile cannot silently select old Paddle.
-            (book / "book-profile.json").write_text(json.dumps({"sources": {
-                "draftA": str(book / "ocr-paddle"), "draftB": str(book / "ocr-hunyuan")}}))
-            with self.assertRaisesRegex(finish_book.FinishError, "but the profile names"):
-                finish_book.resolve_inputs(book, args)
-            explicit = finish_book.build_parser().parse_args([str(book), "--ocr-a", str(a)])
-            self.assertEqual(finish_book.resolve_inputs(book, explicit).ocr_a, a)
-            # Even the single-engine route requires the new Vision contract.
             changed.pop("layoutContract")
             path.write_text(json.dumps(changed))
-            explicit = finish_book.build_parser().parse_args([str(book), "--single-engine", "--ocr-a", str(a)])
             with self.assertRaisesRegex(finish_book.FinishError, "invalid layout contract"):
-                finish_book.resolve_inputs(book, explicit)
-            shutil.rmtree(a)
-            with self.assertRaisesRegex(finish_book.FinishError, "its drafts are missing"):
+                finish_book.resolve_inputs(book, args)
+            record.write_text(json.dumps({"schemaVersion": 1, "engines": ["vision", "hunyuan"]}))
+            with self.assertRaisesRegex(finish_book.FinishError, "retired"):
                 finish_book.resolve_inputs(book, args)
 
 
 class VisionPhaseTests(unittest.TestCase):
+    @mock.patch("platform.system", return_value="Darwin")
+    @mock.patch("platform.machine", return_value="arm64")
+    def test_vision_runs_with_a_local_model_without_acquiring_the_gpu_queue(self, *_):
+        import _setup_ocr as setup
+        with tempfile.TemporaryDirectory() as temporary:
+            book = Path(temporary)
+            (book / "renders").mkdir()
+            (book / "renders/page-0001.png").write_bytes(b"fixture")
+            harness = Harness()
+            env = {"OCR_PHASE_RELEASE_CMD": "must-not-run", "OCR_PHASE_RESTORE_CMD": "must-not-run",
+                   "OCR_PHASE_SWAP": "always", "OCR_GPU_QUEUE_DIR": str(book / "queue")}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    mock.patch("_gpu_queue.GPUQueue.acquire", side_effect=AssertionError("Vision requested GPU lease")) as lease:
+                self.assertEqual(vision.main([str(book / "renders"), str(book / "ocr-vision"), "--pages", "1"],
+                                             compiler=harness.compiler, worker_factory=harness.factory), 0)
+                options = setup.SetupOptions(Path(vision.__file__).resolve().parents[1], book / "config", book / "data")
+                directory, command = setup.prepare_smoke(options, {"JYUT_OCR_PYTHON": sys.executable},
+                                                         "vision", "vision-managed", "a" * 64)
+                self.assertEqual(vision.main([str(arg) for arg in command[2:]], compiler=harness.compiler,
+                                             worker_factory=harness.factory), 0)
+                self.assertTrue(setup.smoke_record(directory, command)["artifacts"])
+            lease.assert_not_called()
+            self.assertFalse((book / "queue").exists())
+            self.assertTrue((book / "ocr-vision/page-0001.json").exists())
+
     def test_partial_worker_response_cannot_outlive_phase_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "fake-vision-worker"
@@ -197,8 +217,10 @@ class VisionPhaseTests(unittest.TestCase):
                     worker.close()
                 self.assertIsNotNone(worker.process_handle.poll())
 
-    def test_engine_selection_and_orchestration(self):
-        self.assertEqual(resolve_engines("hunyuan,vision", environ={}), ("vision", "hunyuan"))
+    @mock.patch("platform.system", return_value="Darwin")
+    @mock.patch("platform.machine", return_value="arm64")
+    def test_engine_selection_and_orchestration(self, *_):
+        self.assertEqual(resolve_engines("apple-vision", environ={}), ("vision",))
         with tempfile.TemporaryDirectory() as temporary:
             book = Path(temporary)
             (book / "renders").mkdir()
@@ -209,23 +231,18 @@ class VisionPhaseTests(unittest.TestCase):
                 calls.append(command)
                 return 0, time.time(), None, None
             with mock.patch.object(ocr_book, "run_step", side_effect=step), mock.patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(ocr_book.main([str(book), "--engines", "vision,hunyuan"]), 0)
-            self.assertEqual([Path(call[1]).name for call in calls],
-                             ["run_hunyuanocr.py", "run_apple_vision_ocr.py", "run_hunyuanocr_second_look.py"])
-            self.assertEqual(calls[1][-2:], ["--pages", "2"])
-            self.assertIn(str(book / "ocr-vision"), calls[2])
+                self.assertEqual(ocr_book.main([str(book), "--engine", "apple-vision"]), 0)
+            self.assertEqual([Path(call[1]).name for call in calls], ["run_apple_vision_ocr.py"])
+            self.assertEqual(calls[0][-2:], ["--pages", "2"])
             self.assertEqual(recorded_draft_directory(book, "A"), book / "ocr-vision")
-            self.assertEqual(resolve_engines(book=book, environ={}), ("vision", "hunyuan"))
-            self.assertEqual(resolve_engines(book=book, environ={"JYUT_OCR_ENGINES": "hunyuan,paddle"}),
-                             ("hunyuan", "paddle"))
-            self.assertEqual(resolve_engines("vision,hunyuan", book=book,
-                             environ={"JYUT_OCR_ENGINES": "hunyuan,paddle"}), ("vision", "hunyuan"))
-            self.assertEqual(resolve_engines(book=book, single_engine=True, environ={}), ("hunyuan",))
+            self.assertEqual(resolve_engines(book=book, environ={}), ("vision",))
             self.assertEqual(draft_a_directory(book, ("vision",)), book / "ocr-vision")
+            with self.assertRaisesRegex(ValueError, "new work directory"):
+                resolve_engines("hunyuan-paddle", book=book, environ={})
             calls.clear()
             with mock.patch.object(ocr_book, "run_step", side_effect=step), mock.patch.dict(os.environ, {}, clear=True):
                 self.assertEqual(ocr_book.main([str(book)]), 0)
-            self.assertEqual(Path(calls[1][1]).name, "run_apple_vision_ocr.py")
+            self.assertEqual([Path(call[1]).name for call in calls], ["run_apple_vision_ocr.py"])
 
     def test_budget_defers_before_startup_and_records_progress(self):
         with tempfile.TemporaryDirectory() as temporary:

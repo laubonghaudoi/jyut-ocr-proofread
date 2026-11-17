@@ -744,6 +744,16 @@ def profile_book(arguments: argparse.Namespace) -> int:
     renders = arguments.render_directory.expanduser().resolve()
     drafts = arguments.draft_directory.expanduser().resolve()
     drafts2 = arguments.draft2_directory.expanduser().resolve()
+    from _ocr_engines import read_book_engine_record
+    from proofread_pages import engine_roles_problem
+    try:
+        read_book_engine_record(renders.parent)
+        problem = engine_roles_problem(drafts, drafts2)
+        if problem:
+            raise ValueError(problem)
+    except ValueError as error:
+        print(f"ERROR {error}", file=sys.stderr)
+        return 2
     started = time.monotonic()
     candidates = page_candidates(renders, drafts, drafts2)
     if not candidates:

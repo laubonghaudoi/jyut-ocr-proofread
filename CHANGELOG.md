@@ -1,5 +1,12 @@
 # 更新摘要
 
+## 2026-11-17：精簡 macOS 路線
+
+- macOS 只支援原生 Apple Silicon，移除 Intel Mac 同 Vision＋Hunyuan 混合路線。
+- 安裝同跑書統一 `--engine apple-vision`／`--engine hunyuan-paddle`；Linux／WSL2 保留 Hunyuan-only。移除跑書嘅 `--engines` 同公開路線名 `auto`、`vision`、逗號組合；舊設定須明確重選，新路線用新工作目錄。
+- 純 Vision 唔下載 HF 模型，唔啟動其他 OCR 模型或做 GPU 交接；保留座標修正、單引擎校對、續跑及封條。雙引擎保留 MLX 加速。
+- 以下舊版本紀錄及已封存評測保持原樣，唔代表退役路線仍然可用。
+
 ## Unreleased — macOS MLX 同 Vision 雙引擎優化（issue #4）
 
 - Apple Silicon macOS 14+ 嘅 Paddle 預設用獨立、hash-locked `mlx-vlm==0.8.0` 做 Metal 識別，CPU 保留版面分析；沿用原裝未量化權重。明確 native／CPU 設定保留，舊 auto-CPU 可遷移。正式 runner 管服務啟動、模型 readiness、GPU 隊列、限時同父程序死亡清理，失敗唔會靜默 fallback。

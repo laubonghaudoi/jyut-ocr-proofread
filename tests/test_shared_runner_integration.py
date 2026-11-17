@@ -20,7 +20,7 @@ class SharedRunnerIntegrationTest(LocalOCRTestBase):
         # broker's code identity halfway through these process-level checks.
         self.scripts = self.base / 'scripts'
         self.scripts.mkdir()
-        for name in ('run_hunyuanocr.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py'):
+        for name in ('run_hunyuanocr.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py'):
             shutil.copy2(SCRIPTS / name, self.scripts / name)
         fake = FAKE_SERVER.replace('BaseHTTPRequestHandler, HTTPServer',
                                    'BaseHTTPRequestHandler, ThreadingHTTPServer')

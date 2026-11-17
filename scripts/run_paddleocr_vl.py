@@ -956,6 +956,12 @@ from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from _ocr_engines import require_supported_host
+    try:
+        require_supported_host()
+    except ValueError as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 2
     parser = build_parser()
     arguments = parser.parse_args(argv)
     exit_on_sigterm()

@@ -6,11 +6,11 @@
 
 成個流程得三個角色，分工固定：
 
-| 角色 | 係乜 | 做乜 |
-|---|---|---|
-| **腳本** | `scripts/` 入面嘅 Python | 行流程、對齊底稿、出題、做所有決定論檢查、封頁、組裝 |
-| **OCR 引擎** | HunyuanOCR、PaddleOCR-VL、Apple Vision，全部喺本機跑 | 淨係出底稿；底稿唔係答案 |
-| **校對者** | 預設係調用技能嘅 agent；亦可以係本機模型 | 淨係答腳本問嘅題：睇裁圖定讀法、加標點、排版 |
+| 角色         | 係乜                                                 | 做乜                                                 |
+| ------------ | ---------------------------------------------------- | ---------------------------------------------------- |
+| **腳本**     | `scripts/` 入面嘅 Python                             | 行流程、對齊底稿、出題、做所有決定論檢查、封頁、組裝 |
+| **OCR 引擎** | HunyuanOCR、PaddleOCR-VL、Apple Vision，全部喺本機跑 | 淨係出底稿；底稿唔係答案                             |
+| **校對者**   | 預設係調用技能嘅 agent；亦可以係本機模型             | 淨係答腳本問嘅題：睇裁圖定讀法、加標點、排版         |
 
 ```mermaid
 flowchart LR
@@ -26,7 +26,7 @@ flowchart LR
 
 ## 安裝
 
-支援 Linux、macOS 同 Windows WSL2；唔支援原生 Windows。先 clone 呢個 repo，喺 repo 根目錄執行：
+支援 Linux、Apple Silicon macOS 同 Windows WSL2；唔支援原生 Windows。先 clone 呢個 repo，喺 repo 根目錄執行：
 
 ```bash
 ./install.sh --agent claude
@@ -41,34 +41,30 @@ flowchart LR
 ```mermaid
 flowchart TD
   start(["./install.sh"]) --> os{"咩平台？"}
-  os -->|"原生 Windows"| win["唔支援<br/>改用 WSL2"]
-  os -->|"Linux／WSL2"| nv{"有冇<br/>NVIDIA GPU？"}
-  os -->|"macOS"| picked{"揀過<br/>引擎未？"}
-
-  nv -->|"冇"| r2["② 兩個引擎都用 CPU"]
-  nv -->|"有"| card{"張卡夠唔夠<br/>跑 PaddleOCR-VL？"}
-  card -->|"夠"| r1["① 兩個引擎都用 GPU"]
-  card -->|"唔夠"| r1b["①′ HunyuanOCR 用 GPU<br/>PaddleOCR-VL 用 CPU"]
-
-  picked -->|"未揀"| ask["先問用戶<br/>未答之前乜都唔下載"]
+  os -->|"原生 Windows"| win["唔支援：改用 WSL2"]
+  os -->|"Linux／WSL2"| nv{"NVIDIA GPU 夠唔夠用？"}
+  nv -->|"夠"| r1["① 雙引擎 GPU"]
+  nv -->|"有 GPU，但 Paddle 用唔到"| r1b["①′ Hunyuan GPU／Paddle CPU"]
+  nv -->|"冇 GPU"| r2["② 雙引擎 CPU"]
+  os -->|"macOS"| chip{"原生 Apple Silicon？"}
+  chip -->|"唔係"| unsupported["Intel Mac 唔支援<br/>Rosetta 請改用原生 arm64 環境"]
+  chip -->|"係"| picked{"已選有效路線？"}
+  picked -->|"未選"| ask["先問用戶，選好先下載"]
   ask --> choice
-  picked -->|"揀咗"| choice{"揀邊啲<br/>引擎？"}
-  choice -->|"auto：由 Hugging Face<br/>下載模型"| chip{"Apple<br/>Silicon？"}
-  choice -->|"vision：唔下載模型"| r5["⑤ 淨用 Apple Vision"]
-  choice -->|"vision,hunyuan：<br/>淨下載 HunyuanOCR"| r6["⑥ Apple Vision＋HunyuanOCR"]
-  chip -->|"係"| r3["③ 兩個引擎都裝<br/>用 Metal"]
-  chip -->|"唔係（Intel）"| r4["④ 淨係 HunyuanOCR<br/>用 CPU"]
+  picked -->|"已選"| choice{"--engine"}
+  choice -->|"apple-vision"| r5["⑤ 純 Apple Vision<br/>唔下載 HF 模型"]
+  choice -->|"hunyuan-paddle"| r3["③ Hunyuan＋Paddle<br/>Metal／MLX 加速"]
 ```
 
-| 路線 | 引擎 A（版面同第一份底稿） | 引擎 B（第二份底稿） | 由 Hugging Face 下載 | 約佔磁碟 | 跑書流程 |
-|---|---|---|---|---:|---|
-| ① Linux／WSL2，NVIDIA GPU 夠用 | PaddleOCR-VL，GPU | HunyuanOCR，CUDA | 兩個模型 | 約 12 GB | 雙引擎 |
-| ①′ Linux／WSL2，有 NVIDIA GPU 但唔夠用 | PaddleOCR-VL，CPU | HunyuanOCR，CUDA | 兩個模型 | 介乎 ① 同 ② | 雙引擎 |
-| ② Linux／WSL2，冇 NVIDIA GPU | PaddleOCR-VL，CPU | HunyuanOCR，CPU | 兩個模型 | 約 6 GB | 雙引擎 |
-| ③ Apple Silicon，`--engine auto` | PaddleOCR-VL：macOS 14 或以上用 MLX（Metal 識字、CPU 做版面）；舊 macOS 全程 CPU | HunyuanOCR，Metal | 兩個模型 | 約 5.7 GB，MLX 另加約 2.2 GB | 雙引擎 |
-| ④ Intel Mac，`--engine auto` | 裝唔到（PaddlePaddle 冇啱用嘅 macOS x86_64 版本） | HunyuanOCR，CPU | 一個模型 | 約 2.4 GB | 單引擎 |
-| ⑤ macOS，`--engine vision` | Apple Vision（系統內置） | 冇 | 唔下載 | 0.2 GB 以內 | 單引擎 |
-| ⑥ macOS，`--engine vision,hunyuan` | Apple Vision | HunyuanOCR，Metal（Intel 用 CPU） | 一個模型 | 約 2.4 GB | 雙引擎，淨係啱橫排 |
+| 配置                                   | 引擎 A（版面同第一份底稿）                                                       | 引擎 B（第二份底稿）              | 由 Hugging Face 下載 |                     約佔磁碟 | 跑書流程           |
+| -------------------------------------- | -------------------------------------------------------------------------------- | --------------------------------- | -------------------- | ---------------------------: | ------------------ |
+| ① Linux／WSL2，NVIDIA GPU 夠用         | PaddleOCR-VL，GPU                                                                | HunyuanOCR，CUDA                  | 兩個模型             |                     約 12 GB | 雙引擎             |
+| ①′ Linux／WSL2，有 NVIDIA GPU 但唔夠用 | PaddleOCR-VL，CPU                                                                | HunyuanOCR，CUDA                  | 兩個模型             |                  介乎 ① 同 ② | 雙引擎             |
+| ② Linux／WSL2，冇 NVIDIA GPU           | PaddleOCR-VL，CPU                                                                | HunyuanOCR，CPU                   | 兩個模型             |                      約 6 GB | 雙引擎             |
+| ③ Apple Silicon，`--engine hunyuan-paddle`       | PaddleOCR-VL：macOS 14 或以上用 MLX（Metal 識字、CPU 做版面）；舊 macOS 全程 CPU | HunyuanOCR，Metal                 | 兩個模型             | 約 5.7 GB，MLX 另加約 2.2 GB | 雙引擎             |
+| ⑤ macOS，`--engine apple-vision`             | Apple Vision（系統內置）                                                         | 冇                                | 唔下載               |                  0.2 GB 以內 | 單引擎             |
+
+macOS 只支援原生 Apple Silicon；Intel Mac 已停止支援。安裝同跑書都用 `--engine apple-vision` 或 `--engine hunyuan-paddle`。舊設定須明確重選；混合路線嘅舊書保留原檔，轉路線用新工作目錄。
 
 每個判斷實際睇乜：
 
@@ -81,22 +77,21 @@ flowchart TD
   - driver 啱到 Paddle 其中一個 CUDA wheel（最低 520.61.05）。
 
   有一樣唔過，PaddleOCR-VL 就用 CPU，HunyuanOCR 照用 GPU（路線 ①′）。
+
 - **macOS 首次安裝一定先問**，未答之前唔下載任何模型：
   - 喺 terminal 跑：列出兩個選擇同各自要幾多磁碟，等你答。
   - 由 agent 跑（冇 terminal）：exit `2` 停低；agent 要問咗用戶，再加 `--engine` 重跑，唔准代用戶揀。
-  - 問題淨係問 `auto` 定 `vision`；`vision,hunyuan` 同 `hunyuan` 要自己明確傳。
   - 揀過一次就記入 `env.sh`，之後唔再問。
 - **Apple Vision** 唔下載模型，但要 Apple Command Line Tools（`swiftc`）。
-- **明確覆蓋**：`--device cpu` 全部用 CPU；`--engine hunyuan` 淨裝 HunyuanOCR；`--paddle-vl-backend native` 喺 Apple Silicon 唔用 MLX。自動揀到嘅 CPU 唔會寫死，下次安裝會重新偵測。
+- **明確覆蓋**：`--device cpu` 令下載嘅引擎用 CPU；`--engine hunyuan` 只限 Linux／WSL2，淨裝 HunyuanOCR；`--paddle-vl-backend native` 喺 Apple Silicon 唔用 MLX。自動揀到嘅 CPU 唔會寫死，下次安裝會重新偵測。
 
 ```bash
 # macOS：直接講明揀邊個，唔使答問題。
-./install.sh --agent claude --engine auto            # 路線 ③ 或者 ④
-./install.sh --agent claude --engine vision          # 路線 ⑤
-./install.sh --agent claude --engine vision,hunyuan  # 路線 ⑥
+./install.sh --agent claude --engine hunyuan-paddle            # 路線 ③ 或者 ④
+./install.sh --agent claude --engine apple-vision          # 路線 ⑤
 
 # 明確覆蓋。
-./install.sh --agent claude --engine hunyuan         # 細機淨裝 HunyuanOCR
+./install.sh --agent claude --engine hunyuan         # Linux／WSL2 細機淨裝 HunyuanOCR
 ./install.sh --agent claude --device cpu             # 全部用 CPU
 
 # 同時裝畀幾個 agent；或者傳任意「技能集合」目錄（取代 --agent 嘅位置）。
@@ -111,23 +106,27 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  a["放置技能入口<br/>symlink 去呢個 repo"] --> a2["定平台、引擎同裝置<br/>即係上面張圖"]
-  a2 --> b["檢查系統依賴"]
-  b --> c{"磁碟<br/>夠唔夠位？"}
-  c -->|"唔夠"| c1["停低，乜都未下載"]
-  c -->|"夠"| d["下載固定版本嘅模型同 runtime<br/>逐個核對大細同 SHA-256<br/>核實過嘅照用"]
-  d --> e["寫 env.sh"]
-  e --> f{"同一套設定<br/>試跑過未？"}
+  v["檢查平台同舊設定<br/>不支援或退役路線先停低"] --> a["放置技能入口<br/>symlink 去呢個 repo"]
+  a --> a2["選路線同裝置<br/>macOS 首次安裝先問用戶"]
+  a2 --> b["檢查依賴同磁碟空間<br/>唔足就停低"]
+  b --> py["準備核心 Python 環境"]
+  py --> route{"--engine"}
+  route -->|"apple-vision"| e["寫 env.sh"]
+  route -->|"hunyuan-paddle"| d["準備固定版本嘅模型同 runtime<br/>核對大細同 SHA-256；已有嘅照用"]
+  d --> e
+  e --> f{"同一套設定試跑過未？"}
   f -->|"試過"| ok(["就緒"])
-  f -->|"未"| g{"GPU 記憶體<br/>夠唔夠試跑？"}
-  g -->|"夠"| h["每個引擎試跑一張合成頁"]
-  g -->|"唔夠"| i{"聲明咗停／開<br/>本機模型嘅命令？"}
-  i -->|"有"| j["GPU 交接：<br/>停模型 → 試跑 → 開返模型"]
+  f -->|"未"| which{"路線？"}
+  which -->|"apple-vision"| h["引擎讀一張合成頁"]
+  which -->|"hunyuan-paddle"| g{"GPU 記憶體夠唔夠？"}
+  g -->|"夠"| h
+  g -->|"唔夠"| i{"有停／開本機模型命令？"}
+  i -->|"有"| j["GPU 交接：停模型 → 試跑 → 開返"]
   i -->|"冇"| k["報錯，乜都唔停"]
-  h --> l{"全部引擎<br/>試跑成功？"}
+  h --> l{"試跑成功？"}
   j --> l
   l -->|"係"| ok
-  l -->|"唔係"| m["未就緒（exit 2）<br/>講明邊個引擎缺乜"]
+  l -->|"唔係"| m["未就緒（exit 2），列出缺項"]
 ```
 
 - **放置技能**：`--agent` 嘅目錄入面放一個指去呢個 repo 嘅 symlink，唔係複製，所以唔好刪走個 repo。`--env-only` 跳過呢步；`--skill-only` 淨做呢步。
@@ -139,21 +138,21 @@ flowchart TD
 
 技能入口放去邊，睇 `--agent`（可以重複）：
 
-| 選項 | 預設個人技能目錄 |
-|---|---|
-| `--agent generic` | `~/.agents/skills/` |
-| `--agent codex` | `~/.agents/skills/` |
-| `--agent claude` | `~/.claude/skills/` |
-| `--agent gemini` | `~/.gemini/skills/` |
+| 選項                  | 預設個人技能目錄           |
+| --------------------- | -------------------------- |
+| `--agent generic`     | `~/.agents/skills/`        |
+| `--agent codex`       | `~/.agents/skills/`        |
+| `--agent claude`      | `~/.claude/skills/`        |
+| `--agent gemini`      | `~/.gemini/skills/`        |
 | `--agent antigravity` | `~/.gemini/config/skills/` |
-| `--agent qwen` | `~/.qwen/skills/` |
+| `--agent qwen`        | `~/.qwen/skills/`          |
 
 - Gemini CLI 同 Antigravity 係兩個安裝目標。
 - 平台原生技能管理器通常只放置檔案，唔會初始化環境：用嗰種方式安裝之後，首次使用喺技能根目錄跑 `./install.sh --env-only`，再 `./install.sh --env-only --check`。
 - 新增技能之後按平台要求重新載入技能，或者開新 session。
 - `--with-agents` 先會安裝可選嘅 Codex／Claude writer／auditor adapters；冇裝亦可以用普通 worker 或者順序處理，見 [adapters](adapters/README.md)。
 
-**本機校對模型**：本機有 OpenAI-compatible 模型負責校對（或者 agent 本身就行緊佢），用 `--local-model-endpoint URL --local-model-name NAME` 聲明；佢同 OCR 搶同一張 GPU 就再加 `--local-model-release-cmd` 同 `--local-model-restore-cmd`（兩個要一齊畀）。之後安裝試跑（GPU 唔夠位嗰陣）同跑書嘅 OCR 都經 GPU 交接：停模型、跑 OCR、開返模型。
+**本機校對模型**：本機有 OpenAI-compatible 模型負責校對（或者 agent 本身就行緊佢），用 `--local-model-endpoint URL --local-model-name NAME` 聲明；佢同 OCR 搶同一張 GPU 就再加 `--local-model-release-cmd` 同 `--local-model-restore-cmd`（兩個要一齊畀）。雙引擎路線嘅安裝試跑（GPU 唔夠位嗰陣）同跑書 OCR 可以經 GPU 交接：停模型、跑 OCR、開返模型。純 Vision 直接執行。
 
 全部參數、平台細節同復原見 [安裝、平台選項及復原](references/install.md)。
 
@@ -163,12 +162,17 @@ flowchart TD
 
 > 用 jyut-ocr-proofread，將呢份 PDF 全部掃描頁轉錄成 Markdown，保留原字形、標點、表格同註號，列出未能確定嘅地方。
 
-Agent 照 `SKILL.md` 一步一個 command。下圖係預設嘅雙引擎路線：
+Agent 照 `SKILL.md` 一步一個 command。下圖展示兩條路線；純 Vision 唔啟動任何 HF 模型，校對者仍然要睇原圖：
 
 ```mermaid
 flowchart TD
   pdf(["PDF 或者掃描圖資料夾"]) --> s1["① 出圖<br/>survey_pdf.py"]
-  s1 --> hand{"本機校對模型<br/>佔住 GPU？"}
+  s1 --> route{"--engine"}
+  route -->|"hunyuan-paddle"| hand{"本機校對模型<br/>佔住 GPU？"}
+  route -->|"apple-vision"| vision["純 Vision OCR<br/>唔下載模型、唔做 GPU 交接"]
+  vision --> single["單引擎校對：對原圖轉錄<br/>跳過 book profile"]
+  single --> singlefinish["單引擎定稿<br/>保留工作檔及疑點"]
+  singlefinish --> singleout[/"X.md 同 X-doubts.md"/]
   hand -->|"冇"| ocr
   hand -->|"有"| wrap["經 run_ocr_phase.py 跑第 ② 步：<br/>停模型 → OCR → 開返模型"]
   wrap --> ocr
@@ -190,16 +194,16 @@ flowchart TD
   d3 --> s6["⑥ 清走工作目錄<br/>clean_book.py --all"]
 ```
 
-| 步 | 腳本 | 做乜 | 問唔問校對者 | 主要輸出（喺本書目錄 `BOOK`） |
-|---|---|---|---|---|
-| ① 出圖 | `survey_pdf.py` | 每頁轉成圖，記低頁序同 hash | 唔問 | `renders/`、`page-manifest.json` |
-| ② OCR | `ocr_book.py` | 引擎 B 讀全書 → 出未校對草稿 → 引擎 A 讀全書 → 引擎 B 補讀漏咗嘅欄 | 唔問 | `ocr-hunyuan/`、`ocr-paddle/`（或者 `ocr-vision/`）、`draft.md` |
-| ③ 量度本書 | `book_profile.py` | 喺本書自己嘅頁量度：書眉頁碼、邊個引擎讀得好啲、異體字對、本書用乜標點符號 | 問 | `book-profile.json` |
-| ④ 逐頁校對 | `proofread_pages.py` | 逐頁對齊兩份底稿、裁決分歧、加標點、排版、封頁；最後接跨頁表格（[下一節](#逐頁校對同-wave)） | 問 | `proofread/page-NNNN.md` 同 `.json` 封條 |
-| ⑤ 定稿 | `finish_book.py` | 驗封頁同拼書 → 修書（純規則）→ 定稿同最後審核 → 疑問清單，抄去 PDF 隔籬 → 清理裁圖 | 唔問 | `final.md`、`doubts.md` |
-| ⑥ 清走 | `clean_book.py --all` | 刪走成個 `BOOK`，淨係留 PDF 隔籬嘅交付檔 | 唔問 | — |
+| 步         | 腳本                  | 做乜                                                                                         | 問唔問校對者 | 主要輸出（喺本書目錄 `BOOK`）                                   |
+| ---------- | --------------------- | -------------------------------------------------------------------------------------------- | ------------ | --------------------------------------------------------------- |
+| ① 出圖     | `survey_pdf.py`       | 每頁轉成圖，記低頁序同 hash                                                                  | 唔問         | `renders/`、`page-manifest.json`                                |
+| ② OCR      | `ocr_book.py`         | 引擎 B 讀全書 → 出未校對草稿 → 引擎 A 讀全書 → 引擎 B 補讀漏咗嘅欄                           | 唔問         | `ocr-hunyuan/`、`ocr-paddle/`、`draft.md` |
+| ③ 量度本書 | `book_profile.py`     | 喺本書自己嘅頁量度：書眉頁碼、邊個引擎讀得好啲、異體字對、本書用乜標點符號                   | 問           | `book-profile.json`                                             |
+| ④ 逐頁校對 | `proofread_pages.py`  | 逐頁對齊兩份底稿、裁決分歧、加標點、排版、封頁；最後接跨頁表格（[下一節](#逐頁校對同-wave)） | 問           | `proofread/page-NNNN.md` 同 `.json` 封條                        |
+| ⑤ 定稿     | `finish_book.py`      | 驗封頁同拼書 → 修書（純規則）→ 定稿同最後審核 → 疑問清單，抄去 PDF 隔籬 → 清理裁圖           | 唔問         | `final.md`、`doubts.md`                                         |
+| ⑥ 清走     | `clean_book.py --all` | 刪走成個 `BOOK`，淨係留 PDF 隔籬嘅交付檔                                                     | 唔問         | —                                                               |
 
-同一本書交三次（`X` 係 PDF 嘅檔名）：
+雙引擎路線同一本書交三次（`X` 係 PDF 嘅檔名）；純 Vision 冇未校對草稿：
 
 1. **未校對草稿 `X-draft.md`**：引擎 B 讀完全書即刻出，唔使等引擎 A；自動抄去 PDF 隔籬。
 2. **進度稿 `BOOK/proofreading.md`**：校對期間每 5 分鐘重建一次，封好嘅頁用校對稿，其餘用草稿；留喺本書目錄，唔抄。
@@ -209,22 +213,29 @@ flowchart TD
 
 ### 其他路線
 
-| 路線 | 幾時用 | 同上圖唔同嘅地方 |
-|---|---|---|
-| **Apple Vision＋HunyuanOCR**（安裝路線 ⑥） | Mac 上想快，而本書係橫排 | 引擎 A 換成 Apple Vision，底稿喺 `ocr-vision/`，第 ③ ④ 步嘅 `ocr-paddle` 換成 `ocr-vision`；其餘一樣。呢條路線淨係啱橫排 |
-| **單引擎**（安裝路線 ④ ⑤，或者明確 `--single-engine`） | 部機淨係得一個引擎 | 第 ② 步淨係一個引擎讀（淨用 Apple Vision 就冇未校對草稿）；跳過第 ③ 步；第 ④ 步每頁對住原圖轉錄，底稿只係提示；第 ⑤ 步唔修書，工作檔留低 |
-| **本機模型校對**（`--backend http`） | 有本機 OpenAI-compatible 模型；agent 本身就係嗰個模型就一定要用 | 第 ③ ④ 步由腳本直接問模型，頁圖唔入 agent 嘅 context，亦冇 wave |
-| **GPU 交接** | 本機校對模型同 OCR 搶同一張 GPU | 第 ② 步經 `run_ocr_phase.py` 跑：等模型其他 client 做完先停模型，OCR 跑完再開返 |
+| 路線                                                   | 幾時用                                                          | 同上圖唔同嘅地方                                                                                                                         |
+| ------------------------------------------------------ | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **單引擎**（安裝路線 ⑤；Linux 亦可明確用 Hunyuan 單引擎） | 部機淨係得一個引擎                                              | 第 ② 步淨係一個引擎讀（淨用 Apple Vision 就冇未校對草稿）；跳過第 ③ 步；第 ④ 步每頁對住原圖轉錄，底稿只係提示；第 ⑤ 步唔修書，工作檔留低 |
+| **本機模型校對**（`--backend http`）                   | 有本機 OpenAI-compatible 模型；agent 本身就係嗰個模型就一定要用 | 第 ③ ④ 步由腳本直接問模型，頁圖唔入 agent 嘅 context，亦冇 wave                                                                          |
+| **GPU 交接**                                           | 本機校對模型同 OCR 搶同一張 GPU                                 | 第 ② 步經 `run_ocr_phase.py` 跑：等模型其他 client 做完先停模型，OCR 跑完再開返                                                          |
 
-手動跑嘅命令（喺技能根目錄，用安裝器配置嘅 `JYUT_OCR_PYTHON`）：
+雙引擎手動命令（喺技能根目錄，用安裝器配置嘅 `JYUT_OCR_PYTHON`）：
 
 ```bash
 . "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"
 "$JYUT_OCR_PYTHON" scripts/survey_pdf.py /path/to/book.pdf BOOK
-"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK
+"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine hunyuan-paddle
 "$JYUT_OCR_PYTHON" scripts/book_profile.py BOOK/renders BOOK/ocr-paddle BOOK/ocr-hunyuan BOOK/book-profile.json
 "$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-paddle BOOK/proofread --draft2-directory BOOK/ocr-hunyuan
 "$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK
+```
+
+純 Vision 喺出圖之後用以下命令，唔跑 `book_profile.py`。`BOOK` 係獨立工作目錄，唔重用另一條路線嘅舊書：
+
+```bash
+"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine apple-vision
+"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-vision BOOK/proofread --single-engine
+"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision
 ```
 
 長步驟放背景，用 `scripts/wait_for_run.py` 等。完整流程、exit 碼同續跑見 [`SKILL.md`](SKILL.md)；各步細節、每類疑點同開關見 [跑書流程](references/long-book-workflow.md)；引擎、裝置同 GPU 交接見 [本機 OCR](references/local-ocr.md)；冇可用 OCR 引擎、要人手分段轉錄見 [人手分段同 structured 定稿](references/structured-workflow.md)。
@@ -235,12 +246,12 @@ flowchart TD
 
 ### 邊個答題
 
-| | A 套：當前 agent（預設） | B 套：本機模型 |
-|---|---|---|
-| 開關 | `--backend packet` | `--backend http` |
-| 點問 | 腳本將題目寫成檔案就停低（exit `10`），等 agent 睇圖作答 | 腳本經 `PROOFREAD_ENDPOINT` 直接問模型，一次跑到尾 |
-| 有冇 wave | 有 | 冇 |
-| 頁圖入唔入 agent 嘅 context | 入：agent 自己睇裁圖 | 唔入 |
+|                             | A 套：當前 agent（預設）                                 | B 套：本機模型                                     |
+| --------------------------- | -------------------------------------------------------- | -------------------------------------------------- |
+| 開關                        | `--backend packet`                                       | `--backend http`                                   |
+| 點問                        | 腳本將題目寫成檔案就停低（exit `10`），等 agent 睇圖作答 | 腳本經 `PROOFREAD_ENDPOINT` 直接問模型，一次跑到尾 |
+| 有冇 wave                   | 有                                                       | 冇                                                 |
+| 頁圖入唔入 agent 嘅 context | 入：agent 自己睇裁圖                                     | 唔入                                               |
 
 Agent 本身就係嗰個本機模型（例如 Qwen Code 配本機 Qwen）就一定行 B 套：腳本認得出就預設 http、拒絕 packet。
 
@@ -288,29 +299,29 @@ flowchart TD
 
 圖入面每個「問」通常係一輪。典型情況：
 
-| 頁嘅情況 | 第 1 輪 | 第 2 輪 | 第 3 輪 | 之後 |
-|---|---|---|---|---|
-| 普通正文頁 | `adjudicate` | `census+punctuate` | `format` | 封頁 |
-| 兩個引擎冇分歧 | `census+punctuate` | `format` | 封頁 | |
-| 有表格 | `adjudicate` | `census+punctuate`，加 `table-rebuild` 或者 `orient` | 表格後續題 | 表格全部定咗先問 `format` |
-| 淨係得一份底稿 | `writer` | 封頁 | | |
-| 空白頁 | 唔問，第一次跑就封 | | | |
+| 頁嘅情況       | 第 1 輪            | 第 2 輪                                              | 第 3 輪    | 之後                      |
+| -------------- | ------------------ | ---------------------------------------------------- | ---------- | ------------------------- |
+| 普通正文頁     | `adjudicate`       | `census+punctuate`                                   | `format`   | 封頁                      |
+| 兩個引擎冇分歧 | `census+punctuate` | `format`                                             | 封頁       |                           |
+| 有表格         | `adjudicate`       | `census+punctuate`，加 `table-rebuild` 或者 `orient` | 表格後續題 | 表格全部定咗先問 `format` |
+| 淨係得一份底稿 | `writer`           | 封頁                                                 |            |                           |
+| 空白頁         | 唔問，第一次跑就封 |                                                      |            |                           |
 
 守門唔過嘅重試題（`punctuate-retry`、`table-rebuild-retry`、`format-retry`）會多一輪。
 
 每種題問乜、答案點樣驗：
 
-| 題型（`kind`） | 幾時問 | 問乜 | 腳本點樣守門 |
-|---|---|---|---|
-| `adjudicate` | 兩個引擎讀法唔同，而規則定唔到。已知異體、書眉、括號同符號嘅分歧由規則處理，唔問 | 睇分歧位嘅裁圖，答印嘅係乜字；每頁最多 24 題 | 答案唔可以靜靜刪走引擎讀到嘅字 |
-| `coverage-read` | 裁決答「呢度冇印字」 | 盲讀同一張裁圖 | 證實唔到係空，就保留引擎嘅讀法，記疑點 |
-| `census+punctuate` | 每段正文。書眉、表格同兩個引擎標點一致嘅段唔問 | 數印咗幾多處標點，再加入鎖定嘅字。B 套分開問 `census` 同 `punctuate` | 字要一個不差，標點數要對得上點算。唔過就 `punctuate-retry` 一次，雙圈對唔上問 `punctuate-shape`；再唔過就淨係留兩次答案一致嘅標點（冇就唔加），記疑點 |
-| `table-rebuild` | 版面有表，但引擎冇讀成可靠嘅格網 | 對住裁圖重建成表 | 淨係可以用引擎讀到嘅字，兩個引擎都讀到嘅字唔可以漏。唔過就 `table-rebuild-retry` 一次 |
-| `orient`、`record-order`、`cell-direction` | 表格嘅讀向用規則定唔到 | 直排定橫排、記錄次序、格內方向 | `cell-direction` 掉轉選項問兩次，兩次一致先收 |
-| `format` | 字、標點同表格都定咗之後 | 對住整頁圖加標題、段落、列表，擺返表格，刪書眉同頁碼 | 唔准加字、刪字、改標點（`verify_characters` 等）。唔過就 `format-retry` 一次；再唔過保留鎖定嘅文字，記疑點 |
-| `writer` | 嗰頁淨係得一份底稿，或者冇漢字但有西文、數字 | 對住整頁原圖轉錄，底稿只係提示 | 空答案當嗰頁失敗 |
-| `page-inventory`、`content-recovery`、`coverage-review` | 淨係開咗 `--content-fidelity on` | 整頁清點（最先問）、排版前補讀、最後覆核 | 定唔到就記疑點照封；每題最多改一次 |
-| `notation` | 第 ③ 步量度本書 | 抽樣頁嘅段落印咗乜符號 | — |
+| 題型（`kind`）                                          | 幾時問                                                                           | 問乜                                                                 | 腳本點樣守門                                                                                                                                          |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adjudicate`                                            | 兩個引擎讀法唔同，而規則定唔到。已知異體、書眉、括號同符號嘅分歧由規則處理，唔問 | 睇分歧位嘅裁圖，答印嘅係乜字；每頁最多 24 題                         | 答案唔可以靜靜刪走引擎讀到嘅字                                                                                                                        |
+| `coverage-read`                                         | 裁決答「呢度冇印字」                                                             | 盲讀同一張裁圖                                                       | 證實唔到係空，就保留引擎嘅讀法，記疑點                                                                                                                |
+| `census+punctuate`                                      | 每段正文。書眉、表格同兩個引擎標點一致嘅段唔問                                   | 數印咗幾多處標點，再加入鎖定嘅字。B 套分開問 `census` 同 `punctuate` | 字要一個不差，標點數要對得上點算。唔過就 `punctuate-retry` 一次，雙圈對唔上問 `punctuate-shape`；再唔過就淨係留兩次答案一致嘅標點（冇就唔加），記疑點 |
+| `table-rebuild`                                         | 版面有表，但引擎冇讀成可靠嘅格網                                                 | 對住裁圖重建成表                                                     | 淨係可以用引擎讀到嘅字，兩個引擎都讀到嘅字唔可以漏。唔過就 `table-rebuild-retry` 一次                                                                 |
+| `orient`、`record-order`、`cell-direction`              | 表格嘅讀向用規則定唔到                                                           | 直排定橫排、記錄次序、格內方向                                       | `cell-direction` 掉轉選項問兩次，兩次一致先收                                                                                                         |
+| `format`                                                | 字、標點同表格都定咗之後                                                         | 對住整頁圖加標題、段落、列表，擺返表格，刪書眉同頁碼                 | 唔准加字、刪字、改標點（`verify_characters` 等）。唔過就 `format-retry` 一次；再唔過保留鎖定嘅文字，記疑點                                            |
+| `writer`                                                | 嗰頁淨係得一份底稿，或者冇漢字但有西文、數字                                     | 對住整頁原圖轉錄，底稿只係提示                                       | 空答案當嗰頁失敗                                                                                                                                      |
+| `page-inventory`、`content-recovery`、`coverage-review` | 淨係開咗 `--content-fidelity on`                                                 | 整頁清點（最先問）、排版前補讀、最後覆核                             | 定唔到就記疑點照封；每題最多改一次                                                                                                                    |
+| `notation`                                              | 第 ③ 步量度本書                                                                  | 抽樣頁嘅段落印咗乜符號                                               | —                                                                                                                                                     |
 
 第 ③ 步量度本書一樣行 wave：佢抽樣問 `adjudicate`（量度邊個引擎讀呢本書讀得好啲）同 `notation`；書眉頁碼同異體字對唔使問。
 
