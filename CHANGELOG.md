@@ -14,6 +14,13 @@
 - 下游封條記語義指紋，換引擎／後端或 block 文字／座標／label／次序會 stale；未變嘅 legacy native 封頁照收。macOS 可回收記憶體估計統一用 free + inactive + speculative，唔重複加 purgeable；順序引擎取峰值需求，保留手動預算同 Hunyuan slots。
 - CER 唔作啟用門檻，通用 Paddle 記憶體預算保持。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
 
+## Unreleased — `--same-print-marks`：兩個引擎印刷字一致嘅 block 唔問標點（issue #6）
+
+- `proofread_pages.py` 加 `--same-print-marks`（預設關）：規則 agreedMarks 因為空位有其他印刷字（數字、拉丁字、註號）而唔收嘅 block，如果兩個引擎喺每個空位讀到嘅印刷字一樣，就照用引擎 A 嘅標點，唔出 census／punctuate 題。比較時唔計註號：兩個引擎寫法同讀錯都唔同，而註號另外還原。
+- 記錄：封條記 `samePrintMarks: "on"`，入 provenance，開咗同關咗嘅頁互相唔算 current；放行嘅 block 喺 `censusNotAsked` 記 `engines-agree-print`。
+- 實測（`--backend packet`，Claude Haiku 5.5 答題，benchmark 28 案 50 頁）：一本現代橫排書嘅 8 案（基線同開關各跑兩次）第一次問嘅標點題 59 → 36，校對時間同輸出 token 各少約 24%，純正文頁少約 45%。直排書同無標點古書基本上冇 block 放行，全集問題 730 → 709。七項指標都喺逐次波動之內（CER 14.79% → 15.00%，不計標點 14.82% → 14.85%）。
+- 新檢查喺 `tests/check_agreed_marks.py`。
+
 ## Unreleased — `--effort-policy`：按題型指定第一次問用邊一級 effort（量度用）
 
 - `proofread_pages.py` 同 `book_profile.py` 加 `--effort-policy KIND=RUNG,...`（`PROOFREAD_EFFORT_POLICY`），淨係 `--backend http` 用，預設冇：唔設就同以前一模一樣，每條題都由 `--reasoning-effort` 嗰級問起。設咗之後，列出嘅題型（例如 `census=low`）第一次就用嗰級；`--reasoning-effort` 仍然係上限，冇列嘅題型同所有重試照用上限，撞 `max_tokens` 照舊向下一級。寫錯題型或者級別即刻 exit 2。
