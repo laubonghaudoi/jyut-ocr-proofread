@@ -172,7 +172,7 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 |---|---:|---|
 | Linux／WSL2，NVIDIA GPU（`cu130`） | 約 12 GB | Paddle GPU 環境 6.3 GB（實測：paddle 2.9 GB、NVIDIA 函式庫 2.6 GB）、兩個模型權重約 4.1 GB、llama.cpp CUDA 版連 runtime 約 1.5 GB（估計）、Python 約 0.3 GB。用源碼建置嘅 llama.cpp 約 0.3 GB，總數約 10.6 GB（實測） |
 | Linux／WSL2，CPU | 約 6 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.5 GB（估計；wheel 195 MB）、llama.cpp 約 41 MB |
-| macOS Apple Silicon（`--engine auto`、native backend） | 約 5.5 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB |
+| macOS Apple Silicon（`--engine auto`、native backend） | 約 5.7 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB、Python 約 0.3 GB |
 | macOS Apple Silicon（MLX backend） | native 基礎上額外預留約 2.2 GB | 獨立 MLX Python 同依賴嘅保守安裝估算；沿用相同 Paddle 權重，唔重複下載模型 |
 | macOS Intel（`--engine auto`） | 約 2.4 GB | Hunyuan 權重約 2.1 GB、llama.cpp、Python |
 | macOS（`--engine vision`） | 0.2 GB 以內 | 核心 Python 環境，唔下載模型；估計上限 0.2 GB（計埋 uv 要下載 Python 3.12），uv 已經有 3.12 嗰陣實測 27 MB（Apple M5，2026-11-16） |

@@ -35,9 +35,9 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
 1. **分工**：主 agent 最多開上面講嘅上限咁多個普通 packet worker，或者自己順序做。每個 assignment 擁有一個輸入 `bundle-XX.json`（連佢嘅 SHA-256）同一個輸出：bundle 嘅 `expected_answers_file`（`packets/wave-NN/answers-XX.json`）。一個 wave 分成最多 `--max-bundles` 個 bundle（預設 8）；一個 bundle 最多 `--max-items-per-bundle` 條題（`proofread_pages.py`，預設 20，env `PROOFREAD_MAX_ITEMS_PER_BUNDLE`），題多過呢個數就多開 bundle，唔會將幾百張頁圖塞落同一個 bundle。
 2. **答題**：每條題睇佢 `image_path` 指嘅 PNG（裁圖，或者整頁 render），照佢自己嘅 `system` 同 `user_text` 寫答案，`answer` 係原原本本嘅答案文字。常見嘅題：
    - `adjudicate`（裁決）：直接睇裁圖上標住嘅字位，照 prompt 嘅格式答（`字: ...`）；兩個候選都唔係就照實答，睇唔清就照 prompt 講。
-   - `census+punctuate`、`census`、`punctuate`（及其 `-retry`、`-shape`）：喺放大嘅 block 圖數印咗嘅標點（census），再將嗰啲符號加入鎖定嘅字串（唔准加、刪、換任何字）。
-   - `table-rebuild`（及 `-retry`）、`html`、`cell`、`record-order`：由裁圖重建表；用晒 `required` 嘅字，`allowed` 以外嘅字淨係真係印咗先寫。
-   - `orient`、`cell-direction`、`notation`：照圖同現有格網答結構或者符號問題。讀向要有精確行／欄位置同圖像證據；讀得通嘅詞或者對得上嘅合計唔准作倒轉嘅理由。
+   - `census+punctuate`（重試係 `punctuate-retry`、`punctuate-shape`）：喺放大嘅 block 圖數印咗嘅標點（census），再將嗰啲符號加入鎖定嘅字串（唔准加、刪、換任何字）。A 套預設一題做晒點算同加標點；分開問嘅 `census`、`punctuate` 係 B 套（http）嘅預設問法，見到就照各自嘅 prompt 答。
+   - `table-rebuild`（及 `-retry`）：由裁圖重建表；用晒 `required` 嘅字，`allowed` 以外嘅字淨係真係印咗先寫。
+   - `orient`、`record-order`、`cell-direction`、`notation`：照圖同現有格網答結構或者符號問題。讀向要有精確行／欄位置同圖像證據；讀得通嘅詞或者對得上嘅合計唔准作倒轉嘅理由。
    - `format`（及 `-retry`）：加 Markdown 結構（標題、段落、列表、表格），刪書邊嘅書眉同頁碼，每個鎖定嘅字、標點、原圖證實嘅數字／算式／項號同 `⟦Tn⟧` 表格記號都要原封保留；原印項號加 bullet 之後仍然係內容。
    - `writer`：淨係得一份底稿或者引擎讀唔到嘅頁：對住整頁原圖轉錄，底稿只係提示。
    - `coverage-read`：盲讀一張裁圖，用嚟證實裁決答「無」嘅位係咪真係冇字。
