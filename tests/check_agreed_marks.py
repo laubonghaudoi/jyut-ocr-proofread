@@ -182,6 +182,23 @@ check("same_print on: markup and spaces differ only between the engines: taken",
       agreed("天地，$ ^{66} $玄黃。宇宙。", "天地，$^{66}$玄黃。宇宙。", same_print=True) is not None, True)
 check("same_print on: marks differ at one gap: not taken",
       agreed("天地，玄黃。宇宙1990洪荒。", "天地、玄黃。宇宙1990洪荒。", same_print=True), None)
+# Note markers are set aside in the comparison (gap_print): the marks the
+# engines write for one differ, or one engine alone writes one, and the block
+# is taken; a year that differs or that one engine alone reads is not.
+check("same_print on: note markers written differently, same marks: taken",
+      (agreed("天地。⑥⑤玄黃宇宙。", "天地。$ ^{65} $玄黃宇宙。", same_print=True) is not None,
+       agreed("天地。$ ^{①} $玄黃宇宙。", "天地。①玄黃宇宙。", same_print=True) is not None,
+       agreed("天地。⑥8〔玄黃〕宇宙。", "天地。$ ^{68} $〔玄黃〕宇宙。", same_print=True) is not None),
+      (True, True, True))
+check("same_print on: a note marker on one side only, same marks: taken",
+      agreed("天地。⑥玄黃宇宙。", "天地。玄黃宇宙。", same_print=True) is not None, True)
+check("same_print on: a year that differs between the engines: not taken",
+      agreed("天地。1992玄黃宇宙。", "天地。1997玄黃宇宙。", same_print=True), None)
+check("same_print on: a year only one engine reads: not taken",
+      agreed("天地。1992玄黃宇宙。", "天地。玄黃宇宙。", same_print=True), None)
+check("gap_print: a year kept, a note marker set aside",
+      [pp.gap_print(gap) for gap in ("1992", "⑥5", "$ ^{65} $", "。⑥8〔")],
+      ["1992", "", "", "。〔"])
 
 # The marks of one engine gap, parted by where they go (gap_sides, which
 # marks_as_written and so C1 use): print parts the gap; an opening mark and

@@ -9607,11 +9607,22 @@ def other_print(gap: str) -> bool:
     return any(not c.isspace() and c not in PUNCT_MARKS for c in gap)
 
 
+# The circled numerals a note marker (註號) is written with.
+CIRCLED_NUMERALS = ("①-⑳⓪-⓿㉑-㉟㊱-㊿❶-❿")
+# Note markers are set aside in the comparison (gap_print): the two engines
+# write and misread them differently, and they are restored by another
+# mechanism.  Engine A's LaTeX around one, or a run of digits and circled
+# numerals with a circled numeral in it; a run of plain digits (a year) stays.
+NOTE_MARKER_PRINT = re.compile(
+    rf"\$[^$]*\$|(?=[0-9{CIRCLED_NUMERALS}]*[{CIRCLED_NUMERALS}])[0-9{CIRCLED_NUMERALS}]+")
+
+
 def gap_print(gap: str) -> str:
     """One gap's text as the two engines' print is compared (agreed_marks,
     same_print): its markup out, its vertical and ASCII forms folded
-    (MARK_FORMS), its whitespace deleted."""
-    return "".join(GAP_MARKUP.sub("", gap).translate(MARK_FORMS).split())
+    (MARK_FORMS), its whitespace deleted, its note markers (NOTE_MARKER_PRINT)
+    out."""
+    return NOTE_MARKER_PRINT.sub("", "".join(GAP_MARKUP.sub("", gap).translate(MARK_FORMS).split()))
 
 
 def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None], str, list[str],
