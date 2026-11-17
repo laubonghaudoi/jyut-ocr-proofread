@@ -61,12 +61,12 @@ BODY = [0.1, 0.1, 0.8, 0.3]
 NOTE = [0.1, 0.7, 0.8, 0.1]
 
 
-def page(blocks, text_b, model, profile=None):
+def page(blocks, text_b, model, profile=None, extra=()):
     """Page 1 proofread: (sealed record, Markdown, the kinds of call made,
     the run report)."""
     with tempfile.TemporaryDirectory() as tmp:
         root = stand_in.write_book(Path(tmp), {1: (blocks, text_b)}, profile)
-        record, markdown = stand_in.run(root, model)[1]
+        record, markdown = stand_in.run(root, model, extra=extra)[1]
         report = __import__("json").loads((root / "report.json").read_text(encoding="utf-8"))
     return record, markdown, model.kinds(), report
 
@@ -120,10 +120,19 @@ record, markdown, kinds, _ = page([stand_in.block(YEAR_A, BODY)], YEAR_B,
                                   stand_in.StandIn(census=4, punctuate=lambda span: YEAR_A))
 check("a year both engines read: census and punctuate, the year written",
       ("census" in kinds, "punctuate" in kinds, rules(record), markdown.strip()), (True, True, [(0, None)], YEAR_A))
+# The same page with --same-print-marks: taken with the engines' marks, no call, its pass named for the rule.
+record, markdown, kinds, report = page([stand_in.block(YEAR_A, BODY)], YEAR_B, stand_in.StandIn(census=4),
+                                       extra=["--same-print-marks"])
+check("same_print page: no census, no punctuate call, the pass named engines-agree-print",
+      ("census" in kinds, "punctuate" in kinds, rules(record), report["censusNotAsked"],
+       record["provenance"].get("samePrintMarks")),
+      (False, False, [(0, "engines-agree-print")], {"engines-agree-print": 1}, "on"))
+check("same_print page: the engines' marks, no digits", any(c.isdigit() for c in markdown), False)
 
 
 
-def agreed(text_a: str, text_b: str, start: int = 0, length: int | None = None) -> str | None:
+def agreed(text_a: str, text_b: str, start: int = 0, length: int | None = None,
+           same_print: bool = False) -> str | None:
     """agreed_marks on two readings of one text (aligned, no disagreement),
     for the stretch [START, START + LENGTH) of the merged text."""
     segments = pp.align_drafts(text_a, text_b)
@@ -133,7 +142,7 @@ def agreed(text_a: str, text_b: str, start: int = 0, length: int | None = None) 
     readings = [pp.engine_reading(text_a, found[0] if found else None, len(merged)),
                 pp.engine_reading(text_b, pp.engine_b_places(pp.engine_gaps(text_b)[0], segments, pieces), len(merged))]
     length = len(merged) - start if length is None else length
-    return pp.agreed_marks(merged[start:start + length], start, readings)
+    return pp.agreed_marks(merged[start:start + length], start, readings, same_print=same_print)
 
 
 # A note marker (in LaTeX or not), a Western name, a middle dot, 〔〕: print
@@ -157,6 +166,22 @@ check("another mark at one gap: not agreed", agreed("天地，玄黃。宇宙。
 check("a mark of the stretch's edge: the stretch's own only",
       (agreed("天地，玄黃。宇宙「洪荒」。", "天地，玄黃。宇宙「洪荒」。", 4, 2),
        agreed("天地，玄黃。宇宙「洪荒」。", "天地，玄黃。宇宙「洪荒」。", 0, 4)), (None, "天地，玄黃。"))
+
+# --same-print-marks (same_print): print both engines read alike is no bar.
+check("same_print off: a year both engines read is refused", agreed(YEAR_A, YEAR_B), None)
+taken = agreed(YEAR_A, YEAR_B, same_print=True)
+check("same_print on: a year both engines read is taken, no digits written",
+      (taken is not None, taken is not None and any(c.isdigit() for c in taken)), (True, False))
+check("same_print on: figures the engines read differently: not taken",
+      agreed("見某書（1990）頁，又見某處。", "見某書（1991）頁，又見某處。", same_print=True), None)
+check("same_print on: print in one engine's gap only: not taken",
+      agreed("見某書（1990）頁，又見某處。", "見某書（）頁，又見某處。", same_print=True), None)
+check("same_print on: a Latin name both read alike: taken",
+      agreed("費爾南（Braudel）指出，盜賊。", "費爾南(Braudel)指出，盜賊。", same_print=True) is not None, True)
+check("same_print on: markup and spaces differ only between the engines: taken",
+      agreed("天地，$ ^{66} $玄黃。宇宙。", "天地，$^{66}$玄黃。宇宙。", same_print=True) is not None, True)
+check("same_print on: marks differ at one gap: not taken",
+      agreed("天地，玄黃。宇宙1990洪荒。", "天地、玄黃。宇宙1990洪荒。", same_print=True), None)
 
 # The marks of one engine gap, parted by where they go (gap_sides, which
 # marks_as_written and so C1 use): print parts the gap; an opening mark and
@@ -182,6 +207,13 @@ check("notes: the run report counts no pass", report["censusNotAsked"], {})
 decided = pp.decision_provenance(SimpleNamespace(prefer_engine="A", fallback_engine="A"))
 check("agreedMarks is always sealed, never optional",
       (decided.get("agreedMarks"), "agreedMarks" in pp.OPTIONAL_PROVENANCE), ("on", False))
+check("--same-print-marks: sealed only when on",
+      (decided.get("samePrintMarks"), "samePrintMarks" in decided,
+       pp.decision_provenance(SimpleNamespace(prefer_engine="A", fallback_engine="A",
+                                              same_print_marks=True)).get("samePrintMarks")),
+      (None, False, "on"))
+check("--same-print-marks: a page sealed with it is not current without it",
+      "samePrintMarks" in pp.OPTIONAL_PROVENANCE, True)
 check("no switch turns it off", any("agreed" in option for action in pp.build_parser()._actions
                                     for option in action.option_strings), False)
 with tempfile.TemporaryDirectory() as tmp:

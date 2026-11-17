@@ -8851,6 +8851,8 @@ OPTIONAL_PROVENANCE = ("tieBreak", "censusConfirmsEngineA", "folioFurniture", "t
 # Switch --learned-heads (learned_heads_seal).
 OPTIONAL_PROVENANCE += ("learnedHeads",)
 OPTIONAL_PROVENANCE += ("engineAConfirmsFirstAnswer", "censusSkipOverCeiling")
+# Switch --same-print-marks (agreed_marks, same_print).
+OPTIONAL_PROVENANCE += ("samePrintMarks",)
 # The round-4 fixes, on by default since the user's decision of 2026-09-30
 # (after the round-4 benchmark), each with the provenance key it seals when
 # on.  --no-<switch> turns one off.  Provenance records each one's state
@@ -8964,6 +8966,9 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # them, unasked (agreed_marks).  A page sealed before it is not
         # current.
         "agreedMarks": "on",
+        # Switch --same-print-marks: the engines' marks also for a block whose
+        # print both engines read alike (agreed_marks, same_print).  Only when on.
+        **({"samePrintMarks": "on"} if getattr(arguments, "same_print_marks", False) else {}),
         # Engine A's figures written where they are the only reading of their
         # print (--keep-arabic-numerals): the book's figures and the glyphs
         # engine B writes for them, from the drafts (figure_evidence), so a
@@ -9602,8 +9607,16 @@ def other_print(gap: str) -> bool:
     return any(not c.isspace() and c not in PUNCT_MARKS for c in gap)
 
 
+def gap_print(gap: str) -> str:
+    """One gap's text as the two engines' print is compared (agreed_marks,
+    same_print): its markup out, its vertical and ASCII forms folded
+    (MARK_FORMS), its whitespace deleted."""
+    return "".join(GAP_MARKUP.sub("", gap).translate(MARK_FORMS).split())
+
+
 def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None], str, list[str],
-                                                                 tuple[list[str], list[str]]] | None]) -> str | None:
+                                                                 tuple[list[str], list[str]]] | None],
+                 *, same_print: bool = False) -> str | None:
     """SPAN, a block's stretch of the merged text from START, with the marks
     both engines printed there, when the rule agreedMarks takes it: in each
     of the two READINGS (engine_reading) SPAN is an exact stretch - every
@@ -9632,6 +9645,7 @@ def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None
     if len(readings) != 2 or not span:
         return None
     gaps = []
+    prints = []
     for reading in readings:
         if reading is None:
             return None
@@ -9641,9 +9655,13 @@ def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None
                 own[start + k] != first + k or chars[first + k] != char for k, char in enumerate(span)):
             return None
         ends = [TEXT_SEAMS.split(written[first])[-1], TEXT_SEAMS.split(written[first + len(span)])[0]]
-        if any(other_print(gap) for gap in written[first + 1:first + len(span)] + ends):
+        if not same_print and any(other_print(gap) for gap in written[first + 1:first + len(span)] + ends):
             return None
+        prints.append([ends[0]] + written[first + 1:first + len(span)] + [ends[1]])
         gaps.append(gaps_of(tied, start, len(span)))
+    if same_print and any((other_print(x) or other_print(y)) and gap_print(x) != gap_print(y)
+                          for x, y in zip(*prints)):
+        return None
     if any(gap_marks(x) != gap_marks(y) for x, y in zip(*gaps)):
         return None
     text = "".join(gap + char for gap, char in zip(gaps[0], span)) + gaps[0][-1]
@@ -15136,6 +15154,8 @@ def _proofread_page_inner(
             # the marks beside each character.
             notation = profile_section(arguments, "notation")
             agreed: dict[int, str] = {}
+            # The blocks taken only with --same-print-marks (agreed_marks, same_print).
+            agreed_print: set[int] = set()
             if draft2 is not None and not (notation.get("doubled") or notation.get("emphasis")):
                 found_a = engine_places(engine_gaps(draft)[0], segments, pieces, blocks)
                 readings = [engine_reading(draft, found_a[0] if found_a else None, span_starts[-1]),
@@ -15143,6 +15163,10 @@ def _proofread_page_inner(
                                            span_starts[-1])]
                 for index in to_punctuate:
                     text = agreed_marks(spans[index], span_starts[index], readings)
+                    if text is None and getattr(arguments, "same_print_marks", False):
+                        text = agreed_marks(spans[index], span_starts[index], readings, same_print=True)
+                        if text is not None:
+                            agreed_print.add(index)
                     if text is not None:
                         agreed[index] = text
 
@@ -15164,10 +15188,12 @@ def _proofread_page_inner(
                 index, tile_number, crop, lo, hi, tiled, reach = item
                 if index in agreed:
                     # The rule agreedMarks (C1): the engines' marks, no call;
-                    # the pass records it (censusNotAsked, rule engines-agree).
+                    # the pass records it (censusNotAsked, rule engines-agree;
+                    # engines-agree-print where --same-print-marks took it).
                     out = agreed[index]
                     return out, {"ok": True, "census": None, "reason": "",
-                                 "censusNotAsked": {"rule": "engines-agree"},
+                                 "censusNotAsked": {"rule": "engines-agree-print" if index in agreed_print
+                                                    else "engines-agree"},
                                  "marks": sum(punctuation_counts(out).values()), "doubled": out.count("。。"),
                                  "places": mark_places(out), "leaders": punctuation_counts(out)[LEADER],
                                  "bullets": sum(out.count(bullet) for bullet in BULLET_MARKS)}, []
@@ -16623,6 +16649,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "PROOFREAD_MAX_INFLIGHT; default --workers). Set it to the "
                              "server's --max-concurrency: a request the server cannot "
                              "admit waits in its queue and fails after its pending timeout"),
+    parser.add_argument("--same-print-marks", action="store_true", dest="same_print_marks", default=False,
+                        help="also take the engines' marks, with no punctuation question, for a block whose "
+                             "gaps hold print (figures, Latin text, note markers) that both engines read alike; "
+                             "off by default")
     parser.add_argument("--no-unread-table-characters", action="store_true",
                         help="the user's headerCharacters ruling (2026-09-27) off: a rebuilt table that "
                              "writes a character no engine read in its region is refused, as before, "
