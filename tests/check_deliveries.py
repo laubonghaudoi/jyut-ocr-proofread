@@ -624,7 +624,7 @@ runpy.run_path({real!r}, run_name="__main__")
 def ocr_book_scripts(folder: Path) -> Path:
     """A copy of ocr_book.py beside stand-in engines and the real build_draft.py."""
     folder.mkdir()
-    for name in ("ocr_book.py", "_phase_budget.py", "_gpu_queue.py"):
+    for name in ("ocr_book.py", "_phase_budget.py", "_gpu_queue.py", "_ocr_engines.py"):
         (folder / name).write_bytes((SCRIPTS / name).read_bytes())
     for name in ("run_hunyuanocr.py", "run_paddleocr_vl.py", "run_hunyuanocr_second_look.py"):
         (folder / name).write_text(STAND_IN_ENGINE, encoding="utf-8")

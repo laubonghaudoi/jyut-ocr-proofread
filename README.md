@@ -14,7 +14,8 @@
 
 - Linux／WSL2 上 `install.sh` 唔問揀邊個引擎：HunyuanOCR（GGUF＋llama.cpp）同 PaddleOCR-VL 都裝；已核實嘅環境照用，其餘下載固定版本並核對 SHA-256。
 - macOS 有內置嘅 Apple Vision，所以首次安裝未下載任何嘢之前先問用戶：`--engine auto` 由 Hugging Face 下載兩個引擎（Apple Silicon 約佔 5.7 GB），定係 `--engine vision` 淨用 Apple Vision（唔下載模型，約 0.2 GB）。喺 terminal 跑會直接問；冇 terminal（例如由 agent 跑）就停低，講明兩個選擇，由 agent 問咗用戶再加 `--engine` 重跑，唔會代用戶揀。揀過一次之後記住，唔再問。
-- 裝置預設用 GPU（Linux／WSL2 用 NVIDIA CUDA，Apple Silicon 用 Metal），冇可用 GPU 先用 CPU；卡太細或者太舊、或者喺 macOS，Paddle 用 CPU。
+- 裝置預設用 GPU（Linux／WSL2 用 NVIDIA CUDA，Apple Silicon 用 Metal），冇可用 GPU 先用 CPU。Apple Silicon macOS 14+ 嘅 Paddle 預設用 CPU 做版面分析、MLX Metal 做文字識別；`--paddle-vl-backend native` 或 `--device cpu` 保留原生 CPU 路線。
+- macOS 可明確揀 `--engine vision,hunyuan`：Apple Vision 做引擎 A、Hunyuan 做引擎 B，完整雙引擎流程，唔需要 Paddle。呢條係橫排快速路線；唔會按 CER 或直排內容拒絕執行。
 - Intel Mac 淨係 HunyuanOCR，Apple Vision 做提示；原生 Windows 唔支援，用 WSL2。
 - 每個引擎試跑一張合成頁，全部成功先標就緒，設定寫入 `~/.config/jyut-ocr/env.sh`。
 - 聲明咗本機校對模型同佢嘅停／開命令而 GPU 唔夠空位：兩個引擎嘅試跑放喺一次 GPU 交接入面（停模型、試跑、開返）。
@@ -57,6 +58,8 @@
 # macOS：直接講明揀邊個，唔使答問題。
 ./install.sh --agent claude --engine auto     # 由 Hugging Face 下載 HunyuanOCR 同 PaddleOCR-VL
 ./install.sh --agent claude --engine vision   # 淨用內置嘅 Apple Vision，唔下載模型
+./install.sh --agent claude --engine vision,hunyuan  # Vision A + Hunyuan B
+./install.sh --agent claude --engine auto --paddle-vl-backend native  # 明確用原生 Paddle
 
 # 可以同時裝畀幾個 agent；qwen 係 Qwen Code。
 ./install.sh --agent codex --agent gemini --agent antigravity --agent qwen

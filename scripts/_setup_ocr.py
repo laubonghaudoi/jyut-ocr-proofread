@@ -80,16 +80,18 @@ class SetupOptions:
     # time.time() when the agent's shell call that runs setup began (install.py
     # sets it); the hand-over smoke gets only what is left of the budget.
     started_at: float | None = None
+    paddle_vl_backend: str = "default"
 
 
 # Keys read strictly: paths the installer verifies and values it computes with.
 PATH_KEYS = frozenset({
     "JYUT_OCR_PYTHON", "PADDLEOCR_PYTHON", "HUNYUAN_MODEL", "HUNYUAN_MMPROJ",
-    "HUNYUAN_LLAMA_SERVER", "PADDLE_VL_MODEL_DIR", "PADDLE_LAYOUT_MODEL_DIR",
+    "HUNYUAN_LLAMA_SERVER", "PADDLE_VL_MODEL_DIR", "PADDLE_LAYOUT_MODEL_DIR", "MLX_VLM_PYTHON",
 })
 CONFIG_KEYS = PATH_KEYS | frozenset({
     "JYUT_OCR_ENGINE", "JYUT_OCR_ENGINES", "JYUT_OCR_DEVICE", "OCR_HUNYUAN_DEVICE",
     "OCR_HUNYUAN_MODE", "OCR_HUNYUAN_SLOTS", "OCR_PADDLE_DEVICE",
+    "JYUT_OCR_PADDLE_VL_BACKEND", "OCR_PADDLE_VL_BACKEND",
 })
 # Keys of the same skill read leniently and passed on unchanged: the GPU
 # handover (OCR_PHASE_*), the proofreading model (PROOFREAD_*), queue and
@@ -102,8 +104,9 @@ STATE_SCHEMA = 2
 LOCK_SCHEMA = 2
 
 PYTHON_VERSION = "3.12"
-ENGINE_REQUESTS = ("auto", "hunyuan", "vision")
+ENGINE_REQUESTS = ("auto", "hunyuan", "vision", "vision,hunyuan")
 DEVICE_REQUESTS = ("auto", "cpu", "cuda", "metal")
+PADDLE_VL_BACKENDS = ("auto", "native", "mlx-vlm-server")
 # run_hunyuanocr.py's default --ctx-size; the context is per slot.
 HUNYUAN_CONTEXT_PER_SLOT = 16384
 # Measured shared-server peaks (one 5090, 16384 context per slot): 5,036 MiB at
@@ -134,6 +137,7 @@ PYTHON_RUNTIME_BYTES = 150_000_000
 CORE_VENV_BYTES = 100_000_000
 PADDLE_GPU_DEPENDENCY_BYTES = 3_500_000_000
 PADDLE_CPU_DEPENDENCY_BYTES = 900_000_000
+MLX_DEPENDENCY_BYTES = 2_000_000_000
 DISK_MARGIN_BYTES = 1 << 30
 
 
@@ -668,16 +672,44 @@ def device_request(requested: str | None, existing: Mapping[str, str]) -> str:
     return requested_value(requested, existing.get("JYUT_OCR_DEVICE"), DEVICE_REQUESTS)
 
 
+def paddle_backend_request(requested: str | None, existing: Mapping[str, str]) -> str:
+    """Remember the requested backend, separately from its effective selection."""
+    return requested_value(requested, existing.get("JYUT_OCR_PADDLE_VL_BACKEND"), PADDLE_VL_BACKENDS)
+
+
+def choose_paddle_backend(request: str, device: str, lock: Mapping[str, Any], *,
+                          system: str, machine: str) -> str:
+    if request not in PADDLE_VL_BACKENDS:
+        raise SetupError("Invalid Paddle VL backend; choose auto, native or mlx-vlm-server.")
+    apple_silicon = system == "Darwin" and machine == "arm64"
+    minimum_macos = str(lock.get("mlx", {}).get("minimum_macos", "14.0"))
+    supported_macos = version_tuple(platform.mac_ver()[0]) >= version_tuple(minimum_macos)
+    if request == "mlx-vlm-server":
+        if device == "cpu":
+            raise SetupError("--device cpu conflicts with --paddle-vl-backend mlx-vlm-server; use native or device auto.")
+        if not apple_silicon:
+            raise SetupError("mlx-vlm-server requires an Apple Silicon Mac; use --paddle-vl-backend native here.")
+        if not lock.get("mlx"):
+            raise SetupError("The locked MLX environment is missing; update the skill before selecting mlx-vlm-server.")
+        if not supported_macos:
+            raise SetupError(f"The locked MLX environment requires macOS {minimum_macos} or newer; use native here.")
+        return request
+    if (request == "auto" and device != "cpu" and apple_silicon and supported_macos
+            and lock.get("mlx", {}).get("enabled_by_default", False)):
+        return "mlx-vlm-server"
+    return "native"
+
+
 def choose_engines(request: str, *, system: str, machine: str) -> tuple[tuple[str, ...], list[str]]:
     """The engine set for REQUEST on this platform, and notes for the person."""
-    if request == "vision":
+    if request in {"vision", "vision,hunyuan"}:
         if system != "Darwin":
             raise SetupError("Apple Vision requires macOS; on Linux/WSL2 the default installs HunyuanOCR and PaddleOCR-VL.")
-        return ("vision",), []
+        return tuple(request.split(",")), []
     if request == "hunyuan":
         return ("hunyuan",), ["--engine hunyuan: HunyuanOCR only, no PaddleOCR-VL (an explicit override)."]
     if request != "auto":
-        raise SetupError(f"Unknown engine request {request!r}; use auto, hunyuan or vision.")
+        raise SetupError(f"Unknown engine request {request!r}; use auto, hunyuan, vision or vision,hunyuan.")
     if system == "Darwin" and machine != "arm64":
         return ("hunyuan",), ["Intel Mac: PaddleOCR-VL cannot be installed (PaddlePaddle has no macOS x86_64 wheel of "
                               "3.2.1 or later), so only HunyuanOCR is set up. Apple Vision can add a hint draft: "
@@ -715,6 +747,7 @@ class PaddlePlan:
     index: str | None = None    # Paddle's CUDA index (cu130 ...) for a GPU wheel
     need_mib: int = PADDLE_NEED_MIB
     notes: tuple[str, ...] = field(default_factory=tuple)
+    backend: str = "native"
 
     @property
     def gpu(self) -> bool:
@@ -975,7 +1008,7 @@ def version_pins(text: str) -> str:
 
 def install_requirements(options: SetupOptions, python: Path, requirements: Sequence[str], *,
                          uv: Path | None, requirement_file: Path | None = None,
-                         constraints: Sequence[Path] = ()) -> None:
+                         constraints: Sequence[Path] = (), require_hashes: bool = False) -> None:
     """Install into PYTHON with uv, else pip.  CONSTRAINTS (files, in order)
     pin what the requirements pull in: uv checks their hashes too; pip gets
     their version pins only (version_pins)."""
@@ -1000,6 +1033,8 @@ def install_requirements(options: SetupOptions, python: Path, requirements: Sequ
             command += ["-c", copy]
     if requirement_file is not None:
         command += ["-r", requirement_file]
+    if require_hashes:
+        command += ["--require-hashes", "--only-binary", ":all:"]
     command += list(requirements)
     try:
         run(command, env=environment)
@@ -1302,6 +1337,91 @@ def ensure_paddle_python(options: SetupOptions, existing: Mapping[str, str], loc
     for path, _ in files:
         # Verified and installed; the hashes stay in the lock or setup-state.json.
         path.unlink(missing_ok=True)
+    return managed.absolute(), probe
+
+
+MLX_METADATA_PROBE = r"""
+import importlib.metadata as m, json, sys
+out = {"python": list(sys.version_info[:3]), "prefix": sys.prefix, "base_prefix": sys.base_prefix, "dists": {}}
+for name in json.loads(sys.argv[1]):
+    try:
+        out["dists"][name] = m.version(name)
+    except m.PackageNotFoundError:
+        pass
+print(json.dumps(out))
+"""
+
+
+def mlx_probe(python: Path, lock: Mapping[str, Any]) -> dict[str, Any]:
+    """Metadata only: --check never imports MLX, initializes Metal or loads weights."""
+    names = [package["name"] for package in lock["mlx"]["packages"]]
+    try:
+        output = run([python, "-c", MLX_METADATA_PROBE, json.dumps(names)], capture=True, timeout=60).stdout or ""
+        probe = json.loads(output.strip().splitlines()[-1])
+    except (SetupError, ValueError, IndexError) as exc:
+        raise SetupError(f"The MLX Python {python} does not run or cannot report its packages.") from exc
+    if not isinstance(probe, dict) or not isinstance(probe.get("dists"), dict):
+        raise SetupError(f"The MLX Python {python} returned invalid package data.")
+    return probe
+
+
+def mlx_mismatch(probe: Mapping[str, Any], lock: Mapping[str, Any]) -> str | None:
+    if tuple(probe.get("python") or ())[:2] != (3, 12):
+        return "it requires Python 3.12"
+    if not probe.get("prefix") or probe.get("prefix") == probe.get("base_prefix"):
+        return "it is not an isolated Python environment"
+    for package in lock["mlx"]["packages"]:
+        if (probe.get("dists") or {}).get(package["name"]) != package["version"]:
+            return f"it lacks {package['name']}=={package['version']}"
+    return None
+
+
+def reusable_mlx_python(options: SetupOptions, existing: Mapping[str, str], lock: Mapping[str, Any]) -> Path | None:
+    separate = {os.path.abspath(existing[key]) for key in ("PADDLEOCR_PYTHON", "JYUT_OCR_PYTHON") if existing.get(key)}
+    other_roots = {Path(path).parent.parent.resolve() for path in separate if Path(path).parent.name == "bin"}
+    for candidate in (existing.get("MLX_VLM_PYTHON"), str(options.data_dir / "mlx-python/bin/python")):
+        if not candidate or os.path.abspath(candidate) in separate or not Path(candidate).is_file():
+            continue
+        try:
+            probe = mlx_probe(Path(candidate), lock)
+            if (mlx_mismatch(probe, lock) is None and Path(probe["prefix"]).resolve() not in other_roots):
+                return Path(os.path.abspath(candidate))
+        except SetupError:
+            pass
+    return None
+
+
+def ensure_mlx_python(options: SetupOptions, existing: Mapping[str, str],
+                      lock: Mapping[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """Reuse a verified environment or install the complete hash-locked MLX venv."""
+    reusable = reusable_mlx_python(options, existing, lock)
+    if reusable is not None:
+        return reusable, mlx_probe(reusable, lock)
+    venv = options.data_dir / "mlx-python"
+    managed = venv / "bin/python"
+    if venv.is_symlink():
+        set_aside(venv)  # never repair another environment through a managed-path symlink
+    current = None
+    if managed.is_file():
+        try:
+            current = mlx_probe(managed, lock)
+        except SetupError:
+            pass
+    uv = find_uv()
+    if (current is None or tuple(current.get("python") or ())[:2] != (3, 12)
+            or current.get("prefix") == current.get("base_prefix")):
+        set_aside(venv)
+        base = paddle_venv_python(options, uv)
+        if uv is not None:
+            run([uv, "venv", "--no-config", "--python", base, venv], env=uv_environment(options))
+        else:
+            run([base, "-m", "venv", venv])
+    install_requirements(options, managed, [], uv=uv,
+                         requirement_file=options.repo_root / lock["mlx"]["requirements"], require_hashes=True)
+    probe = mlx_probe(managed, lock)
+    problem = mlx_mismatch(probe, lock)
+    if problem is not None:
+        raise SetupError(f"The MLX environment {managed} still does not match after installation: {problem}.")
     return managed.absolute(), probe
 
 
@@ -1738,6 +1858,8 @@ def disk_needs(options: SetupOptions, existing: Mapping[str, str], lock: Mapping
             extra = PADDLE_GPU_DEPENDENCY_BYTES if plan.gpu else PADDLE_CPU_DEPENDENCY_BYTES
             needs.append((f"Paddle environment ({plan.distribution} {plan.index or 'cpu'})",
                           int(plan.wheel["size"] * 2.5) + extra + PYTHON_RUNTIME_BYTES))
+        if plan.backend == "mlx-vlm-server" and reusable_mlx_python(options, existing, lock) is None:
+            needs.append(("MLX VL environment (isolated Python 3.12)", MLX_DEPENDENCY_BYTES + PYTHON_RUNTIME_BYTES))
     return needs
 
 
@@ -1772,13 +1894,16 @@ def tool_hashes(root: Path, engine: str | Iterable[str]) -> dict[str, str]:
     """The skill's own files used by setup and the smoke; recorded, not part of
     the fingerprint (see environment_identity)."""
     engines = engine_set(engine)
-    names = ["scripts/_setup_ocr.py", "scripts/run_ocr_phase.py", *ENVIRONMENT_FILES]
+    names = ["scripts/_setup_ocr.py", "scripts/run_ocr_phase.py", "scripts/_ocr_engines.py", *ENVIRONMENT_FILES]
     if "vision" in engines:
-        names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift"]
+        names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift", "scripts/_draft_contract.py",
+                  "scripts/_vision_layout.py", "scripts/_mlx_vlm_server.py",
+                  "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
     if "hunyuan" in engines:
         names += ["scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
     if "paddle" in engines:
-        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py",
+        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/_mlx_vlm_server.py",
+                  "runtime/mlx-requirements.txt", "scripts/_gpu_queue.py", "scripts/_phase_budget.py",
                   PADDLE_CONSTRAINTS, *sorted(path.relative_to(root).as_posix()
                                               for path in root.glob(PADDLE_BUILD_CONSTRAINTS.format(index="*", machine="*")))]
     return {name: sha256_file(root / name) for name in dict.fromkeys(names) if (root / name).is_file()}
@@ -1863,6 +1988,22 @@ def environment_identity(options: SetupOptions, config: dict[str, str], engine: 
                               "python": ".".join(str(part) for part in probe["python"][:2]),
                               "models": weights}
         identity["recorded"]["paddle"] = probe
+        backend = config.get("OCR_PADDLE_VL_BACKEND", "native")
+        if backend not in {"native", "mlx-vlm-server"}:
+            raise SetupError(f"Invalid effective OCR_PADDLE_VL_BACKEND={backend!r}; rerun setup.")
+        if backend == "mlx-vlm-server":
+            if not config.get("MLX_VLM_PYTHON"):
+                raise SetupError("MLX_VLM_PYTHON is not configured; rerun setup.")
+            mlx = mlx_probe(Path(config["MLX_VLM_PYTHON"]), lock)
+            problem = mlx_mismatch(mlx, lock)
+            if problem is not None:
+                raise SetupError(f"MLX_VLM_PYTHON {problem}; rerun setup.")
+            if mlx.get("prefix") in {probe.get("prefix"), python.get("prefix")}:
+                raise SetupError("MLX_VLM_PYTHON must be separate from the core and Paddle Python environments.")
+            identity["paddle"]["vlBackend"] = backend
+            identity["paddle"]["mlx"] = {"python": "3.12", "packages": mlx["dists"],
+                                          "requirementsSha256": lock["mlx"]["requirements_sha256"]}
+            identity["recorded"]["mlx"] = mlx
     return identity
 
 
@@ -1886,7 +2027,13 @@ def check_smoke(record: dict[str, Any]) -> bool:
 
 
 def free_gpu_mib() -> int:
-    """Free memory of the fullest GPU (conservative on a multi-GPU host)."""
+    """Free GPU memory, or estimated reclaimable unified memory on macOS."""
+    if platform_name() == "Darwin":
+        from run_ocr_phase import mac_free_mib
+        free = mac_free_mib()
+        if free is None:
+            raise SetupError("Could not estimate reclaimable unified memory from vm_stat; inspect memory use and rerun setup.")
+        return free
     free_text = run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture=True).stdout
     try:
         return min(int(line.strip()) for line in free_text.splitlines() if line.strip())
@@ -1894,14 +2041,29 @@ def free_gpu_mib() -> int:
         raise SetupError("Could not read free GPU memory from nvidia-smi; inspect the GPU and rerun setup.")
 
 
-def gpu_device(engine: str, device: str) -> bool:
-    return (engine == "hunyuan" and device == "cuda") or (engine == "paddle" and device.startswith("gpu"))
+def gpu_device(engine: str, device: str, config: Mapping[str, str] | None = None) -> bool:
+    """Whether the setup test shares GPU/unified memory with a local model."""
+    if engine == "hunyuan":
+        return device in {"cuda", "metal"} or platform_name() == "Darwin"
+    if engine == "paddle":
+        return (device.startswith("gpu") or platform_name() == "Darwin"
+                or (config or {}).get("OCR_PADDLE_VL_BACKEND") == "mlx-vlm-server")
+    return False
 
 
 def smoke_need_mib(engine: str, config: Mapping[str, str], paddle_need: int = PADDLE_NEED_MIB) -> int:
+    if config.get("OCR_PHASE_REQUIRED_MIB"):
+        try:
+            need = int(config["OCR_PHASE_REQUIRED_MIB"])
+        except ValueError as exc:
+            raise SetupError("OCR_PHASE_REQUIRED_MIB must be a nonnegative integer.") from exc
+        if need < 0:
+            raise SetupError("OCR_PHASE_REQUIRED_MIB must be a nonnegative integer.")
+        if need:
+            return need  # zero retains run_ocr_phase.py's automatic estimate
     if engine == "hunyuan":
         return hunyuan_need_mib(int(config.get("OCR_HUNYUAN_SLOTS", "1")))
-    return paddle_need
+    return paddle_need if engine == "paddle" else 0
 
 
 def smoke_directory(options: SetupOptions, fingerprint: str, engine: str) -> Path:
@@ -1936,9 +2098,16 @@ def prepare_smoke(options: SetupOptions, config: Mapping[str, str], engine: str,
                     "--port", str(port), "--max-tokens", "256", "--timeout", "1200",
                     "--gpu-queue-timeout", str(SMOKE_QUEUE_TIMEOUT)]
     elif engine == "paddle":
-        command += ["--python", config["PADDLEOCR_PYTHON"], "--gpu-queue-timeout", str(SMOKE_QUEUE_TIMEOUT)]
+        backend = config.get("OCR_PADDLE_VL_BACKEND", "native")
+        command += ["--python", config["PADDLEOCR_PYTHON"], "--vl-backend", backend,
+                    "--gpu-queue-timeout", str(SMOKE_QUEUE_TIMEOUT)]
+        if backend == "mlx-vlm-server":
+            command += ["--mlx-python", config["MLX_VLM_PYTHON"]]
+            locked = load_lock(options.repo_root)
+            vl = next(model for model in locked["paddle"]["models"] if model["role"] == "vl")
+            command += ["--model-revision", vl["revision"]]
     else:
-        command += ["--workers", "1"]
+        command += ["--workers", "1", "--gpu-queue-timeout", str(SMOKE_QUEUE_TIMEOUT)]
     return directory, command
 
 
@@ -1966,7 +2135,8 @@ def smoke_environment(config: Mapping[str, str]) -> dict[str, str]:
 
 
 def gpu_busy_error(engine: str, free: int, need: int) -> SetupError:
-    return SetupError(f"GPU is busy ({free} MiB free; the {engine} setup test needs about {need} MiB). The test was not "
+    memory = "MiB estimated reclaimable unified memory" if platform_name() == "Darwin" else "MiB free"
+    return SetupError(f"GPU is busy ({free} {memory}; the {engine} setup test needs about {need} MiB). The test was not "
                       "started and no service was stopped; the GPU setting is kept. Let the program using the GPU "
                       "finish and rerun setup, or, if it is your local proofreading model, declare it with "
                       "--local-model-endpoint, --local-model-name, --local-model-release-cmd and "
@@ -1976,8 +2146,8 @@ def gpu_busy_error(engine: str, free: int, need: int) -> SetupError:
 def smoke_test(options: SetupOptions, config: dict[str, str], engine: str, device: str,
                fingerprint: str, *, need_mib: int | None = None) -> dict[str, Any]:
     """One engine's setup test, run directly on one synthetic page."""
-    if gpu_device(engine, device):
-        need = need_mib or smoke_need_mib(engine, config)
+    if gpu_device(engine, device, config):
+        need = smoke_need_mib(engine, config) if need_mib is None else need_mib
         free = free_gpu_mib()
         if free < need:
             raise gpu_busy_error(engine, free, need)
@@ -2087,12 +2257,16 @@ def run_smokes(options: SetupOptions, config: dict[str, str], engines: Sequence[
     hand-over when a configured local model holds it (OCR_PHASE_RELEASE_CMD and
     OCR_PHASE_RESTORE_CMD, OCR_PHASE_SWAP auto or always); never by moving an
     engine to the CPU."""
-    gpu_engines = [engine for engine in engines if gpu_device(engine, devices[engine])]
+    gpu_engines = [engine for engine in engines if gpu_device(engine, devices[engine], config)]
     swap = (config.get("OCR_PHASE_SWAP") or "auto").strip().lower()
     tenant = bool(config.get("OCR_PHASE_RELEASE_CMD") and config.get("OCR_PHASE_RESTORE_CMD"))
     needs = {engine: smoke_need_mib(engine, config, paddle_need) for engine in gpu_engines}
     if tenant and swap != "never" and (gpu_engines or swap == "always"):
-        if swap == "always" or free_gpu_mib() < max(needs.values()):
+        try:
+            room = swap != "always" and free_gpu_mib() >= max(needs.values(), default=0)
+        except SetupError:
+            room = False  # unknown memory: let the hand-over make the conservative decision
+        if not room:
             return handover_smokes(options, config, engines, devices, fingerprint, max(needs.values(), default=0))
     if swap == "always" and not tenant:
         raise SetupError("OCR_PHASE_SWAP=always needs OCR_PHASE_RELEASE_CMD and OCR_PHASE_RESTORE_CMD in env.sh.")
@@ -2138,6 +2312,17 @@ def load_lock(root: Path) -> dict[str, Any]:
             assert re.fullmatch(r"[0-9a-f]{40}", model["revision"])
             for item in model["files"]:
                 assert re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) and item["size"] > 0
+        if "mlx" in lock:
+            mlx = lock["mlx"]
+            assert isinstance(mlx["enabled_by_default"], bool) and mlx["python"] == PYTHON_VERSION
+            requirements = root / mlx["requirements"]
+            assert requirements.resolve().is_relative_to(root.resolve())
+            assert re.fullmatch(r"[0-9a-f]{64}", mlx["requirements_sha256"])
+            assert sha256_file(requirements) == mlx["requirements_sha256"]
+            packages = {package["name"]: package["version"] for package in mlx["packages"]}
+            assert len(packages) == len(mlx["packages"]) and packages.get("mlx-vlm") == "0.8.0"
+            assert all(isinstance(name, str) and name and isinstance(version, str) and version
+                       for name, version in packages.items())
         return lock
     except (OSError, ValueError, KeyError, TypeError, AssertionError) as exc:
         raise SetupError("Invalid or missing runtime/ocr-lock.json.") from exc
@@ -2199,19 +2384,27 @@ def plan_engines(options: SetupOptions, existing: Mapping[str, str], lock: Mappi
     engines, notes = choose_engines(engine_wanted, system=system, machine=machine)
     devices: dict[str, str] = {}
     if "vision" in engines:
-        devices["vision"] = choose_device(device_wanted, {}, engine="vision", system=system)
+        devices["vision"] = choose_device("auto" if len(engines) > 1 else device_wanted, {}, engine="vision", system=system)
     if "hunyuan" in engines:
         devices["hunyuan"] = choose_device(device_wanted, {}, engine="hunyuan", system=system)
     # nvidia-smi is asked only when Paddle's device depends on it.
     gpus = nvidia_gpus() if system == "Linux" and device_wanted in {"auto", "cuda"} and "paddle" in engines else []
     plan = None
     if "paddle" in engines:
+        backend_request = paddle_backend_request(options.paddle_vl_backend, existing)
+        backend = choose_paddle_backend(backend_request, device_wanted, lock, system=system, machine=machine)
         plan, paddle_notes = paddle_plan(lock, system=system, machine=machine, request=device_wanted, gpus=gpus)
         notes += paddle_notes
         if plan is None:
             engines = tuple(engine for engine in engines if engine != "paddle")
         else:
+            plan = replace(plan, backend=backend)
             devices["paddle"] = plan.device
+            if backend == "mlx-vlm-server":
+                notes.append("PaddleOCR-VL uses the isolated MLX server on Metal; document layout runs in Paddle on CPU.")
+            elif (backend_request == "auto" and device_wanted != "cpu" and system == "Darwin" and machine == "arm64"
+                  and version_tuple(platform.mac_ver()[0]) < version_tuple(str(lock.get("mlx", {}).get("minimum_macos", "14.0")))):
+                notes.append("The locked MLX environment needs macOS 14 or newer; PaddleOCR-VL uses native inference here.")
     legacy_device = existing.get("OCR_HUNYUAN_DEVICE")
     if (options.device in (None, "default") and not existing.get("JYUT_OCR_DEVICE") and legacy_device
             and legacy_device != devices.get("hunyuan", legacy_device)):
@@ -2331,7 +2524,8 @@ def summary(engines: Sequence[str], devices: Mapping[str, str], config_path: Pat
 def saved_plan(options: SetupOptions, config: Mapping[str, str]) -> tuple[tuple[str, ...], dict[str, str]] | None:
     """The engines and effective devices setup saved, which --check verifies,
     unless this call asks for other ones (an explicit --engine or --device)."""
-    if options.engine not in (None, "default") or options.device not in (None, "default"):
+    if (options.engine not in (None, "default") or options.device not in (None, "default")
+            or options.paddle_vl_backend not in (None, "default")):
         return None
     engines = engine_set(config.get("JYUT_OCR_ENGINES", ""))
     if not engines:
@@ -2351,6 +2545,8 @@ def setup_test_command(options: SetupOptions) -> str:
         words += ["--config-dir", str(options.config_dir)]
     if options.data_dir.absolute() != data.absolute():
         words += ["--data-dir", str(options.data_dir)]
+    if options.paddle_vl_backend not in (None, "default"):
+        words += ["--paddle-vl-backend", options.paddle_vl_backend]
     return shlex.join(words)
 
 
@@ -2370,6 +2566,12 @@ def inspect_setup(options: SetupOptions) -> dict[str, Any]:
                 raise SetupError(engine_choice_message(
                     engine_choice_options(options, config, lock, system=system, machine=machine)))
             engines, devices, _, _, notes, _, _ = plan_engines(options, config, lock, system=system, machine=machine)
+        if "paddle" in engines:
+            wanted = choose_paddle_backend(paddle_backend_request(options.paddle_vl_backend, config),
+                                           device_request(options.device, config), lock,
+                                           system=system, machine=machine_name(system))
+            if wanted != config.get("OCR_PADDLE_VL_BACKEND", "native"):
+                raise SetupError(f"Saved Paddle VL backend is stale; rerun setup to prepare {wanted}.")
         missing = missing_dependencies(engines)
         if missing:
             raise SetupError("Missing dependencies: " + ", ".join(missing))
@@ -2458,6 +2660,11 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
         config.update(ensure_paddle_weights(options, existing, lock))
         python, _ = ensure_paddle_python(options, existing, lock, plan, gpu, state_path, trusted)
         config.update({"PADDLEOCR_PYTHON": str(python), "OCR_PADDLE_DEVICE": plan.device})
+        config.update({"JYUT_OCR_PADDLE_VL_BACKEND": paddle_backend_request(options.paddle_vl_backend, existing),
+                       "OCR_PADDLE_VL_BACKEND": plan.backend})
+        if plan.backend == "mlx-vlm-server":
+            mlx_python, _ = ensure_mlx_python(options, config, lock)
+            config["MLX_VLM_PYTHON"] = str(mlx_python)
         try:
             trusted = dict(json.loads(state_path.read_text()).get("trustOnFirstUse") or trusted)
         except (OSError, ValueError):

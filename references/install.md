@@ -14,6 +14,13 @@ Repo 根目錄係唯一技能來源。將整個目錄放入 agent 嘅技能集�
 ./install.sh --engine auto
 ./install.sh --engine vision
 
+# macOS 橫排快速雙引擎模式；Vision 做 A 稿，Hunyuan 做 B 稿，唔裝 Paddle。
+./install.sh --engine vision,hunyuan
+
+# Apple Silicon、macOS 14 或以上：明確用 MLX；native 保留原有 Paddle 推理。
+./install.sh --env-only --engine auto --paddle-vl-backend mlx-vlm-server
+./install.sh --env-only --paddle-vl-backend native
+
 # 重複 --agent 安裝到多個平台；qwen 係 Qwen Code。唔預設安裝 custom agents。
 ./install.sh --agent codex --agent claude --agent gemini --agent antigravity --agent qwen
 
@@ -40,11 +47,12 @@ Repo 根目錄係唯一技能來源。將整個目錄放入 agent 嘅技能集�
 | `--agent` | 可重複：`generic`、`codex`、`claude`、`gemini`、`antigravity`、`qwen`；冇指定預設 `generic` |
 | `--skill-dir` | 自訂技能集合目錄，唔係 `SKILL.md` 所在葉目錄 |
 | `--with-agents` | 另裝所選 Codex／Claude 嘅可選 writer／auditor adapters |
-| `--engine` | 只係明確覆蓋：`auto`（預設，兩個引擎；Intel Mac 淨係 Hunyuan）、`hunyuan`（淨係 Hunyuan，例如細機）、`vision`（淨係 Apple Vision，只限 macOS，唔下載模型）。唔傳就沿用上次揀嘅，冇就 `auto`；macOS 未揀過就先問（見〈macOS：先揀引擎〉） |
-| `--device` | `auto`（預設：有 NVIDIA GPU 用 CUDA，Apple Silicon 用 Metal，否則 CPU）、`cpu`、`cuda`、`metal`；兩個引擎都跟。唔傳就沿用上次明確揀嘅裝置 |
+| `--engine` | 明確覆蓋：`auto`（預設，Hunyuan 同 Paddle；Intel Mac 淨係 Hunyuan）、`hunyuan`、`vision`（只限 macOS，唔下載模型）、`vision,hunyuan`（macOS 橫排快速雙引擎，唔裝 Paddle）。唔傳就沿用上次揀嘅，冇就 `auto`；macOS 未揀過就先問（見〈macOS：先揀引擎〉） |
+| `--device` | `auto`（預設：有 NVIDIA GPU 用 CUDA，Apple Silicon 用 Metal，否則 CPU）、`cpu`、`cuda`、`metal`；唔傳就沿用上次明確揀嘅裝置。Vision 自己管理裝置；MLX 模式嘅 Paddle layout 用 CPU |
+| `--paddle-vl-backend` | `auto`、`native`、`mlx-vlm-server`；唔傳就沿用上次要求。MLX 需要 Apple Silicon 同 macOS 14 或以上，用獨立 Python 3.12 環境；`--device cpu` 同明確 MLX 要求衝突，會先報錯 |
 | `--env-only` | 唔放置技能，只做環境初始化或檢查 |
 | `--skill-only` | 只放置或檢查技能入口，唔配置 OCR 環境 |
-| `--check` | 只讀檢查；唔下載、建置、改設定或啟動 OCR |
+| `--check` | 只讀檢查；唔下載、建置、改設定或啟動 OCR；MLX 只讀套件 metadata，唔 import MLX、初始化 Metal 或載入模型 |
 | `--offline` | 只用本機已存在而通過核驗嘅資源；缺項會報告 |
 | `--prepare-only` | 下載、核驗同寫設定，但唔試跑（試跑可能要 GPU 交接，一定要前景）；狀態 `pending-smoke`，exit `2`，直到冇呢個選項嘅一次試跑通過。期間 `--check` 都報 `pending-smoke`（exit `2`），講明淨係欠試跑，叫你喺前景跑 `./install.sh --env-only`；設定之後再改過就照報 action-required |
 | `--install-system-deps` | 顯式允許嘗試已支援套件管理器；否則只列缺項同安裝指引 |
@@ -67,9 +75,18 @@ Linux／WSL2 上安裝器唔問揀邊個引擎：HunyuanOCR（GGUF，經 llama.c
 |---|---|---|
 | Linux／WSL2，有 NVIDIA GPU | CUDA | GPU；卡太細或者太舊就 CPU（見下表） |
 | Linux／WSL2，冇 NVIDIA GPU | CPU | CPU |
-| macOS Apple Silicon（揀 `--engine auto`） | Metal | CPU（Paddle 喺 macOS 只有 CPU 版） |
+| macOS Apple Silicon（揀 `--engine auto`） | Metal | macOS 14 或以上預設 MLX：Metal 做 VL、CPU 做 layout；舊 macOS 或明確 native 全程用 Paddle CPU |
 | macOS Intel（揀 `--engine auto`） | CPU | 唔裝：PaddleOCR-VL 要 PaddlePaddle 3.2.1 或以上，macOS x86_64 最新只有 3.0.0；可以另用 Apple Vision 做提示底稿 |
 | macOS（揀 `--engine vision`） | 唔裝 | 唔裝；淨用 Apple Vision，唔下載模型 |
+| macOS（揀 `--engine vision,hunyuan`） | Metal 或 CPU | 唔裝；改用 Apple Vision 做 A 稿 |
+
+### Apple Silicon：Paddle VL backend
+
+獨立對照實驗通過後，`--paddle-vl-backend auto` 喺 Apple Silicon、macOS 14 或以上預設用 `mlx-vlm-server`；其他平台、較舊 macOS 同明確 `--device cpu` 繼續用 `native`。預設記喺 `runtime/ocr-lock.json` 嘅 `mlx.enabled_by_default`。明確 `--paddle-vl-backend native` 永遠保留原有 Paddle 推理；明確 MLX 要求喺唔支援嘅平台或同 `--device cpu` 一齊用會報錯，唔會靜靜轉 backend。
+
+要求寫入 `JYUT_OCR_PADDLE_VL_BACKEND`，實際選擇寫入 `OCR_PADDLE_VL_BACKEND`。舊環境嘅 `OCR_PADDLE_DEVICE=cpu` 如果只係 `JYUT_OCR_DEVICE=auto` 當時揀出嚟，下次 setup 可以升級到 MLX；用戶明確揀嘅 CPU 或 native 會保留。`--check` 遇到需要升級嘅環境只會報 stale，唔會幫你改設定或者安裝。
+
+MLX 同 Paddle 共用原有固定 revision 嘅 `PADDLE_VL_MODEL_DIR`，唔另換量化權重；Paddle layout 照用 `PADDLE_LAYOUT_MODEL_DIR`。`MLX_VLM_PYTHON` 指向獨立嘅 `mlx-python/`，固定 `mlx-vlm==0.8.0` 及完整依賴。MLX 同原有 Paddle 嘅 `transformers` 等依賴分開，唔可以合併兩個 venv。`--prepare-only` 會準備埋呢個環境；`--offline` 只重用已核驗環境或完整本機 cache，缺項會停低。
 
 ### macOS：先揀引擎
 
@@ -77,13 +94,14 @@ Mac 有內置嘅 OCR（Apple Vision），所以由 Hugging Face 下載嘅引擎�
 
 | 選擇 | 裝乜 | 約佔磁碟 | 之後點跑書 |
 |---|---|---:|---|
-| `--engine auto` | HunyuanOCR 同 PaddleOCR-VL（Intel Mac 淨係 HunyuanOCR），由 Hugging Face 下載 | Apple Silicon 約 5.7 GB，Intel 約 2.4 GB | 每頁兩份底稿，完整流程 |
+| `--engine auto` | HunyuanOCR 同 PaddleOCR-VL（Intel Mac 淨係 HunyuanOCR），由 Hugging Face 下載 | Apple Silicon native 約 5.7 GB；MLX 額外預留約 2.2 GB；Intel 約 2.4 GB | 每頁兩份底稿，完整流程 |
 | `--engine vision` | 淨係 Apple Vision，唔下載模型 | 0.2 GB 以內（核心 Python 環境） | 每頁一份底稿，單引擎流程（`SKILL.md` 四〈單引擎〉） |
 
 - **喺 terminal 跑**（stdin 係 terminal）：安裝器列出兩個選擇同各自要幾多磁碟，等你輸入 `1` 或者 `2`。答三次都唔係，或者冇人答，就當冇 terminal 處理。
 - **冇 terminal**（agent 嘅 shell、pipe、背景）：安裝器即刻停低，exit `2`，`ACTION REQUIRED` 行以 `The OCR engines of this Mac are not chosen yet` 開頭，列出兩個 `--engine` 同各自要幾多磁碟；乜都未下載。Agent 見到呢行要**問用戶揀邊個，唔准代佢揀**，再喺同一條命令加嗰個 `--engine` 重跑。`--check` 喺未揀之前報同一段（`action-required`）。
-- 揀過一次就記入 `env.sh`（`JYUT_OCR_ENGINE`），之後唔傳 `--engine` 都唔再問。想轉就明確傳另一個 `--engine`：由 Vision 轉 `auto` 會下載兩個引擎；由 `auto` 轉 `vision` 唔會刪已下載嘅模型，要自己清走資料目錄入面嘅 `models/`、`paddle-models/`、`paddle-python/`、`runtimes/`。
+- 揀過一次就記入 `env.sh`（`JYUT_OCR_ENGINE`），之後唔傳 `--engine` 都唔再問。想轉就明確傳另一個 `--engine`：由 Vision 轉 `auto` 會下載兩個引擎；由 `auto` 轉 `vision` 唔會刪已下載嘅模型，要自己清走資料目錄入面嘅 `models/`、`paddle-models/`、`paddle-python/`、`mlx-python/`、`runtimes/`。
 - `--engine hunyuan`（淨裝 Hunyuan）照舊係明確覆蓋，唔喺問題入面。
+- `--engine vision,hunyuan` 同樣要明確傳，唔喺首次問題入面；只下載 Hunyuan，Vision 做 A 稿、Hunyuan 做 B 稿，兩個引擎順序跑。呢條路線係橫排快速模式；準確度／CER 由正常校對流程處理，唔係安裝或速度驗收條件。
 - Linux／WSL2 冇內置引擎，唔問，照舊兩個都裝。
 
 - AMD、Intel 等非 NVIDIA GPU 暫時當冇 GPU，用 CPU。
@@ -129,6 +147,8 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 
 **PaddleOCR-VL**：`paddlepaddle-gpu`（或 CPU 版 `paddlepaddle`）3.3.1、`paddleocr[doc-parser]` 3.7.0、`paddlex` 3.7.2，裝喺自己嘅 Python 3.12 環境（`PADDLEOCR_PYTHON`）。PyPI 嘅 wheel（`paddleocr`、`paddlex`、CPU 版 `paddlepaddle`）用 lock 入面嘅 SHA-256 核驗。Paddle 自己嘅 GPU index 冇公布 hash，lock 只記大小並標明 `trust-on-first-use`：第一次下載時安裝器將下載到嘅 SHA-256 記入 `setup-state.json` 嘅 `trustOnFirstUse`，之後再下載同一個 wheel 唔同就拒絕安裝。如果 Paddle 真係重新發佈咗，刪咗嗰條紀錄再重跑。其他依賴（numpy、opencv 等）用 `runtime/paddle-constraints.txt` 固定版本，每個 Paddle wheel 都用：佢由一個用得嘅 Paddle 環境生成（`runtime/make_paddle_constraints.py`），每個版本附 PyPI 公布嘅 SHA-256，用 uv 裝就逐個核對，唔啱就唔裝；冇 uv、用 pip 就淨係固定版本、唔核 hash（pip 一見到 hash 就要求每個 package 都有）。Paddle wheel 自己釘死版本嘅 package（CUDA 嘅 `nvidia-*` wheel、`cuda-python`、`opt-einsum`）同淨係佢哋先拉入嚟嘅（`cuda-bindings`、`cuda-pathfinder`）唔放入呢個共用檔，因為每個 CUDA 版本釘嘅版本唔同（例如 cu129 x86_64 要 `cuda-python==12.9.4`，cu130 要 13.0.3），放入去其他版本就裝唔到：cu130 x86_64 嘅 wheel 另外加 `runtime/paddle-constraints-cu130-x86_64.txt`（一樣附 hash）；cu129、cu126、cu118 嘅呢啲 package 用 Paddle wheel 自己釘嘅版本，唔核 hash。兩個檔都冇列嘅 package（某啲平台先要嘅）照舊由 PyPI 解析。已經符合 lock 嘅 Paddle 環境唔會因為呢啲檔重裝；檔案內容只記錄喺 setup 狀態，唔影響 setup 指紋。
 
+**MLX 環境**另用 `runtime/mlx-requirements.txt` 固定全部套件版本同 wheel hash；呢個檔本身嘅 SHA-256 亦記喺 `runtime/ocr-lock.json`。uv 同 pip 都用 `--require-hashes` 安裝，唔會套用 Paddle 嘅「pip 只核版本」例外。`--check` 核對 Python 3.12、venv 隔離同全部固定套件版本；真正 Metal／模型載入留畀合成頁試跑。已配置嘅外部 MLX 環境只有完全符合先沿用，唔符合就另建受管理環境，唔改外部 venv。
+
 權重固定 revision，逐個檔案核大小同 SHA-256（Hugging Face 樹嘅 LFS oid，其餘檔案嘅 SHA-256 由同一 revision 嘅檔案計出）：
 
 | 模型 | Revision | 大小 |
@@ -142,6 +162,8 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 
 已經有嘅 `PADDLEOCR_PYTHON`（例如舊技能整嘅 venv）只要已經有上面嘅固定版本、同 GPU／CPU 啱，就直接用，安裝器唔會改佢；唔啱就另外喺資料目錄整 `paddle-python/`，舊 venv 原封不動。
 
+揀 MLX 會再建立第三個 Python 3.12 venv `mlx-python/`，用同一套 uv Python 供應、離線及中斷恢復機制；核心、Paddle 同 MLX 三個環境各自裝依賴。
+
 ## 磁碟
 
 下載前先檢查資料目錄所在嘅剩餘空間：按缺嘅部分估算（下載按實際大小，解壓同安裝按估計），加 1 GiB 餘量，唔夠就停低，乜都未下載。llama-server 同 Paddle 環境用安裝時一樣嘅方法判斷：已設定嘅 `HUNYUAN_LLAMA_SERVER` 唔係固定 commit（`--version` 同 hash 對唔上），或者 `PADDLEOCR_PYTHON` 嘅套件唔啱（只讀套件 metadata），安裝器會另外裝一份，估算就計埋新嗰份，唔當已經有。大約佔用（裝好之後；安裝途中暫時要多啲，因為壓縮檔同 wheel 裝好先刪）：
@@ -150,13 +172,15 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 |---|---:|---|
 | Linux／WSL2，NVIDIA GPU（`cu130`） | 約 12 GB | Paddle GPU 環境 6.3 GB（實測：paddle 2.9 GB、NVIDIA 函式庫 2.6 GB）、兩個模型權重約 4.1 GB、llama.cpp CUDA 版連 runtime 約 1.5 GB（估計）、Python 約 0.3 GB。用源碼建置嘅 llama.cpp 約 0.3 GB，總數約 10.6 GB（實測） |
 | Linux／WSL2，CPU | 約 6 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.5 GB（估計；wheel 195 MB）、llama.cpp 約 41 MB |
-| macOS Apple Silicon（`--engine auto`） | 約 5.5 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB |
+| macOS Apple Silicon（`--engine auto`、native backend） | 約 5.5 GB | 兩個模型權重約 4.1 GB、Paddle CPU 環境約 1.2 GB（估計；wheel 105 MB）、llama.cpp 約 30 MB |
+| macOS Apple Silicon（MLX backend） | native 基礎上額外預留約 2.2 GB | 獨立 MLX Python 同依賴嘅保守安裝估算；沿用相同 Paddle 權重，唔重複下載模型 |
 | macOS Intel（`--engine auto`） | 約 2.4 GB | Hunyuan 權重約 2.1 GB、llama.cpp、Python |
 | macOS（`--engine vision`） | 0.2 GB 以內 | 核心 Python 環境，唔下載模型；估計上限 0.2 GB（計埋 uv 要下載 Python 3.12），uv 已經有 3.12 嗰陣實測 27 MB（Apple M5，2026-11-16） |
+| macOS（`--engine vision,hunyuan`） | 約 2.4 GB | Hunyuan 權重、llama.cpp、核心 Python；Vision 使用系統框架 |
 
 ## 設定、初始化同就緒狀態
 
-預設設定目錄係 `${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr`。預設資料目錄喺 Linux／WSL2 係 `${XDG_DATA_HOME:-$HOME/.local/share}/jyut-ocr`，macOS 係 `~/Library/Application Support/jyut-ocr`。核心 venv 喺資料目錄 `python/`，Paddle venv 喺 `paddle-python/`，設定由 `env.sh` 載入；樣本見 `env.sh.example`。
+預設設定目錄係 `${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr`。預設資料目錄喺 Linux／WSL2 係 `${XDG_DATA_HOME:-$HOME/.local/share}/jyut-ocr`，macOS 係 `~/Library/Application Support/jyut-ocr`。核心 venv 喺資料目錄 `python/`，Paddle venv 喺 `paddle-python/`，按需安裝嘅 MLX venv 喺 `mlx-python/`；設定由 `env.sh` 載入，樣本見 `env.sh.example`。
 
 ```bash
 . "${XDG_CONFIG_HOME:-$HOME/.config}/jyut-ocr/env.sh"
@@ -165,23 +189,30 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 
 | 設定 | 意義 |
 |---|---|
-| `JYUT_OCR_ENGINE` | 引擎要求：`auto`，或者明確覆蓋 `hunyuan`／`vision` |
-| `JYUT_OCR_ENGINES` | 實際裝咗嘅引擎，例如 `hunyuan,paddle` |
+| `JYUT_OCR_ENGINE` | 引擎要求：`auto`，或者明確覆蓋 `hunyuan`／`vision`／`vision,hunyuan` |
+| `JYUT_OCR_ENGINES` | 實際裝咗嘅引擎，例如 `hunyuan,paddle` 或 `vision,hunyuan`；`ocr_book.py --engines` 可以明確覆蓋當次選擇 |
 | `JYUT_OCR_DEVICE` | 裝置要求：`auto`，或者明確揀嘅 `cpu`／`cuda`／`metal` |
 | `JYUT_OCR_PYTHON` | 一般腳本用嘅核心 venv Python |
 | `HUNYUAN_MODEL`、`HUNYUAN_MMPROJ`、`HUNYUAN_LLAMA_SERVER` | Hunyuan 模型、projector、llama-server |
 | `OCR_HUNYUAN_DEVICE`、`OCR_HUNYUAN_MODE`、`OCR_HUNYUAN_SLOTS` | Hunyuan 實際裝置、服務模式、slot 數 |
 | `PADDLEOCR_PYTHON` | Paddle venv 嘅 Python |
-| `OCR_PADDLE_DEVICE` | Paddle 實際裝置：`gpu:0` 或者 `cpu` |
+| `OCR_PADDLE_DEVICE` | Paddle 實際裝置：`gpu:0` 或者 `cpu`；MLX 模式呢個值只指 layout |
+| `JYUT_OCR_PADDLE_VL_BACKEND` | Backend 要求：`auto`／`native`／`mlx-vlm-server` |
+| `OCR_PADDLE_VL_BACKEND` | 實際 backend：`native` 或 `mlx-vlm-server` |
+| `MLX_VLM_PYTHON` | MLX 專用 Python 3.12，獨立於核心及 Paddle venv |
 | `PADDLE_VL_MODEL_DIR`、`PADDLE_LAYOUT_MODEL_DIR` | 固定 revision 嘅 Paddle 權重資料夾 |
 
-一般腳本用 `JYUT_OCR_PYTHON`，Paddle 用自己嘅 `PADDLEOCR_PYTHON`；唔將 venv Python symlink resolve 成系統 Python。完整 OCR 選項見 [local-ocr.md](local-ocr.md)。
+一般腳本用 `JYUT_OCR_PYTHON`，Paddle 用 `PADDLEOCR_PYTHON`，MLX server 用 `MLX_VLM_PYTHON`；唔將 venv Python symlink resolve 成系統 Python。完整 OCR 選項見 [local-ocr.md](local-ocr.md)。
+
+跑書時引擎選擇順序係明確 `--engines`、`JYUT_OCR_ENGINES`、該書 `reports/ocr-engines.json`，最後先係 `hunyuan,paddle` 預設；冇載入機器設定嘅續跑仍可沿用該書記錄。`--single-engine` 照舊明確選 Hunyuan。
 
 **沿用舊設定**：安裝器淨係改值有變嘅 key，舊行一行都唔刪，其他行（包括佢唔識嘅行）原封不動，改之前將原檔備份去 `env-backups/`。一個 key 喺頂層得一行、嗰行又淨係設呢個值，安裝器就喺原位喺嗰行前面加 `# `，變做註解保留，上面加一行註解寫明日期同係安裝器取代咗佢（例如 `# HUNYUAN_LLAMA_SERVER: replaced by the jyut-ocr installer on 2026-11-16; the earlier line is kept below as a comment.`），下面緊接寫新嘅 `export`：你睇得到新舊兩個值，shell 淨係用新值。寫咗幾行、喺 `if`／`case`／function 入面、或者同其他命令擺喺同一行，安裝器一行都唔郁，喺檔尾加一行新值（上面一行註解講明）。之後再改，兩種寫法都係改返安裝器自己嗰行 `export`，唔會再加註解、亦唔會多一份舊行；用同一個設定重跑就乜都唔改。`env.sh` 本來冇嘅 key，安裝器喺檔尾加一行 `export`，上面冇註解；呢行第一次改值嗰陣，安裝器分唔出係佢自己寫嘅，所以照頂層得一行嘅做法保留做註解一次，之後先淨係改 `export`。`env.sh` 原本嘅權限照舊（例如 `0664` 改完仍然係 `0664`）；安裝器新開嘅 `env.sh` 同 `env-backups/` 入面嘅備份係 `0600`（淨係你自己讀寫得）。寫入之前用 `bash -n` 檢查：原檔語法啱而改完會錯，就停低報錯，乜都唔寫。舊技能寫嘅 `env.sh` 照讀：`PADDLEOCR_PYTHON`、`OCR_PHASE_*`、`PROOFREAD_*`、`HUNYUAN_*`、`OCR_HUNYUAN_*` 都保留；`OCR_PHASE_*` 等命令照原文保留，唔展開、唔執行。路徑只支援 `$HOME`／`${HOME}`，安裝器自己寫嘅路徑係絕對路徑。舊安裝器嘅 `JYUT_OCR_ENGINE`（單一引擎）同 `OCR_HUNYUAN_DEVICE` 係嗰陣自動揀嘅結果，唔當成明確覆蓋：而家重新按平台揀（兩個引擎、重新偵測裝置），輸出會講明；想保留就明確傳 `--engine`／`--device`。`env.sh` 係 symlink 嘅話，安裝器寫入佢指向嘅檔案，條 link 保留；指向唔存在嘅資料夾或者唔係普通檔案就停低報錯。
 
 **試跑**：初始化會檢查 Python、Pillow、PDF 渲染工具及所選引擎依賴，然後每個引擎用一張合成頁跑實際 OCR。只有全部引擎都輸出非空轉錄同合格逐頁 JSON，先將環境 fingerprint 及試跑證據寫入 `setup-state.json` 並標記就緒；`--check` 要每個引擎嘅證據都喺度兼冇改過。
 
-- Hunyuan 試跑用已設定嘅 `OCR_HUNYUAN_SLOTS`，每個 slot 用 runner 預設嘅 16384 context，即係真正跑書嗰陣嘅顯存：約 3,500 MiB 加每 slot 1,536 MiB（1 slot 約 5,036 MiB，16 slots 約 28,076 MiB）。Paddle 約要 12,288 MiB。
+- Hunyuan 試跑用已設定嘅 `OCR_HUNYUAN_SLOTS`，每個 slot 用 runner 預設嘅 16384 context：約 3,500 MiB 加每 slot 1,536 MiB（1 slot 約 5,036 MiB，16 slots 約 28,076 MiB），唔因為呢次優化改 slot 數。Paddle 約要 12,288 MiB；MLX 暫用同一個保守值，計埋同時存在嘅 MLX server 同 Paddle layout worker。
+- macOS 試跑同 `run_ocr_phase.py` 共用 `vm_stat` 探測：只計 free、inactive、speculative，按實際 page size 換算；purgeable 同其他分類重疊，唔會再加。讀唔到就當未知，已有交接設定時交畀交接處理；冇交接就停低講明。Metal、MLX 同 Darwin native CPU 都共享呢個記憶體池。
+- 預算按當次真正選中嘅引擎計，順序跑所以取最大值，唔係相加。`vision,hunyuan` 只計 Hunyuan 需要，唔套用 Paddle 嘅 12 GiB；Vision 本身由系統管理。`OCR_PHASE_REQUIRED_MIB` 明確正數覆蓋保留。MLX 試跑會明確傳 backend、MLX interpreter 同固定模型 revision。
 - 等 GPU 隊列（另一本書嘅 OCR 用緊）最多 300 秒；等唔到就報 action-required，乜都冇停，佢做完再重跑。
 - GPU 唔夠空位而又冇聲明本機模型：報 action-required，講要幾多、得幾多；唔會叫你改用 CPU，亦唔會記低 CPU。
 - 已聲明本機模型嘅停／開命令（`OCR_PHASE_RELEASE_CMD`、`OCR_PHASE_RESTORE_CMD`），而 GPU 唔夠空位：兩個引擎嘅試跑放喺**一次** GPU 交接入面（`scripts/run_ocr_phase.py`）：停模型、試跑、開返模型。需要 `OCR_PHASE_MAX_SECONDS`（`--local-model-release-cmd` 冇設就寫 540），而且一定要喺前景跑。呢個預算係 agent 成個 shell call 嘅：安裝器記住自己幾時開始，核驗、uv 等等用咗嘅時間會扣除，交畀 `run_ocr_phase.py` 嘅 `--max-seconds` 係淨低嘅時間；淨低少過 240 秒（預算細過 480 秒就係預算嘅一半）就唔停模型、唔試跑，報錯叫你喺前景再跑同一條命令（已下載、已核驗嘅保留）。`OCR_PHASE_SWAP=always` 每次都交接，`never` 永遠唔交接。交接結果：exit `75` 係時間預算用完、模型已開返，重跑同一條安裝命令繼續；`76` 係 GPU 忙（另一份工、另一個交接，或者模型嘅其他 client 仲有請求），通常乜都冇停；窗口入面試跑一頁都冇封到亦報 `76`（模型停過又開返，RESULT 行會講）：等一陣再重跑；`3` 係模型冇開返，即刻用 restore 命令開返；`2` 係設定錯誤。
@@ -195,7 +226,7 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 
 唔好喺背景跑會試跑或者交接嘅命令（即係冇 `--prepare-only` 嘅 `./install.sh`）。
 
-Fingerprint 只計環境：引擎、各引擎實際裝置、Python 主次版本、`requirements.txt` 同 `runtime/ocr-lock.json` 嘅內容、模型檔 hash、runtime binary 及 library hash、Hunyuan slot 數（試跑證明佢裝得落），同 Paddle 係 GPU 定 CPU 版、CUDA build 同權重 revision。技能自己嘅 scripts、Python 完整版本號、套件版本、venv 同模型路徑只會記低，所以改 code 或者 Python 小版本更新唔會令 `--check` 變成 action-required；換模型、runtime、裝置、slot 數或者 Python 主次版本就要重新驗證。
+Fingerprint 計環境：引擎、各引擎實際裝置、Python 主次版本、`requirements.txt` 同 `runtime/ocr-lock.json` 嘅內容、模型檔 hash、runtime binary 及 library hash、Hunyuan slot 數（試跑證明佢裝得落），同 Paddle 係 GPU 定 CPU 版、CUDA build 同權重 revision。MLX backend 另外計固定依賴檔 hash 同全部套件版本；切換 native／MLX 或改 MLX 依賴都要重新試跑。技能 scripts、Python 完整版本號、其他已記錄套件版本、venv 同模型路徑只記錄，所以改 code 或 Python patch 版本唔會單獨要求重新試跑。
 
 依賴缺失時先按輸出補齊，再重跑同一入口。需要管理員權限、Apple 系統 UI 或使用者處理嘅步驟會明確報告，唔假稱安裝完成。冇引擎但當前 agent 有讀圖能力，可以順序視覺轉錄；冇讀圖能力則保留待處理狀態。
 

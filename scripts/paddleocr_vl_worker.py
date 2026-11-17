@@ -262,12 +262,22 @@ def loaded_execution(pipeline: Any, device: str | None) -> dict[str, Any]:
         layout_device = str(config["device_type"])
         if config.get("device_id") is not None:
             layout_device += f":{config['device_id']}"
-    return {
+    execution = {
         "requestedDevice": device,
         "vlDevice": str(vl_device) if vl_device is not None else None,
         "layoutDevice": layout_device,
         "dtype": str(dtype) if dtype is not None else None,
     }
+    config = _attribute(recogniser, "_genai_config")
+    client = _attribute(recogniser, "genai_client")
+    if config is not None:
+        execution.update({
+            "vlBackend": _attribute(config, "backend"),
+            "vlServerUrl": _attribute(config, "server_url"),
+            "vlApiModel": _attribute(client, "_model_name"),
+            "vlMaxConcurrency": _attribute(client, "_max_concurrency"),
+        })
+    return execution
 
 
 USAGE = "usage: paddleocr_vl_worker.py [--help]"
@@ -298,6 +308,12 @@ def main(argv: list[str] | None = None) -> int:
                              ("layout_detection_model_dir", "JYUT_PADDLE_LAYOUT_MODEL_DIR")):
         if os.environ.get(variable):
             options[option] = os.environ[variable]
+    if os.environ.get("JYUT_PADDLE_VL_BACKEND") == "mlx-vlm-server":
+        options.pop("vl_rec_model_dir", None)
+        options.update(device="cpu", vl_rec_backend="mlx-vlm-server",
+                       vl_rec_server_url=os.environ["JYUT_PADDLE_VL_SERVER_URL"],
+                       vl_rec_api_model_name=os.environ["JYUT_PADDLE_VL_API_MODEL"],
+                       vl_rec_max_concurrency=1)
 
     try:
         with contextlib.redirect_stdout(sys.stderr):

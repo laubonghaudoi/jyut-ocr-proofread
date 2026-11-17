@@ -837,7 +837,8 @@ def profile_book(arguments: argparse.Namespace) -> int:
         if (
             previous.get("schemaVersion") == SCHEMA_VERSION
             and previous.get("probePages") == pages
-            and (previous.get("sources") or {}).get("probeDraftsSha256") == digest
+            and pp.profile_digest_matches((previous.get("sources") or {}).get("probeDraftsSha256"),
+                                          pages, drafts, drafts2)
             and previous.get("backend") == arguments.backend
             and previous.get("endpoint") == (arguments.endpoint if arguments.backend == "http" else None)
             and previous.get("model") == client.model

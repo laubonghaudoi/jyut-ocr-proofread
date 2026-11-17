@@ -148,6 +148,11 @@ def check_phase_budget() -> None:
     fake.parent.mkdir()
     fake.write_text("#!/bin/sh\necho 'No devices were found'\nexit 6\n")
     fake.chmod(0o755)
+    # Keep the no-GPU fixture independent of the Mac host's current RAM.
+    # Otherwise the failed NVIDIA probe falls through to the real vm_stat.
+    vm_stat = fake.with_name("vm_stat")
+    vm_stat.write_text("#!/bin/sh\nexit 1\n")
+    vm_stat.chmod(0o755)
     base = [PY, str(SCRIPTS / "run_ocr_phase.py"), "--force-swap", "--release-cmd", "true",
             "--restore-cmd", "true", "--max-seconds", "0"]
     env = {k: v for k, v in os.environ.items() if not k.startswith(("OCR_PHASE_", "OCR_GPU_"))}

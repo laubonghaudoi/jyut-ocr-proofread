@@ -334,19 +334,19 @@ def nvidia_free_mib() -> int | None:
 
 
 def parse_vm_stat(text: str) -> int | None:
-    """MiB that macOS can hand out at once, from `vm_stat`: free, inactive and
-    speculative pages (unified memory: the GPU uses the same pool)."""
+    """Estimated reclaimable unified memory in MiB from `vm_stat`: free,
+    inactive and speculative pages. This is not a guaranteed allocation budget."""
     size = re.search(r"page size of (\d+) bytes", text)
-    if not size:
+    if not size or int(size.group(1)) <= 0:
         return None
     pages = 0
-    found = False
     for name in ("free", "inactive", "speculative"):
         match = re.search(rf"^Pages {name}:\s+(\d+)\.?\s*$", text, re.M)
-        if match:
-            pages += int(match.group(1))
-            found = True
-    return pages * int(size.group(1)) // (1024 * 1024) if found else None
+        if not match:
+            return None
+        pages += int(match.group(1))
+    # Purgeable pages overlap other categories: never add them again.
+    return pages * int(size.group(1)) // (1024 * 1024)
 
 
 def mac_free_mib() -> int | None:
@@ -367,7 +367,7 @@ def free_memory_mib() -> tuple[int | None, str]:
     if sys.platform == "darwin":
         free = mac_free_mib()
         if free is not None:
-            return free, "vm_stat (unified memory)"
+            return free, "vm_stat (estimated reclaimable unified memory)"
         return None, "vm_stat gave no answer"
     return None, "no nvidia-smi answer"
 
@@ -628,6 +628,8 @@ def _engine_options(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--device", default=None)
     parser.add_argument("--endpoint", default=os.environ.get("HUNYUAN_ENDPOINT") or None)
     parser.add_argument("--single-engine", action="store_true")
+    parser.add_argument("--engines", default=None)
+    parser.add_argument("--vl-backend", default=os.environ.get("OCR_PADDLE_VL_BACKEND", "native"))
     try:
         known, _ = parser.parse_known_args(arguments)
     except SystemExit:  # a value it cannot read: the runner itself will say so
@@ -647,26 +649,58 @@ def _hunyuan_need(options: argparse.Namespace) -> tuple[int, str]:
 
 def _paddle_need(options: argparse.Namespace) -> tuple[int, str]:
     device = (options.device or os.environ.get("OCR_PADDLE_DEVICE") or "").lower()
+    if options.vl_backend == "mlx-vlm-server":
+        return PADDLE_MIB, "Paddle layout and MLX VL server (provisional combined peak)"
     if device.startswith("cpu") and sys.platform != "darwin":
         return 0, "Paddle on the CPU"
     return PADDLE_MIB, "Paddle"
 
 
-def engine_need(runner: list[str]) -> tuple[int, str]:
+def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
     """The GPU memory (MiB) the engines of RUNNER need: the largest of them,
     since one call runs its engines one after another, and what it is."""
     for index, argument in enumerate(runner):
         name = os.path.basename(argument)
         options = _engine_options(runner[index + 1:])
+        if name == "_setup_ocr.py" and "--run-smoke-plan" in runner[index + 1:]:
+            if _plan_depth:
+                raise PhaseError("Nested setup smoke plans are not supported")
+            try:
+                marker = runner.index("--run-smoke-plan", index + 1)
+                commands = json.loads(Path(runner[marker + 1]).read_text())["commands"]
+                if not isinstance(commands, list) or not commands or any(
+                        not isinstance(command, list) or not command or
+                        any(not isinstance(word, str) for word in command) for command in commands):
+                    raise ValueError("expected nonempty command lists")
+                needs = [engine_need(command, _plan_depth=1) for command in commands]
+            except (OSError, ValueError, IndexError, KeyError, TypeError) as exc:
+                raise PhaseError(f"Cannot read setup smoke plan: {exc}") from exc
+            return max(need for need, _ in needs), "setup tests: " + "; ".join(note for _, note in needs)
         if name in HUNYUAN_SCRIPTS:
             return _hunyuan_need(options)
         if name in PADDLE_SCRIPTS:
             return _paddle_need(options)
+        if name == "run_apple_vision_ocr.py":
+            return 0, "Apple Vision (system-managed memory)"
         if name in BOOK_SCRIPTS:
+            import ocr_book
+            from _ocr_engines import resolve_engines
             engine_options = argparse.Namespace(**dict(vars(options), device=None))
-            needs = [_hunyuan_need(engine_options)]
-            if not options.single_engine:
+            try:
+                book_options, _ = ocr_book.build_parser().parse_known_args(runner[index + 1:])
+                engines = resolve_engines(options.engines, single_engine=options.single_engine,
+                                           book=book_options.book.expanduser())
+            except SystemExit as exc:
+                raise PhaseError("Cannot read ocr_book.py arguments for its memory estimate") from exc
+            except ValueError as exc:
+                raise PhaseError(str(exc)) from exc
+            needs = []
+            if "hunyuan" in engines:
+                needs.append(_hunyuan_need(engine_options))
+            if "paddle" in engines:
                 needs.append(_paddle_need(engine_options))
+            if "vision" in engines:
+                needs.append((0, "Apple Vision (system-managed memory)"))
             mib = max(need for need, _ in needs)
             return mib, " and ".join(note for _, note in needs) + f" (the larger counts)"
     return DEFAULT_REQUIRED_MIB, "an unknown runner (Paddle's need)"
@@ -916,8 +950,10 @@ def kill_window(children: Path | None, runner_pgid: int | None, sig: int) -> Non
         if process_start_time(pid) != started:
             continue
         try:
-            # The broker leads its own session: its llama-server is in its group.
-            if kind == "broker" and os.getpgid(pid) == pid:
+            # Brokers and owned supervisors lead dedicated process groups.
+            # Their model children inherit the queue lease and may ignore TERM;
+            # the final KILL must include the whole owned group before restore.
+            if kind in {"broker", "mlx-owned"} and os.getpgid(pid) == pid:
                 signal_group(pid, sig)
             else:
                 os.kill(pid, sig)
@@ -1201,7 +1237,7 @@ def startup_need(runner: list[str]) -> tuple[float, str]:
         import ocr_book  # noqa: PLC0415
     except ImportError:
         return 0.0, "no startup estimate"
-    engines = {"run_hunyuanocr.py": "hunyuan", "run_paddleocr_vl.py": "paddle",
+    engines = {"run_hunyuanocr.py": "hunyuan", "run_paddleocr_vl.py": "paddle", "run_apple_vision_ocr.py": "vision",
                "run_hunyuanocr_second_look.py": "second-look"}
     for index, argument in enumerate(runner):
         name = os.path.basename(argument)
@@ -1212,7 +1248,14 @@ def startup_need(runner: list[str]) -> tuple[float, str]:
             except SystemExit:
                 return 0.0, "no startup estimate"
             times = ocr_book.read_json(Path(options.book).expanduser() / options.reports / ocr_book.TIMES_NAME)
-            names = ["hunyuan"] if options.single_engine else ["hunyuan", "paddle", "second-look"]
+            from _ocr_engines import resolve_engines
+            try:
+                names = list(resolve_engines(options.engines, single_engine=options.single_engine,
+                                             book=Path(options.book).expanduser()))
+            except ValueError as exc:
+                raise PhaseError(str(exc)) from exc
+            if len(names) > 1:
+                names.append("second-look")
         elif name in engines:
             parser = argparse.ArgumentParser(add_help=False)
             parser.add_argument("--report", type=Path)
@@ -1998,7 +2041,11 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
     if arguments.required_mib:
         need, need_note = arguments.required_mib, "OCR_PHASE_REQUIRED_MIB"
     else:
-        need, need_note = engine_need(runner)
+        try:
+            need, need_note = engine_need(runner)
+        except PhaseError as error:
+            say(f"ERROR {error}", error=True)
+            return 2
     free, source = free_memory_mib()
     # A model that is not up before this call is never stopped, so never
     # started again (never: not even looked at).

@@ -1139,6 +1139,13 @@ def write_runner_outputs(directory: Path) -> None:
 
 
 class SmokeTests(Case):
+    def setUp(self):
+        super().setUp()
+        # These fixtures emulate an NVIDIA host, independently of the test host.
+        patcher = patch.object(setup, "platform_name", return_value="Linux")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def config(self, **extra):
         return {"JYUT_OCR_PYTHON": sys.executable, "HUNYUAN_MODEL": "/m", "HUNYUAN_MMPROJ": "/p",
                 "HUNYUAN_LLAMA_SERVER": "/s", "OCR_HUNYUAN_SLOTS": "16", "PADDLEOCR_PYTHON": "/paddle/python",

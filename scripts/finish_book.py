@@ -396,15 +396,26 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         return path is not None and (path == book or book in path.parents)
 
     def drafts(given: Path | None, key: str, default: str, engine: str, switch: str) -> Path:
-        """What phase 3 read, as the profile's `sources` name it, over the
-        layout's default name: the folder the profile names in the book,
-        then the book's folder of that name (a book copied elsewhere keeps
-        its profile's old paths), then the book's default folder, then the
-        one folder of the book with this engine's drafts, then the profile's
-        folder outside the book."""
+        """Explicit inputs, then the OCR run record checked against the
+        profile; without a record, preserve legacy profile/default discovery.
+        A copied book relocates the profile's old paths by folder name."""
         if given is not None:
             return given
         source = named(key)
+        from _ocr_engines import recorded_draft_directory
+        recorded = recorded_draft_directory(book, key[-1])
+        if recorded is not None:
+            if not _page_numbers(recorded, "txt"):
+                raise FinishError(EXIT_USAGE, f"the book's OCR run records {key} in {recorded}, but its drafts "
+                                              "are missing; finish that OCR run first")
+            profile_source = source
+            if source is not None and not inside(source) and _page_numbers(book / source.name, "txt"):
+                profile_source = book / source.name
+            if profile_source is not None and profile_source.resolve() != recorded.resolve():
+                raise FinishError(EXIT_USAGE, f"the book's OCR run records {key} in {recorded}, but the profile "
+                                              f"names {profile_source}; re-run book_profile.py for the current "
+                                              f"drafts, or explicitly name the intended inputs with {switch} and --profile")
+            return recorded
         if inside(source) and _page_numbers(source, "txt"):
             return source
         if source is not None and not inside(source) and _page_numbers(book / source.name, "txt"):
@@ -421,6 +432,11 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
              drafts(_given(arguments.ocr_b), "draftB", "ocr-hunyuan", ENGINE_B_NAME, "--ocr-b"))
     if single_engine and not _page_numbers(ocr_a, "txt"):
         raise FinishError(EXIT_USAGE, f"no actual OCR drafts found in --ocr-a {ocr_a}")
+    if single_engine:
+        import proofread_pages as pp
+        contract_errors = pp.draft_engine_evidence(ocr_a).get("contractErrors") or []
+        if contract_errors:
+            raise FinishError(EXIT_USAGE, "invalid layout contract: " + "; ".join(contract_errors))
     if ocr_a == ocr_b:
         raise FinishError(EXIT_USAGE, f"engine A's and engine B's drafts are the same folder {ocr_a}")
     if ocr_b is not None:
@@ -572,6 +588,17 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
             incomplete.append(scan)
             continue
         problems = ri.seal_problems(scan, md_bytes, json_bytes)
+        import _draft_contract
+        provenance = record.get("provenance") or {}
+        for key, directory in zip(_draft_contract.SEMANTIC_KEYS, (inputs.ocr_a, inputs.ocr_b)):
+            # The missing-A fallback transcribes B's TXT and deliberately
+            # consumes neither engine's layout JSON (PageJob.draft_json=None).
+            has_a = (inputs.ocr_a / f"page-{scan:04d}.txt").is_file()
+            source = (directory / f"page-{scan:04d}.json"
+                      if has_a and directory and (directory / f"page-{scan:04d}.txt").is_file() else None)
+            required = _draft_contract.requires_semantics(_draft_contract.read_record(source))
+            if (key in provenance or required) and provenance.get(key) != _draft_contract.semantic_digest(source):
+                problems.append(f"page {scan}: actual OCR layout/identity differs from sealed input ({key})")
         if inputs.single_engine:
             provenance = record.get("provenance") or {}
             if record.get("mode") not in ("transcribe", "image-recovery", "blank-page"):

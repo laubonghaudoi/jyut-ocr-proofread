@@ -76,17 +76,19 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _phase_budget import (  # noqa: E402
     DEADLINE_ENV, EXIT_INCOMPLETE, PROGRESS_ENV, STARTUP_ENV)
+from _ocr_engines import resolve_engines, engine_a, BOOK_ENGINE_RECORD
 from _gpu_queue import LOCAL_MODEL_MESSAGE, TENANT_ENV, WINDOW_ENV  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
 TIMES_NAME = "ocr-times.json"
 # Model load plus the longest page, before this book measured it (seconds).
-DEFAULT_STARTUP = {"hunyuan": 60.0, "paddle": 90.0, "second-look": 60.0}
+DEFAULT_STARTUP = {"hunyuan": 60.0, "paddle": 90.0, "second-look": 60.0, "vision": 15.0}
 # Kept on top of the measured startup: a load is never exactly as fast twice.
 STARTUP_MARGIN = 1.2
 POLL = 0.25
 
 ENGINES = {
+    "vision": ("run_apple_vision_ocr.py", "apple-vision-run.json"),
     "hunyuan": ("run_hunyuanocr.py", "hunyuanocr-run.json"),
     "paddle": ("run_paddleocr_vl.py", "paddleocr-run.json"),
     "second-look": ("run_hunyuanocr_second_look.py", "second-look-run.json"),
@@ -277,6 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--renders", default="renders", help="render folder in BOOK (default renders)")
     parser.add_argument("--hunyuan-dir", default="ocr-hunyuan", help="engine B's drafts (default ocr-hunyuan)")
     parser.add_argument("--paddle-dir", default="ocr-paddle", help="engine A's drafts (default ocr-paddle)")
+    parser.add_argument("--engines", help="hunyuan,paddle (default), vision,hunyuan, hunyuan, or vision; also JYUT_OCR_ENGINES")
+    parser.add_argument("--vision-dir", default="ocr-vision", help="Apple Vision layout drafts")
     parser.add_argument("--reports", default="reports", help="run reports and ocr-times.json (default reports)")
     parser.add_argument("--single-engine", action="store_true",
                         help="engine B and the draft only: no PaddleOCR-VL, no second look")
@@ -346,6 +350,11 @@ def run(arguments: argparse.Namespace) -> int:
     if not renders.is_dir():
         say(f"ERROR no render folder: {renders}")
         return 2
+    try:
+        engines = resolve_engines(arguments.engines, single_engine=arguments.single_engine, book=book)
+    except ValueError as error:
+        say(f"ERROR {error}")
+        return 2
     reports = book / arguments.reports
     reports.mkdir(parents=True, exist_ok=True)
     times_path = reports / TIMES_NAME
@@ -364,11 +373,30 @@ def run(arguments: argparse.Namespace) -> int:
     call_start = count_lines(progress)
     python = sys.executable
 
-    steps = [("hunyuan", [str(renders), str(hunyuan_dir)])]
-    steps.append(("draft", []))
-    if not arguments.single_engine:
-        steps.append(("paddle", [str(renders), str(paddle_dir)]))
-        steps.append(("second-look", [str(renders), str(paddle_dir), str(hunyuan_dir)]))
+    a_engine = engine_a(engines)
+    a_dir = book / arguments.vision_dir if a_engine == "vision" else paddle_dir
+    steps = []
+    if "hunyuan" in engines:
+        steps.extend([("hunyuan", [str(renders), str(hunyuan_dir)]), ("draft", [])])
+    if a_engine:
+        steps.append((a_engine, [str(renders), str(a_dir)]))
+        steps.append(("second-look", [str(renders), str(a_dir), str(hunyuan_dir)]))
+    elif engines == ("vision",):
+        a_dir = book / arguments.vision_dir
+        steps.append(("vision", [str(renders), str(a_dir)]))
+    def stored_path(path):
+        try:
+            return str(path.relative_to(book))
+        except ValueError:
+            return str(path)
+    write_json(book / "reports" / BOOK_ENGINE_RECORD, {
+        "schemaVersion": 1, "engines": list(engines),
+        "draftA": stored_path(a_dir if a_engine or engines == ("vision",) else hunyuan_dir),
+        "draftB": stored_path(hunyuan_dir) if a_engine else None,
+    })
+    render_pages = sorted(int(path.stem.split("-")[-1]) for path in renders.glob("page-*.png")
+                          if re.fullmatch(r"page-\d{4,}\.png", path.name))
+
     try:
         hunyuan_sealed = 0
         for name, positional in steps:
@@ -400,6 +428,11 @@ def run(arguments: argparse.Namespace) -> int:
                         f"(about {startup:.0f}s): it only skips what is done, and loads nothing")
             say(f"{name}: {script}")
             command = [python, str(SCRIPTS / script), *positional, "--report", str(report_path)]
+            if name == "vision":
+                if not render_pages:
+                    say("ERROR no rendered pages selected")
+                    return 2
+                command.extend(["--pages", ",".join(map(str, render_pages))])
             before = count_lines(progress)
             code, started, first_seal, first_page = run_step(command, step_env, progress)
             sealed = count_lines(progress) - before

@@ -19,13 +19,14 @@ private struct WorkerJob: Codable {
 }
 
 private struct OCRLine: Codable {
+    let lineID: Int
     let text: String
     let confidence: Float
     let boundingBox: [Double]
 }
 
 // Keep the established fields so existing page readers continue to work.  The
-// Python coordinator validates these bytes and adds the schema-v2 provenance.
+// Python coordinator validates these bytes and normalizes geometry, aggregates layout blocks and seals provenance.
 private struct OCRPage: Codable {
     let scanPage: Int
     let renderFile: String
@@ -131,10 +132,11 @@ private func process(_ job: WorkerJob) throws -> Int {
         return left.boundingBox.origin.x < right.boundingBox.origin.x
     }
 
-    let lines: [OCRLine] = ordered.compactMap { observation in
+    let lines: [OCRLine] = ordered.enumerated().compactMap { index, observation in
         guard let candidate = observation.topCandidates(1).first else { return nil }
         let box = observation.boundingBox
         return OCRLine(
+            lineID: index,
             text: candidate.string,
             confidence: candidate.confidence,
             boundingBox: [box.origin.x, box.origin.y, box.width, box.height]

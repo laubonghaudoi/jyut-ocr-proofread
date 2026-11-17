@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run PaddleOCR-VL to produce provenance-sealed OCR drafts on Linux/NVIDIA.
+"""Run PaddleOCR-VL to produce provenance-sealed native or MLX OCR drafts.
 
-This is the non-macOS counterpart to ``run_apple_vision_ocr.py``.  It emits the
+It emits the
 same per-page JSON/TXT pair, the same sealed provenance and the same resume
 semantics, so the proofreading workflow downstream is unchanged.
 
@@ -21,6 +21,10 @@ one, and the worker sees no GPU.  The weights come from local folders
 PADDLE_LAYOUT_MODEL_DIR, or PaddleX's own cache); the runner never lets PaddleX
 download them on first use.  The worker's stderr is kept in a log beside the
 run report.
+
+The optional ``mlx-vlm-server`` backend keeps Paddle's layout detector on CPU
+and runs the VL recogniser in an owned local MLX service on Metal. It uses a
+separate interpreter, the GPU lease, and backend-specific draft identities.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -40,6 +45,9 @@ import sys
 import tempfile
 import time
 from typing import Any, Mapping, Sequence
+
+from _mlx_vlm_server import (BACKEND as MLX_BACKEND, MLXDeadline, MLXError, MLXServer,
+                             SupervisedProcess, probe as probe_mlx)
 
 
 SCHEMA_VERSION = 2
@@ -165,14 +173,19 @@ def draft_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
     """What decides whether a finished page is still current: the pipeline
     version and declared model revision, and the fixed OCR_PROFILE settings.
 
-    The runner and worker code, helper modules, interpreter path, package
-    versions and the render's absolute path are recorded (toolSha256,
-    ocrProfile) but not part of this identity.
+    Native identity stays compatible with existing drafts. MLX also compares
+    backend/runtime versions, local model assets, precision and concurrency.
+    Code hashes, interpreter and input paths remain informational.
     """
     settings = {key: profile.get(key) for key in OCR_PROFILE}
-    return {"engine": ENGINE, "model": {"pipelineVersion": profile.get("pipelineVersion"),
+    identity = {"engine": ENGINE, "model": {"pipelineVersion": profile.get("pipelineVersion"),
                                         "modelRevision": profile.get("modelRevision")},
             "settings": settings}
+    # Native drafts retain their old identity.  An accelerated backend is a
+    # different reader, even when its raw text happens to match the CPU draft.
+    if profile.get("vlBackend") == MLX_BACKEND:
+        identity["backend"] = profile["backendIdentity"]
+    return identity
 
 
 def legacy_profile_hash(profile: Mapping[str, Any]) -> str:
@@ -199,6 +212,7 @@ def build_tool_identity(worker_file: Path, interpreter: str) -> ToolIdentity:
     combined.update(interpreter.encode("utf-8"))
     combined.update(Path(__file__).with_name("_phase_budget.py").read_bytes())
     combined.update(Path(__file__).with_name("_gpu_queue.py").read_bytes())
+    combined.update(Path(__file__).with_name("_mlx_vlm_server.py").read_bytes())
     return ToolIdentity(
         runner_file=runner_file,
         worker_file=worker_file,
@@ -437,6 +451,8 @@ def validate_completion(
     if has_identity:
         if provenance["draftIdentitySha256"] != profile_sha256(draft_identity(profile)):
             return ResumeCheck(False, "draft identity (pipeline, model revision or settings) does not match")
+    elif profile.get("vlBackend") == MLX_BACKEND:
+        return ResumeCheck(False, "MLX requires a backend-specific draft identity; use --overwrite")
     elif provenance.get("ocrProfileSha256") == profile_sha256(profile):
         legacy = "written before draft identity was recorded; same profile"
     elif provenance.get("ocrProfileSha256") == legacy_profile_hash(profile):
@@ -473,7 +489,8 @@ class BudgetExpired(Exception):
     the model was still loading."""
 
 
-def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, Any]] | None) -> dict[str, str]:
+def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, Any]] | None,
+                       *, mlx_url: str | None = None) -> dict[str, str]:
     """The worker's device and weight settings (paddleocr_vl_worker.main).
 
     A GPU run turns PaddleX's silent CPU fallback into an error.  A CPU run hides
@@ -491,6 +508,10 @@ def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, An
         environment["JYUT_PADDLE_VL_MODEL_DIR"] = str(weights["vl"]["directory"])
         environment["JYUT_PADDLE_LAYOUT_MODEL_DIR"] = str(weights["layout"]["directory"])
         environment["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+    if mlx_url and weights:
+        environment.update(JYUT_PADDLE_VL_BACKEND=MLX_BACKEND,
+                           JYUT_PADDLE_VL_SERVER_URL=mlx_url,
+                           JYUT_PADDLE_VL_API_MODEL=str(weights["vl"]["directory"]))
     return environment
 
 
@@ -501,28 +522,31 @@ class PaddleWorker:
                  lease_fds: tuple[int, ...] = (), *, device: str | None = None,
                  weights: Mapping[str, Mapping[str, Any]] | None = None,
                  log_path: Path | None = None,
+                 mlx_url: str | None = None,
                  ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS, ready_capped: bool = False):
         worker_env = dict(os.environ, JYUT_PADDLE_PIPELINE_VERSION=pipeline_version)
-        for name in ("JYUT_PADDLE_DEVICE", "JYUT_PADDLE_VL_MODEL_DIR", "JYUT_PADDLE_LAYOUT_MODEL_DIR"):
+        for name in ("JYUT_PADDLE_DEVICE", "JYUT_PADDLE_VL_MODEL_DIR", "JYUT_PADDLE_LAYOUT_MODEL_DIR",
+                     "JYUT_PADDLE_VL_BACKEND", "JYUT_PADDLE_VL_SERVER_URL", "JYUT_PADDLE_VL_API_MODEL"):
             worker_env.pop(name, None)
-        worker_env.update(worker_environment(device, weights))
+        worker_env.update(worker_environment(device, weights, mlx_url=mlx_url))
         # The worker's stderr (PaddleX's log, CUDA and out-of-memory messages)
         # goes to this run's log; only the JSON responses come back on stdout.
         log_handle = log_path.open("wb") if log_path is not None else None
+        self.owned: SupervisedProcess | None = None
         try:
             # The worker holds the model on the GPU; it must not outlive this runner.
-            self.process_handle = subprocess.Popen(
-                [interpreter, str(worker_file)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=log_handle if log_handle is not None else subprocess.DEVNULL,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
-                preexec_fn=die_with_parent(),
-                pass_fds=lease_fds,
-                env=worker_env,
-            )
+            options = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           stderr=log_handle if log_handle is not None else subprocess.DEVNULL,
+                           text=True, encoding="utf-8", bufsize=1, env=worker_env)
+            if mlx_url:
+                self.owned = SupervisedProcess([interpreter, str(worker_file)], lease_fds=lease_fds,
+                                               **options)
+                self.process_handle = self.owned.process
+            else:
+                self.process_handle = subprocess.Popen([interpreter, str(worker_file)],
+                                                       preexec_fn=die_with_parent(), pass_fds=lease_fds,
+                                                       **options)
+            assert self.process_handle is not None
         finally:
             if log_handle is not None:
                 log_handle.close()
@@ -596,6 +620,9 @@ class PaddleWorker:
         return response
 
     def close(self) -> None:
+        if self.owned is not None:
+            self.owned.close()
+            return
         handle = self.process_handle
         if handle.poll() is None:
             if self.page_in_flight or self.loading:
@@ -796,6 +823,44 @@ def execution_problem(device: str, loaded: Mapping[str, Any]) -> str | None:
     return None
 
 
+def mlx_identity(weights: Mapping[str, Any], runtime: Mapping[str, Any]) -> dict[str, Any]:
+    """Attest local assets, not an arbitrary cache folder's name or location."""
+    model = Path(weights["vl"]["directory"])
+    try:
+        config = json.loads((model / "config.json").read_text())
+    except (OSError, ValueError) as error:
+        raise ConfigurationError(f"MLX weights need a readable config.json: {error}") from error
+    if config.get("quantization") or config.get("quantization_config"):
+        raise ConfigurationError("MLX OCR requires the pinned unquantized model weights")
+    dtype = config.get("torch_dtype") or config.get("dtype")
+    if dtype not in ("bfloat16", "float16", "float32"):
+        raise ConfigurationError(f"MLX weights have an unsupported or missing dtype: {dtype!r}")
+    assets: dict[str, str] = {}
+    for role in ("vl", "layout"):
+        directory = Path(weights[role]["directory"])
+        files = [p for p in directory.iterdir() if p.is_file() and
+                 (p.suffix in (".json", ".safetensors", ".pdiparams", ".yml", ".yaml",
+                               ".jinja", ".model", ".txt", ".py") or p.name == "tokenizer")]
+        assets[role] = profile_sha256({p.name: sha256_file(p) for p in sorted(files)})
+    return {"name": MLX_BACKEND, "versions": runtime["versions"],
+            "modelAssetsSha256": assets, "weightDtype": dtype, "quantization": None,
+            "vlRecMaxConcurrency": 1, "layoutDevice": "cpu"}
+
+
+def mlx_execution_problem(loaded: Mapping[str, Any], server: MLXServer) -> str | None:
+    expected = {"layoutDevice": "cpu", "vlBackend": MLX_BACKEND,
+                "vlApiModel": server.model, "vlMaxConcurrency": 1}
+    for key, value in expected.items():
+        if loaded.get(key) != value:
+            return f"MLX execution attestation failed: {key}={loaded.get(key)!r}, expected {value!r}"
+    # The official OpenAI-compatible client accepts a trailing slash.
+    if str(loaded.get("vlServerUrl", "")).rstrip("/") != server.url:
+        return "MLX execution attestation failed: Paddle did not use the owned server URL"
+    if server.owned is None or server.owned.process.poll() is not None:
+        return "the owned MLX server exited during Paddle startup"
+    return None
+
+
 def worker_log_path(report_path: Path) -> Path:
     """This run's worker log, beside its report (paddleocr-vl-run.worker.log)."""
     return report_path.with_name(report_path.stem + ".worker.log")
@@ -826,7 +891,7 @@ def cpu_resource_name(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run provenance-sealed PaddleOCR-VL drafts (Linux/NVIDIA)."
+        description="Run provenance-sealed PaddleOCR-VL drafts (native or Apple MLX)."
     )
     parser.add_argument("render_directory", type=Path)
     parser.add_argument("output_directory", type=Path)
@@ -850,6 +915,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="interpreter that has PaddleOCR installed (or set PADDLEOCR_PYTHON)",
     )
     parser.add_argument("--pipeline-version", default="v1.6")
+    parser.add_argument("--vl-backend", choices=("native", MLX_BACKEND),
+                        default=os.environ.get("OCR_PADDLE_VL_BACKEND", "native"),
+                        help="VL inference backend (or OCR_PADDLE_VL_BACKEND; default native)")
+    parser.add_argument("--mlx-python", default=os.environ.get("MLX_VLM_PYTHON"),
+                        help="isolated MLX-VLM Python interpreter (or MLX_VLM_PYTHON)")
     parser.add_argument("--model-revision", default=os.environ.get("PADDLEOCR_MODEL_REVISION", "unversioned-cache"),
                         help="caller-declared cache revision; change after replacing cached model files")
     parser.add_argument("--device",
@@ -925,6 +995,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             requested_device, device_source = parse_device(os.environ.get("OCR_PADDLE_DEVICE")), "config"
         if requested_device is None:
             device_source = "detected"
+        use_mlx = arguments.vl_backend == MLX_BACKEND
+        if arguments.vl_backend not in ("native", MLX_BACKEND):
+            raise ConfigurationError(f"unknown VL backend {arguments.vl_backend!r}")
+        if use_mlx:
+            if requested_device and requested_device != "cpu":
+                raise ConfigurationError("MLX uses CPU layout and Metal VL; --device must be cpu")
+            requested_device = "cpu"
+            device_source = "mlx-layout-cpu"
         interpreter = resolve_interpreter(arguments.interpreter)
         probe = verify_paddleocr_available(interpreter, probe_cuda=requested_device != "cpu")
         versions = probe.get("versions") if isinstance(probe.get("versions"), dict) else {}
@@ -944,7 +1022,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "deviceFallback": "refused" if device.startswith("gpu") else "no-gpu-visible",
             "queueResource": arguments.gpu_resource if device.startswith("gpu") else arguments.cpu_resource,
         }
-    except (ConfigurationError, OSError, subprocess.TimeoutExpired) as error:
+        mlx_interpreter = None
+        if use_mlx:
+            if not arguments.mlx_python:
+                raise ConfigurationError("MLX_VLM_PYTHON or --mlx-python is required; rerun the installer")
+            mlx_interpreter = resolve_interpreter(arguments.mlx_python)
+            mlx_runtime = probe_mlx(mlx_interpreter)
+            weights = resolve_weights(arguments.pipeline_version, arguments.vl_model_dir,
+                                      arguments.layout_model_dir)
+            current_profile.update(vlBackend=MLX_BACKEND,
+                                   backendIdentity=mlx_identity(weights, mlx_runtime),
+                                   modelIdentityAssurance="local-model-assets-sha256")
+            execution.update(vlBackend=MLX_BACKEND, mlxRuntime=mlx_runtime,
+                             mlxInterpreter=mlx_interpreter, weights=weights,
+                             queueResource=arguments.gpu_resource, deviceFallback="refused")
+    except (ConfigurationError, MLXError, OSError, subprocess.TimeoutExpired) as error:
         print(f"ERROR {error}", file=sys.stderr)
         return 2
 
@@ -1016,13 +1108,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             if device_problem:
                 raise ConfigurationError(device_problem)
-            execution["weights"] = resolve_weights(
-                arguments.pipeline_version, arguments.vl_model_dir, arguments.layout_model_dir)
+            if not use_mlx:
+                execution["weights"] = resolve_weights(
+                    arguments.pipeline_version, arguments.vl_model_dir, arguments.layout_model_dir)
         except ConfigurationError as error:
             print(f"ERROR {error}", file=sys.stderr)
             return 2
 
     worker: PaddleWorker | None = None
+    mlx_server: MLXServer | None = None
     lease: GPUQueue | None = None
     queue_deferred = local_model_deferred = False
     worker_trouble = False
@@ -1046,21 +1140,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # only runs that need its memory: not a CPU run on Linux, which
                 # run_ocr_phase.py counts as needing none (macOS memory is shared).
                 lease.acquire(timeout=arguments.gpu_queue_timeout, phase_deadline=budget.deadline,
-                              local_model_guard=device.startswith("gpu") or sys.platform == "darwin")
+                              local_model_guard=use_mlx or device.startswith("gpu") or sys.platform == "darwin")
                 log_used = True
                 # The load never runs past the phase's deadline (OCR_PHASE_DEADLINE).
                 ready_limit, ready_capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
+                if use_mlx:
+                    assert mlx_interpreter is not None
+                    server_log = report_path.with_name(report_path.stem + ".mlx-server.log")
+                    execution["serverLog"] = str(server_log)
+                    mlx_server = MLXServer(mlx_interpreter, Path(execution["weights"]["vl"]["directory"]),
+                                           server_log, lease_fds=lease.pass_fds,
+                                           ready_timeout=ready_limit, budget_capped=ready_capped)
+                    execution["serverHealth"] = mlx_server.health
+                    ready_limit, ready_capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
                 worker = PaddleWorker(interpreter, tool.worker_file, arguments.pipeline_version,
                                       lease_fds=lease.pass_fds, device=device,
                                       weights=execution["weights"], log_path=worker_log,
-                                      ready_timeout=ready_limit, ready_capped=ready_capped)
+                                      ready_timeout=ready_limit, ready_capped=ready_capped,
+                                      mlx_url=mlx_server.url if mlx_server else None)
                 model_ready_at = time.time()
                 execution.update({key: worker.execution.get(key)
                                   for key in ("vlDevice", "layoutDevice", "dtype")})
-                problem = execution_problem(device, worker.execution)
+                problem = (mlx_execution_problem(worker.execution, mlx_server) if mlx_server
+                           else execution_problem(device, worker.execution))
                 if problem:
                     raise WorkerUnavailable(problem)
-                print(f"  PaddleOCR-VL on {device} ({execution['dtype'] or 'dtype not reported'}), "
+                if use_mlx:
+                    execution.update(vlDevice="metal:gpu", layoutDevice="cpu", dtype=None,
+                                     weightDtype=current_profile["backendIdentity"]["weightDtype"],
+                                     vlClient=worker.execution)
+                description = (f"Metal GPU, CPU layout ({execution['weightDtype']} weights)" if use_mlx
+                               else f"{device} ({execution['dtype'] or 'dtype not reported'})")
+                print(f"  PaddleOCR-VL on {description}, "
                       f"queue {execution['queueResource']}", flush=True)
             except GPUQueueTimeout as error:
                 queue_deferred = True
@@ -1071,7 +1182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     for page in pending)
                 print(f"[gpu-queue] {error}; {len(pending)} page(s) deferred", flush=True)
                 pending = []
-            except BudgetExpired:
+            except (BudgetExpired, MLXDeadline):
                 # Out of time while the model loaded: the pages are not done
                 # yet, not failed (the summary's ERROR says the budget ran out).
                 deferred_pages.extend(page.scan_page for page in pending)
@@ -1082,7 +1193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  time budget reached while PaddleOCR-VL was loading: {len(pending)} page(s) "
                       "left for the next call", flush=True)
                 pending = []
-            except (WorkerUnavailable, GPUQueueError, OSError) as error:
+            except (WorkerUnavailable, MLXError, GPUQueueError, OSError) as error:
                 worker_trouble = worker_trouble or not isinstance(error, GPUQueueError)
                 print(f"ERROR worker unavailable: {error}", file=sys.stderr)
                 for page in pending:
@@ -1139,6 +1250,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # apart from the lines, so the text is the lines' alone.
                     "regions": response.get("regions") or [],
                 }
+                if use_mlx:
+                    for order, line in enumerate(lines or []):
+                        box = line.get("boundingBox") if isinstance(line, dict) else None
+                        if (not isinstance(box, list) or len(box) != 4 or
+                            any(not isinstance(v, (int, float)) or isinstance(v, bool) or
+                                not math.isfinite(v) or v < 0 or v > 1 for v in box) or
+                            box[2] <= 0 or box[3] <= 0 or box[0] + box[2] > 1.000001 or
+                            box[1] + box[3] > 1.000001):
+                            raise PageOCRFailure(f"invalid layout geometry for MLX line {order}")
+                        # Array order is the final geometric/model merge order;
+                        # rawResult retains the model's original optional order.
+                        line["blockOrder"] = order
+                    raw_record["layoutContract"] = {"version": 1, "role": "layout",
+                        "coordinateSystem": "normalized-top-left-xywh", "textJoin": "\n"}
                 field_error = _validate_record_fields(
                     raw_record, page, current_profile
                 )
@@ -1231,8 +1356,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if worker is not None:
                 worker.close()
         finally:
-            if lease is not None:
-                lease.close()
+            try:
+                if mlx_server is not None:
+                    mlx_server.close()
+            finally:
+                if lease is not None:
+                    lease.close()
     if worker_trouble and log_used:
         tail = log_tail(worker_log)
         print(f"  worker log {worker_log}" + (f", last {len(tail)} line(s):" if tail else ": empty"),

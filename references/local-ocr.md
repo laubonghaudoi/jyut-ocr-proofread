@@ -1,5 +1,21 @@
 # 本機 OCR 底稿同 packet 校對
 
+## macOS 快速路線
+
+Apple Silicon macOS 14+ 安裝 `--engine auto` 時，Paddle 預設由 CPU 做 PP-DocLayoutV3 版面分析，原裝、未量化嘅 PaddleOCR-VL-1.6 權重交獨立 `mlx-vlm==0.8.0` 服務用 Metal 識別。Linux 同舊環境直接調 runner 而冇新設定，仍然行 native。安裝器嘅 `--paddle-vl-backend auto|native|mlx-vlm-server` 記住要求；明確 `--device cpu` 或 `native` 唔會轉 MLX。
+
+`JYUT_OCR_PADDLE_VL_BACKEND` 係安裝要求，`OCR_PADDLE_VL_BACKEND` 係實際後端。`PADDLEOCR_PYTHON` 負責版面 pipeline，`MLX_VLM_PYTHON` 係獨立 MLX venv（runner 可用 `--mlx-python` 覆蓋）。`OCR_PADDLE_DEVICE=cpu` 只講 Paddle 嗰邊，唔代表 MLX 用 CPU。直接執行可用 `run_paddleocr_vl.py --vl-backend mlx-vlm-server` 或 `--vl-backend native`。
+
+MLX 服務由 runner 自己開喺隨機 loopback port，入咗 GPU 隊先載入權重；等自己個程序完成指定模型預載先接頁。版面 pipeline 一次只送一個識別請求，唔開多 worker。服務失敗會明確報錯，唔會暗中改用 CPU。正常完成、限時、訊號中斷同父程序被殺，都先清理 worker／服務再放隊列；全部頁已 current 就唔開服務。依賴版本同 hash 喺 `runtime/mlx-requirements.txt`。
+
+另一條橫排快速路線係 `./install.sh --engine vision,hunyuan`，再用 `ocr_book.py BOOK --engines vision,hunyuan`：依次跑 Hunyuan B、交未校對草稿、Vision A、Hunyuan 補讀。底稿放 `ocr-vision/` 同 `ocr-hunyuan/`，選擇記喺 `reports/ocr-engines.json`，定稿會按呢個記錄揀 A，唔會畀舊 `ocr-paddle/` 蓋過。`--engine vision` 仍然係原有單引擎選項。Vision 識別語言同糾字設定保持原樣；直排同高 CER 唔係執行閘。
+
+Vision 原始 observations 同 line IDs 保留；供下游用嘅 box 統一係左上角原點、相對頁面嘅 `[x,y,width,height]`，TXT 同分組區塊次序一致。邊緣位置只係家具候選，唔會單憑位置授權刪字。Vision 冇原生表格格網：Hunyuan 嘅 HTML／Markdown 表只提出候選，可靠對應完整 A 區塊先用聯合裁圖重建；否則明確交全頁圖處理，包含純數字表。補讀仍然負責漏讀，唔冒充表格結構驗證。
+
+新版封條另外綁定所用引擎、後端、版面契約、區塊文字、box、label 同次序；改時間或搬檔案位置唔會令頁過期。新 Vision／MLX 底稿必須符合呢個契約；未變嘅舊 native 底稿同封頁繼續接受。明確換後端／引擎會報 stale，要按既有 `--overwrite` 流程重跑，唔會自動覆寫舊書。
+
+macOS 記憶體用 `vm_stat` 嘅 free + inactive + speculative 作可回收估計，唔額外加 purgeable。Paddle 暫保留 12,288 MiB 預算（MLX VLM 同 CPU layout 同時存活）；順序引擎用最大值，Vision 路線唔計 Paddle。手動 memory override 同 Hunyuan slots 保留。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
+
 安裝器預設兩個引擎都裝：**引擎 B，HunyuanOCR**（GGUF，經 llama.cpp）同**引擎 A，PaddleOCR-VL**（Intel Mac 裝唔到 Paddle，淨係 Hunyuan，Apple Vision 可以做提示）；`--engine hunyuan` 先係淨裝 Hunyuan。macOS 首次安裝先問用戶：下載呢兩個引擎（`--engine auto`），定係淨用內置嘅 Apple Vision（`--engine vision`，唔下載模型，行單引擎流程），見 `install.md`〈macOS：先揀引擎〉。所有輸出都只係底稿：讀法由校對者定，校對者係當前 agent（packet）或者本機模型（http），見 `SKILL.md` 第一節；揀 OCR 引擎唔會改校對模型。
 
 首次使用先按 [install.md](install.md) 配置環境，再跑 `./install.sh --env-only --check`。以下命令從技能根目錄執行，使用設定嘅 `JYUT_OCR_PYTHON`。

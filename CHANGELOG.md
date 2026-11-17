@@ -1,5 +1,12 @@
 # 更新摘要
 
+## Unreleased — macOS MLX 同 Vision 雙引擎優化（issue #4）
+
+- Apple Silicon macOS 14+ 嘅 Paddle 預設用獨立、hash-locked `mlx-vlm==0.8.0` 做 Metal 識別，CPU 保留版面分析；沿用原裝未量化權重。明確 native／CPU 設定保留，舊 auto-CPU 可遷移。正式 runner 管服務啟動、模型 readiness、GPU 隊列、限時同父程序死亡清理，失敗唔會靜默 fallback。
+- 新增 `--engine vision,hunyuan`／`ocr_book.py --engines vision,hunyuan`：Hunyuan B → 草稿 → Vision A → 補讀。Vision 統一左上角座標、確定次序同 TXT／JSON 契約，保留原始 observations／line IDs，家具候選唔會自動授權刪字；Hunyuan 表格候選經聯合裁圖或全頁圖處理，包含數字表。
+- 下游封條記語義指紋，換引擎／後端或 block 文字／座標／label／次序會 stale；未變嘅 legacy native 封頁照收。macOS 可回收記憶體估計統一用 free + inactive + speculative，唔重複加 purgeable；順序引擎取峰值需求，保留手動預算同 Hunyuan slots。
+- CER 唔作啟用門檻，通用 Paddle 記憶體預算保持。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
+
 ## Unreleased — `--effort-policy`：按題型指定第一次問用邊一級 effort（量度用）
 
 - `proofread_pages.py` 同 `book_profile.py` 加 `--effort-policy KIND=RUNG,...`（`PROOFREAD_EFFORT_POLICY`），淨係 `--backend http` 用，預設冇：唔設就同以前一模一樣，每條題都由 `--reasoning-effort` 嗰級問起。設咗之後，列出嘅題型（例如 `census=low`）第一次就用嗰級；`--reasoning-effort` 仍然係上限，冇列嘅題型同所有重試照用上限，撞 `max_tokens` 照舊向下一級。寫錯題型或者級別即刻 exit 2。

@@ -163,6 +163,11 @@ class HandoverBase(unittest.TestCase):
         smi = self.bin / 'nvidia-smi'
         smi.write_text(FAKE_SMI)
         smi.chmod(0o755)
+        # An unavailable fake NVIDIA probe must not fall through to the real
+        # host's unified-memory probe when these fixtures run on macOS.
+        vm_stat = self.bin / 'vm_stat'
+        vm_stat.write_text('#!/bin/sh\nexit 1\n')
+        vm_stat.chmod(0o755)
         self.free = self.base / 'free'
         self.free.write_text('1000')
         self.events = self.base / 'events'
@@ -176,7 +181,7 @@ class HandoverBase(unittest.TestCase):
         self.restore_script.write_text(RESTORE)
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('OCR_PHASE_', 'OCR_GPU_', 'OCR_HUNYUAN_', 'HUNYUAN_', 'PADDLEOCR_',
-                                       'OCR_PADDLE_', 'PADDLE_', 'OCR_CPU_'))}
+                                       'OCR_PADDLE_', 'PADDLE_', 'OCR_CPU_', 'JYUT_OCR_', 'MLX_VLM_'))}
         env.update(PATH=f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
                    FAKE_SMI_FREE_FILE=str(self.free), FAKE_LOG=str(self.events),
                    FAKE_PID_DIR=str(self.pids), OCR_PHASE_STATE_DIR=str(self.state),
@@ -311,6 +316,54 @@ class NeedAndPolicyTests(unittest.TestCase):
             ''')
         self.assertEqual(phase.parse_vm_stat(text), (65536 + 131072 + 1024) * 16384 // (1024 * 1024))
         self.assertIsNone(phase.parse_vm_stat('nothing here'))
+        self.assertEqual(phase.parse_vm_stat(text + 'Pages purgeable: 999999999.\n'), phase.parse_vm_stat(text))
+        self.assertIsNone(phase.parse_vm_stat(text.replace('Pages speculative:', 'Missing speculative:')))
+        small = text.replace('page size of 16384 bytes', 'page size of 4096 bytes')
+        self.assertEqual(phase.parse_vm_stat(small), (65536 + 131072 + 1024) * 4096 // (1024 * 1024))
+
+    def test_vision_pair_and_mlx_budget_only_the_selected_engines(self):
+        with mock.patch.dict(os.environ, {'JYUT_OCR_ENGINES': 'vision,hunyuan', 'OCR_HUNYUAN_SLOTS': '1'}, clear=True):
+            need, note = phase.engine_need(['ocr_book.py', 'BOOK'])
+            self.assertEqual(need, 5036)
+            self.assertNotIn('Paddle', note)
+            self.assertEqual(phase.engine_need(['ocr_book.py', 'BOOK', '--engines', 'hunyuan,paddle'])[0], 12288)
+            self.assertEqual(phase.engine_need(['run_apple_vision_ocr.py', 'R', 'O'])[0], 0)
+        with mock.patch.dict(os.environ, {'OCR_PADDLE_DEVICE': 'cpu', 'OCR_PADDLE_VL_BACKEND': 'mlx-vlm-server'}, clear=True):
+            need, note = phase.engine_need(['run_paddleocr_vl.py', 'R', 'O'])
+            self.assertEqual(need, 12288)
+            self.assertIn('combined peak', note)
+
+    def test_setup_smoke_plan_uses_its_actual_engines(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
+            plan = Path(directory) / 'plan.json'
+            command = ['python', '_setup_ocr.py', '--run-smoke-plan', str(plan)]
+            plan.write_text(json.dumps({'commands': [['python', 'run_apple_vision_ocr.py', 'R', 'O']]}))
+            self.assertEqual(phase.engine_need(command)[0], 0)
+            plan.write_text(json.dumps({'commands': [['run_apple_vision_ocr.py', 'R', 'O'],
+                                                     ['run_hunyuanocr.py', 'R', 'O', '--server-slots', '2']]}))
+            self.assertEqual(phase.engine_need(command)[0], 6572)
+            plan.write_text(json.dumps({'commands': [command]}))
+            with self.assertRaises(phase.PhaseError):
+                phase.engine_need(command)
+
+    def test_book_record_is_a_fallback_for_memory_and_startup_estimates(self):
+        import ocr_book
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
+            book = Path(directory)
+            (book / 'reports').mkdir()
+            (book / 'reports/ocr-engines.json').write_text(json.dumps(
+                {'schemaVersion': 1, 'engines': ['vision', 'hunyuan']}))
+            command = ['ocr_book.py', str(book)]
+            self.assertEqual(phase.engine_need(command)[0], 5036)
+            measured = {'vision': 2, 'hunyuan': 10, 'second-look': 12, 'paddle': 90}
+            with mock.patch.object(ocr_book, 'startup_seconds', side_effect=lambda _times, engine: measured[engine]):
+                self.assertEqual(phase.startup_need(command)[0], 12)
+                with mock.patch.dict(os.environ, {'JYUT_OCR_ENGINES': 'hunyuan,paddle'}):
+                    self.assertEqual(phase.engine_need(command)[0], 12288)
+                    self.assertEqual(phase.startup_need(command)[0], 90)
+                    explicit = [*command, '--engines', 'vision,hunyuan']
+                    self.assertEqual(phase.engine_need(explicit)[0], 5036)
+                    self.assertEqual(phase.startup_need(explicit)[0], 12)
 
     def test_the_first_budget_question_needs_the_startup_time(self):
         with mock.patch.dict(os.environ, {'OCR_PHASE_DEADLINE': str(time.time() + 30),
@@ -335,6 +388,63 @@ class NeedAndPolicyTests(unittest.TestCase):
             ((kind, pid, started),) = _phase_budget.read_children(path)
             self.assertEqual((kind, pid), ('broker', os.getpid()))
             self.assertEqual(started, _phase_budget.process_start_time(os.getpid()))
+
+
+class OwnedProcessCleanupTests(unittest.TestCase):
+    def test_owned_group_cleanup_checks_process_identity_and_group_leader(self):
+        children = [('mlx-owned', 101, 'owned'), ('mlx-owned', 102, 'nonleader'),
+                    ('mlx-owned', 103, 'old'), ('worker', 104, 'worker'), ('broker', 105, 'broker')]
+        starts = {101: 'owned', 102: 'nonleader', 103: 'reused', 104: 'worker', 105: 'broker'}
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=sig), mock.patch.object(phase, 'read_children', return_value=children), \
+                    mock.patch.object(phase, 'process_start_time', side_effect=starts.get), \
+                    mock.patch.object(phase.os, 'getpgid', side_effect=lambda pid: 100 if pid == 102 else pid), \
+                    mock.patch.object(phase, 'signal_group') as group, mock.patch.object(phase.os, 'kill') as kill:
+                phase.kill_window(Path('/fake/children'), None, sig)
+            self.assertEqual(group.call_args_list, [mock.call(101, sig), mock.call(105, sig)])
+            self.assertEqual(kill.call_args_list, [mock.call(102, sig), mock.call(104, sig)])
+
+    def test_final_kill_removes_a_term_resistant_owned_child_and_its_lease(self):
+        from _mlx_vlm_server import SupervisedProcess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            children, ready = root / 'children', root / 'child.pid'
+            lease = _gpu_queue.GPUQueue(root / 'queue', 'owned-cleanup-test')
+            lease.acquire(timeout=1, local_model_guard=False)
+            child = None
+            owned = None
+            try:
+                script = ('import os,signal,sys,time; from pathlib import Path; '
+                          'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                          'Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)')
+                with mock.patch.dict(os.environ, {'OCR_PHASE_CHILDREN': str(children)}):
+                    owned = SupervisedProcess([PY, '-c', script, str(ready)], lease_fds=lease.pass_fds,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    self.assertIsNone(owned.process.poll(), 'owned supervisor exited before child startup')
+                    time.sleep(0.02)
+                self.assertTrue(ready.exists(), 'owned child did not start')
+                child = int(ready.read_text())
+                lease.close()
+                self.assertEqual(_gpu_queue.live_ticket_count(root / 'queue'), 1)
+                phase.kill_window(children, None, signal.SIGTERM)
+                phase.kill_window(children, None, signal.SIGKILL)
+                owned.process.wait(timeout=5)
+                deadline = time.monotonic() + 5
+                while phase.group_members(owned.process.pid) and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(phase.group_members(owned.process.pid), set())
+                self.assertEqual(_gpu_queue.live_ticket_count(root / 'queue'), 0)
+            finally:
+                if owned is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(owned.process.pid, signal.SIGKILL)
+                    owned.close()
+                if child is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(child, signal.SIGKILL)
+                lease.close()
 
 
 class LocalModelGuardTests(unittest.TestCase):
@@ -1541,14 +1651,17 @@ class OcrBookTests(HandoverBase):
         times = json.loads(times_path.read_text())
         times['engines']['paddle'] = {'loadSeconds': 2, 'longestPageSeconds': 1}
         times_path.write_text(json.dumps(times))
-        short = subprocess.run(self.book_command(book, '--max-seconds', '8'), env=env, capture_output=True,
+        # The warm-up records Hunyuan-only. Explicitly select both engines
+        # to exercise Paddle's estimate rather than resume that selection.
+        dual = self.book_command(book, '--engines', 'hunyuan,paddle', '--max-seconds', '8')
+        short = subprocess.run(dual, env=env, capture_output=True,
                                text=True, timeout=120)
         self.assertEqual(short.returncode, 75, short.stdout + short.stderr)
         self.assertIn('paddle: the time ran out before its first page although', short.stdout)
         paddle = json.loads(times_path.read_text())['engines']['paddle']
         self.assertTrue(paddle['loadAtLeast'])
         self.assertGreaterEqual(paddle['loadSeconds'], 6)
-        again = subprocess.run(self.book_command(book, '--max-seconds', '8'), env=env, capture_output=True,
+        again = subprocess.run(dual, env=env, capture_output=True,
                                text=True, timeout=120)
         self.assertEqual(again.returncode, 1, again.stdout + again.stderr)
         self.assertIn('RESULT exit=1 FAILED - the time budget is too small for paddle', again.stdout)

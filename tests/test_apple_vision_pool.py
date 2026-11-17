@@ -186,7 +186,7 @@ class AppleVisionPoolTests(unittest.TestCase):
                 "lines",
             ):
                 self.assertIn(field, page_json)
-            self.assertEqual(page_json["schemaVersion"], 2)
+            self.assertEqual(page_json["schemaVersion"], 3)
             self.assertEqual(page_json["status"], "complete")
             self.assertEqual(
                 page_json["textAuthority"], "draft-only-not-text-authority"

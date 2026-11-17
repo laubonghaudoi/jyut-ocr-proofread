@@ -127,7 +127,7 @@ def phase_order() -> None:
         root = Path(tmp)
         scripts = root / "scripts"
         scripts.mkdir()
-        for name in ("ocr_book.py", "_phase_budget.py", "_gpu_queue.py"):
+        for name in ("ocr_book.py", "_phase_budget.py", "_gpu_queue.py", "_ocr_engines.py"):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
         for name in ("run_hunyuanocr.py", "build_draft.py", "run_paddleocr_vl.py", "run_hunyuanocr_second_look.py"):
             (scripts / name).write_text(STAND_IN_RUNNER, encoding="utf-8")

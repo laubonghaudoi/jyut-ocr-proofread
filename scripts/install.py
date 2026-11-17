@@ -36,15 +36,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "qwen is Qwen Code (~/.qwen/skills)")
     parser.add_argument("--skill-dir", type=Path, help="custom skill collection parent; appends jyut-ocr-proofread")
     parser.add_argument("--with-agents", action="store_true", help="also install optional Codex/Claude custom-agent adapters")
-    parser.add_argument("--engine", choices=("auto", "hunyuan", "vision"),
+    parser.add_argument("--engine", choices=("auto", "hunyuan", "vision", "vision,hunyuan"),
                         help="override the engines: auto (the default: HunyuanOCR and PaddleOCR-VL; an Intel Mac "
                              "gets HunyuanOCR only), hunyuan (HunyuanOCR alone, e.g. for a small machine) or "
-                             "vision (Apple Vision alone, macOS: no model download). Without it the saved choice "
+                             "vision (Apple Vision alone, macOS: no model download), or vision,hunyuan "
+                             "(macOS horizontal-text fast mode). Without it the saved choice "
                              "is kept; on macOS, with none saved yet, setup asks (auto or vision) and without a "
                              "terminal stops until one of them is passed")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "metal"),
                         help="override the device: auto (the default: the NVIDIA GPU, or Metal on Apple Silicon, "
                              "else CPU), cpu, cuda or metal. Without it the saved choice is kept")
+    parser.add_argument("--paddle-vl-backend", choices=("auto", "native", "mlx-vlm-server"),
+                        help="Paddle VL inference backend: auto uses the tested platform default; native keeps "
+                             "Paddle inference; mlx-vlm-server uses an isolated MLX environment on Apple Silicon. "
+                             "Without it the saved request is kept; --device cpu requires native")
     parser.add_argument("--check", action="store_true", help="read-only check; never initializes, downloads or starts OCR models")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--env-only", action="store_true", help="prepare/check OCR without changing installed skill entries")
@@ -109,7 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                            device=args.device or "default", offline=args.offline,
                            install_system_deps=args.install_system_deps,
                            interactive=sys.stdin.isatty(), local_model=local, prepare_only=args.prepare_only,
-                           started_at=STARTED)
+                           started_at=STARTED, paddle_vl_backend=args.paddle_vl_backend or "default")
     try:
         current = True
         if not args.env_only:

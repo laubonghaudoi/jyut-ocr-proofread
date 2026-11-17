@@ -220,7 +220,7 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(config["OCR_HUNYUAN_SLOTS"], "16")
     def test_gpu_busy_does_not_start_or_stop_services(self):
         result = type("Result", (), {"stdout": "1200\n"})()
-        with patch.object(setup, "run", return_value=result) as runner:
+        with patch.object(setup, "run", return_value=result) as runner, patch.object(setup, "platform_name", return_value="Linux"):
             with self.assertRaisesRegex(setup.SetupError, "GPU is busy"):
                 setup.smoke_test(self.options, {}, "hunyuan", "cuda", "a" * 64)
             self.assertEqual(runner.call_count, 1)
@@ -291,7 +291,7 @@ class SetupTest(unittest.TestCase):
             if not binary.exists() or candidate != binary:
                 raise setup.SetupError("not built")
             return {"verified": True}
-        with patch.object(setup, "run", side_effect=fake_run), patch.object(setup, "runtime_identity", side_effect=identity):
+        with patch.object(setup, "run", side_effect=fake_run), patch.object(setup, "runtime_identity", side_effect=identity), patch.object(setup, "ensure_dependencies"):
             path, verified = setup.ensure_runtime(self.options, {}, lock, "cpu")
         self.assertEqual(path, binary)
         configure = next(command for command in calls if command[:2] == ["cmake", "-S"])
@@ -324,7 +324,7 @@ class SetupTest(unittest.TestCase):
                 setup.atomic_json(Path(argv[argv.index("--report") + 1]), {"complete": True})
             return type("Result", (), {"stdout": ""})()
         config = {"JYUT_OCR_PYTHON": python, "HUNYUAN_MODEL": "/model", "HUNYUAN_MMPROJ": "/projector", "HUNYUAN_LLAMA_SERVER": "/runtime"}
-        with patch.dict(os.environ, {"OCR_PHASE_RELEASE_CMD": "do-not-run", "HUNYUAN_ENDPOINT": "http://do-not-use"}), patch.object(setup, "run", side_effect=fake_run):
+        with patch.dict(os.environ, {"OCR_PHASE_RELEASE_CMD": "do-not-run", "HUNYUAN_ENDPOINT": "http://do-not-use"}), patch.object(setup, "run", side_effect=fake_run), patch.object(setup, "platform_name", return_value="Linux"):
             record = setup.smoke_test(self.options, config, "hunyuan", "cpu", "f" * 64)
         self.assertTrue(setup.check_smoke(record))
         self.assertEqual(len(calls), 2)
@@ -402,7 +402,7 @@ class SetupTest(unittest.TestCase):
             if not binary.exists() or candidate != binary:
                 raise setup.SetupError("not built")
             return {"verified": True}
-        with patch.object(setup, "run", side_effect=fake_run), patch.object(setup, "runtime_identity", side_effect=identity):
+        with patch.object(setup, "run", side_effect=fake_run), patch.object(setup, "runtime_identity", side_effect=identity), patch.object(setup, "ensure_dependencies"):
             setup.ensure_runtime(replace(self.options, offline=True), {}, lock, "cpu")
         self.assertIn(["git", "remote", "add", "origin", lock["runtime"]["repo"]], calls)
         self.assertIn(["git", "checkout", "--detach", lock["runtime"]["commit"]], calls)
@@ -429,7 +429,7 @@ class SetupTest(unittest.TestCase):
         """A copy of the skill's files with env.sh and a ready setup state; the
         Python, runtime and model checks are faked (no subprocess, no model)."""
         repo = self.base / "skill"
-        for name in ("requirements.txt", "runtime/ocr-lock.json", "scripts/_setup_ocr.py",
+        for name in ("requirements.txt", "runtime/ocr-lock.json", "runtime/mlx-requirements.txt", "scripts/_setup_ocr.py",
                      "scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py",
                      "scripts/_gpu_queue.py", "scripts/_phase_budget.py"):
             (repo / name).parent.mkdir(parents=True, exist_ok=True)

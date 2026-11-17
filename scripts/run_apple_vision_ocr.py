@@ -17,6 +17,9 @@ import os
 from pathlib import Path
 import platform
 import re
+import select
+import signal
+import threading
 import shutil
 import subprocess
 import sys
@@ -26,7 +29,16 @@ from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 2
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _phase_budget import Budget, EXIT_INCOMPLETE, record_child
+from _gpu_queue import GPUQueue, GPUQueueTimeout, LocalModelOwnsGPU, add_queue_arguments
+from _mlx_vlm_server import SupervisedProcess
+from _vision_layout import adapt_observations
+from _draft_contract import layout_problem
+
+_STOP = threading.Event()
+
+SCHEMA_VERSION = 3
 REPORT_SCHEMA_VERSION = 1
 MAX_WORKERS = 8
 ENGINE = "Apple Vision VNRecognizeTextRequest"
@@ -48,6 +60,10 @@ class ConfigurationError(ValueError):
 
 class PageOCRFailure(RuntimeError):
     """Vision rejected one page while the persistent worker remains usable."""
+
+
+class BudgetExpired(RuntimeError):
+    """The shared phase ended before a page could be sealed."""
 
 
 class WorkerUnavailable(RuntimeError):
@@ -137,6 +153,9 @@ def build_tool_identity(swift_file: Path) -> ToolIdentity:
     combined.update(runner_bytes)
     combined.update(b"\0apple_vision_ocr.swift\0")
     combined.update(swift_bytes)
+    for helper in ("_vision_layout.py", "_draft_contract.py", "_mlx_vlm_server.py"):
+        combined.update(b"\0" + helper.encode() + b"\0")
+        combined.update(Path(__file__).with_name(helper).read_bytes())
     return ToolIdentity(
         runner_file=runner_file,
         swift_file=swift_file,
@@ -328,6 +347,9 @@ def validate_completion(
     legacy_error = _validate_legacy_fields(record, page, profile)
     if legacy_error:
         return ResumeCheck(False, legacy_error)
+    problem = layout_problem(record, text_bytes.decode("utf-8"))
+    if problem:
+        return ResumeCheck(False, problem)
     lines = record["lines"]
     if text_from_lines(lines) != text_bytes:
         return ResumeCheck(False, "TXT bytes do not match JSON lines")
@@ -393,9 +415,11 @@ def atomic_promote(
 
 
 class SwiftPersistentWorker:
-    def __init__(self, binary: Path, worker_id: int):
+    def __init__(self, binary: Path, worker_id: int, lease_fds: tuple[int, ...] = ()):
+        self.budget = Budget()
+        self.response_buffer = b""
         self.worker_id = worker_id
-        self.process_handle = subprocess.Popen(
+        self.supervisor = SupervisedProcess(
             [str(binary), "--worker"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -403,7 +427,10 @@ class SwiftPersistentWorker:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            lease_fds=lease_fds,
         )
+        self.process_handle = self.supervisor.process
+        record_child("vision-worker", self.process_handle.pid)
 
     def process(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
         handle = self.process_handle
@@ -415,12 +442,28 @@ class SwiftPersistentWorker:
                 + "\n"
             )
             handle.stdin.flush()
-            response_line = handle.stdout.readline()
-        except (BrokenPipeError, OSError) as error:
+            limit, capped = self.budget.page_timeout(300.0)
+            until = time.monotonic() + limit
+            while b"\n" not in self.response_buffer:
+                if _STOP.is_set() or time.monotonic() >= until:
+                    if capped or _STOP.is_set():
+                        raise BudgetExpired("phase deadline reached during Vision recognition")
+                    raise WorkerUnavailable("Vision page exceeded its 300 second deadline")
+                if not select.select([handle.stdout], [], [], min(0.2, max(0, until - time.monotonic())))[0]:
+                    continue
+                chunk = os.read(handle.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                self.response_buffer += chunk
+                if len(self.response_buffer) > 1024 * 1024:
+                    raise WorkerUnavailable("Vision worker response exceeds protocol limit")
+            response, separator, self.response_buffer = self.response_buffer.partition(b"\n")
+            response_line = response.decode("utf-8") if separator else ""
+        except (BrokenPipeError, OSError, UnicodeError) as error:
             raise WorkerUnavailable(f"worker {self.worker_id} pipe failed: {error}") from error
         if not response_line:
             detail = ""
-            if handle.stderr is not None:
+            if handle.stderr is not None and handle.poll() is not None:
                 detail = handle.stderr.read().strip()
             raise WorkerUnavailable(
                 f"worker {self.worker_id} exited before responding"
@@ -445,15 +488,7 @@ class SwiftPersistentWorker:
                 handle.stdin.close()
             except OSError:
                 pass
-        try:
-            handle.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            handle.terminate()
-            try:
-                handle.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                handle.kill()
-                handle.wait()
+        self.supervisor.close()
         for stream in (handle.stdout, handle.stderr):
             if stream is not None:
                 stream.close()
@@ -483,6 +518,7 @@ def compile_swift_worker(
         text=True,
         capture_output=True,
         check=False,
+        timeout=Budget().page_timeout(120.0)[0],
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown compiler error"
@@ -526,6 +562,8 @@ def _process_page(
     raw_record, text_bytes = validate_raw_worker_output(
         raw_json, raw_text, page, profile
     )
+    raw_record = adapt_observations(raw_record)
+    text_bytes = text_from_lines(raw_record["lines"])
     completion = build_completion_record(raw_record, page, text_bytes, tool, profile)
     staged_text = job_directory / page.text_output.name
     staged_json = job_directory / page.json_output.name
@@ -557,6 +595,7 @@ def _process_assignment(
 ) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     worker: Any | None = None
+    budget = Budget()
 
     def close_worker() -> None:
         nonlocal worker
@@ -571,6 +610,10 @@ def _process_assignment(
 
     try:
         for page in pages:
+            if _STOP.is_set() or not budget.allows_next_page():
+                results.append({"scanPage": page.scan_page, "status": "deferred", "reason": "phase deadline reached"})
+                continue
+            began = time.monotonic()
             try:
                 if worker is None:
                     worker = worker_factory(binary, worker_id)
@@ -579,6 +622,13 @@ def _process_assignment(
                         worker, worker_id, page, staging_root, tool, profile
                     )
                 )
+                seconds = time.monotonic() - began
+                results[-1]["seconds"] = seconds
+                budget.record(seconds)
+                budget.sealed(page.scan_page)
+            except BudgetExpired as error:
+                close_worker()
+                results.append({"scanPage": page.scan_page, "status": "deferred", "reason": str(error)})
             except WorkerUnavailable as error:
                 close_worker()
                 results.append(
@@ -715,10 +765,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path(__file__).with_name("apple_vision_ocr.swift"),
         help=argparse.SUPPRESS,
     )
+    add_queue_arguments(parser)
     return parser
 
 
-def main(
+def _main(
     argv: Sequence[str] | None = None,
     *,
     worker_factory: WorkerFactory | None = None,
@@ -828,6 +879,9 @@ def main(
     if worker_count:
         assignments = [pending[index::worker_count] for index in range(worker_count)]
 
+    budget = Budget()
+    lease = None
+    model_ready_at = None
     compiler_metadata: dict[str, Any] = {}
     staging_root: Path | None = None
     if assignments:
@@ -839,11 +893,18 @@ def main(
         build_directory = staging_root / "build"
         build_directory.mkdir()
         selected_compiler = compiler or compile_swift_worker
-        selected_factory = worker_factory or make_worker
+        selected_factory = worker_factory
         try:
+            if _STOP.is_set() or not budget.allows_next_page():
+                raise GPUQueueTimeout("phase deadline reached before Vision startup")
+            lease = GPUQueue(arguments.gpu_queue_dir, arguments.gpu_resource)
+            lease.acquire(timeout=arguments.gpu_queue_timeout, phase_deadline=budget.deadline, cancel_event=_STOP)
+            if selected_factory is None:
+                selected_factory = lambda binary, worker_id: SwiftPersistentWorker(binary, worker_id, lease.pass_fds)
             binary, compiler_metadata = selected_compiler(
                 tool.swift_file, build_directory
             )
+            model_ready_at = time.time()
             pool_results = run_worker_pool(
                 assignments,
                 binary,
@@ -853,6 +914,11 @@ def main(
                 selected_factory,
             )
             page_results.extend(pool_results)
+        except (GPUQueueTimeout, subprocess.TimeoutExpired) as error:
+            page_results.extend({"scanPage": page.scan_page, "status": "deferred", "reason": str(error)}
+                                for page in pending)
+            if isinstance(error, LocalModelOwnsGPU) and lease:
+                lease.status = "deferred-local-model"
         except Exception as error:
             page_results.extend(
                 {
@@ -865,6 +931,8 @@ def main(
                 for page in pending
             )
         finally:
+            if lease:
+                lease.close()
             shutil.rmtree(staging_root, ignore_errors=True)
 
     page_results.sort(key=lambda item: item["scanPage"])
@@ -878,11 +946,15 @@ def main(
     attempted_pages = sorted(
         item["scanPage"] for item in page_results if "workerId" in item
     )
+    deferred_pages = [item["scanPage"] for item in page_results if item["status"] == "deferred"]
     finished_at = utc_now()
     report = {
         "schemaVersion": REPORT_SCHEMA_VERSION,
         "kind": "apple-vision-ocr-run",
-        "status": "partial-failure" if failed_pages else "pass",
+        "status": "partial-failure" if failed_pages else "incomplete" if deferred_pages else "pass",
+        "counts": {"completed": len(completed_pages), "skipped": len(skipped_pages), "failed": len(failed_pages), "deferred": len(deferred_pages)},
+        "modelReadyAt": model_ready_at,
+        "gpuQueue": lease.report if lease else {"status": "not-requested"},
         "textAuthority": TEXT_AUTHORITY,
         "fallbackPolicy": {
             "used": [],
@@ -907,6 +979,7 @@ def main(
             "attempted": attempted_pages,
             "completed": completed_pages,
             "failed": failed_pages,
+            "deferred": deferred_pages,
         },
         "workers": {
             "requested": arguments.workers,
@@ -949,7 +1022,20 @@ def main(
         f"completed={len(completed_pages)} skipped={len(skipped_pages)} "
         f"failed={len(failed_pages)} workers={worker_count}"
     )
-    return 1 if failed_pages else 0
+    return 1 if failed_pages else EXIT_INCOMPLETE if deferred_pages else 0
+
+
+def main(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
+    _STOP.clear()
+    previous_signals = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            previous_signals[sig] = signal.signal(sig, lambda *_: _STOP.set())
+    try:
+        return _main(argv, **kwargs)
+    finally:
+        for sig, old_handler in previous_signals.items():
+            signal.signal(sig, old_handler)
 
 
 if __name__ == "__main__":

@@ -125,5 +125,285 @@
         ]
       }
     ]
+  },
+  "mlx": {
+    "enabled_by_default": true,
+    "python": "3.12",
+    "minimum_macos": "14.0",
+    "requirements": "runtime/mlx-requirements.txt",
+    "requirements_sha256": "58dceb71c53b83712b9466aea55bb4694b6bf3570e24e20dcd8da38d132a3d3f",
+    "packages": [
+      {
+        "name": "annotated-doc",
+        "version": "0.0.6"
+      },
+      {
+        "name": "annotated-types",
+        "version": "0.8.0"
+      },
+      {
+        "name": "anyio",
+        "version": "4.16.0"
+      },
+      {
+        "name": "certifi",
+        "version": "2026.10.23"
+      },
+      {
+        "name": "cffi",
+        "version": "2.1.1"
+      },
+      {
+        "name": "charset-normalizer",
+        "version": "3.5.2"
+      },
+      {
+        "name": "click",
+        "version": "8.5.1"
+      },
+      {
+        "name": "cryptography",
+        "version": "50.0.2"
+      },
+      {
+        "name": "datasets",
+        "version": "5.2.0"
+      },
+      {
+        "name": "dill",
+        "version": "0.4.1"
+      },
+      {
+        "name": "fastapi",
+        "version": "0.163.1"
+      },
+      {
+        "name": "filelock",
+        "version": "4.2.10"
+      },
+      {
+        "name": "fsspec",
+        "version": "2026.9.0"
+      },
+      {
+        "name": "h11",
+        "version": "0.16.0"
+      },
+      {
+        "name": "hf-xet",
+        "version": "1.8.0"
+      },
+      {
+        "name": "httpcore",
+        "version": "1.0.9"
+      },
+      {
+        "name": "httpcore2",
+        "version": "2.16.2"
+      },
+      {
+        "name": "httpx",
+        "version": "0.28.1"
+      },
+      {
+        "name": "httpx2",
+        "version": "2.16.2"
+      },
+      {
+        "name": "huggingface-hub",
+        "version": "2.4.0"
+      },
+      {
+        "name": "idna",
+        "version": "3.20"
+      },
+      {
+        "name": "jinja2",
+        "version": "3.1.6"
+      },
+      {
+        "name": "llguidance",
+        "version": "1.9.1"
+      },
+      {
+        "name": "markdown-it-py",
+        "version": "4.3.0"
+      },
+      {
+        "name": "markupsafe",
+        "version": "3.0.4"
+      },
+      {
+        "name": "mdurl",
+        "version": "0.1.2"
+      },
+      {
+        "name": "miniaudio",
+        "version": "1.73"
+      },
+      {
+        "name": "mlx",
+        "version": "0.32.4"
+      },
+      {
+        "name": "mlx-audio",
+        "version": "0.6.6"
+      },
+      {
+        "name": "mlx-metal",
+        "version": "0.32.4"
+      },
+      {
+        "name": "mlx-vlm",
+        "version": "0.8.0"
+      },
+      {
+        "name": "multiprocess",
+        "version": "0.70.19"
+      },
+      {
+        "name": "numpy",
+        "version": "2.5.5"
+      },
+      {
+        "name": "opencv-python",
+        "version": "5.0.0.93"
+      },
+      {
+        "name": "opentelemetry-api",
+        "version": "1.45.2"
+      },
+      {
+        "name": "packaging",
+        "version": "26.3"
+      },
+      {
+        "name": "pandas",
+        "version": "3.1.1"
+      },
+      {
+        "name": "pillow",
+        "version": "13.0.0"
+      },
+      {
+        "name": "pyarrow",
+        "version": "26.0.1"
+      },
+      {
+        "name": "pycparser",
+        "version": "3.12"
+      },
+      {
+        "name": "pydantic",
+        "version": "2.14.3"
+      },
+      {
+        "name": "pydantic-core",
+        "version": "2.50.4"
+      },
+      {
+        "name": "pygments",
+        "version": "2.21.0"
+      },
+      {
+        "name": "python-dateutil",
+        "version": "4.0.0"
+      },
+      {
+        "name": "python-multipart",
+        "version": "0.0.34"
+      },
+      {
+        "name": "pyyaml",
+        "version": "6.0.3"
+      },
+      {
+        "name": "regex",
+        "version": "2026.11.15"
+      },
+      {
+        "name": "requests",
+        "version": "2.34.2"
+      },
+      {
+        "name": "rich",
+        "version": "15.0.0"
+      },
+      {
+        "name": "safetensors",
+        "version": "0.8.0"
+      },
+      {
+        "name": "scipy",
+        "version": "1.18.1"
+      },
+      {
+        "name": "sentencepiece",
+        "version": "0.2.3"
+      },
+      {
+        "name": "shellingham",
+        "version": "1.5.4"
+      },
+      {
+        "name": "sounddevice",
+        "version": "0.5.6"
+      },
+      {
+        "name": "starlette",
+        "version": "1.10.0"
+      },
+      {
+        "name": "tokenizers",
+        "version": "0.23.3"
+      },
+      {
+        "name": "tqdm",
+        "version": "4.70.1"
+      },
+      {
+        "name": "transformers",
+        "version": "5.23.0"
+      },
+      {
+        "name": "truststore",
+        "version": "0.10.5"
+      },
+      {
+        "name": "typer",
+        "version": "0.29.1"
+      },
+      {
+        "name": "typing-extensions",
+        "version": "4.16.0"
+      },
+      {
+        "name": "typing-inspection",
+        "version": "0.4.5"
+      },
+      {
+        "name": "tzdata",
+        "version": "2026.6"
+      },
+      {
+        "name": "urllib3",
+        "version": "2.8.0"
+      },
+      {
+        "name": "uvicorn",
+        "version": "0.54.0"
+      },
+      {
+        "name": "websockets",
+        "version": "17.4"
+      },
+      {
+        "name": "xxhash",
+        "version": "4.1.0"
+      }
+    ],
+    "vlm_version": "0.8.0",
+    "vlm_wheel_sha256": "712bd3f19d5c2e1c7f44938401c2110e4912a0a4ac596cae38389893fdfa04d9",
+    "note": "Apple Silicon only; independent environment. Native CPU layout plus owned MLX GPU VLM, one in-flight VLM request. Enable default only after fixed-page local validation."
   }
 }
