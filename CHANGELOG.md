@@ -1,5 +1,12 @@
 # 更新摘要
 
+## Unreleased — `--effort-policy`：按題型指定第一次問用邊一級 effort（量度用）
+
+- `proofread_pages.py` 同 `book_profile.py` 加 `--effort-policy KIND=RUNG,...`（`PROOFREAD_EFFORT_POLICY`），淨係 `--backend http` 用，預設冇：唔設就同以前一模一樣，每條題都由 `--reasoning-effort` 嗰級問起。設咗之後，列出嘅題型（例如 `census=low`）第一次就用嗰級；`--reasoning-effort` 仍然係上限，冇列嘅題型同所有重試照用上限，撞 `max_tokens` 照舊向下一級。寫錯題型或者級別即刻 exit 2。
+- 記錄：每頁封條多 `effortPolicy`（只喺有設嗰陣），run report 亦有；run report 每類題多一個 `efforts`，數每一級問咗幾多次。同 `reasoningEffort` 一樣只係記錄，唔入 provenance、唔入 packet 題目 ID，所以唔會令已封嘅頁過期。
+- 呢個係 issue #2 第 2 步嘅機制，**未有建議值**：邊類題可以調低而唔掉字、掉標點，要喺有本機模型嘅機器逐類對 golden 量度先知。
+- 新檢查 `tests/check_effort_policy.py`（本機 stub server，包括由頭跑一次 `proofread_pages.py`）。
+
 ## Unreleased — macOS 首次安裝先問用戶揀引擎
 
 - Mac 有內置嘅 Apple Vision，所以 macOS 首次安裝（冇傳 `--engine`，`env.sh` 又未有上次揀嘅結果）喺下載任何嘢之前先問：`--engine auto` 由 Hugging Face 下載 HunyuanOCR 同 PaddleOCR-VL（Apple Silicon 約 5.7 GB），定係 `--engine vision` 淨用 Apple Vision（唔下載模型，約 0.2 GB）。喺 terminal 跑會列出兩個選擇等你答 `1` 或者 `2`；冇 terminal（agent 嘅 shell、pipe）就停低，exit `2`，`ACTION REQUIRED` 行講明兩個 `--engine` 同各自要幾多磁碟，agent 問咗用戶先加 `--engine` 重跑，唔代用戶揀。`--check` 未揀之前報同一段。

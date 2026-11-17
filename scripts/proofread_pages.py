@@ -215,6 +215,13 @@ def summarize_calls(calls: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, A
             row[key] = round(sum(values), 2) if all(type(v) in {int, float} for v in values) else None
         completions = [c.get("completion_tokens") for c in group if c.get("charged") is not False and not c.get("reused")]
         row["maxCompletion"] = max(completions, default=0) if all(type(v) in {int, float} for v in completions) else None
+        # The rung each request of the kind was asked on (an HTTP call's
+        # "effort"; a packet answer has none): how often a kind began where
+        # --effort-policy put it, and how often the ladder stepped down.
+        efforts = Counter(str(call["effort"] or "none") for call in group
+                          if "effort" in call and call.get("usage_source") not in PACKET_USAGE_SOURCES)
+        if efforts:
+            row["efforts"] = dict(sorted(efforts.items()))
         for call in group:
             row["truncated"] += call.get("finish_reason") == "length"
             row["padded"] += bool(call.get("padded"))
@@ -4134,16 +4141,88 @@ def fit_media_aspect(image_bytes: bytes, limit: float = MEDIA_ASPECT_LIMIT) -> b
     return out.getvalue()
 
 
+# Switch --effort-policy (HTTP only; off unless given, and then nothing here
+# changes): the rung of the effort ladder a KIND of question is first asked
+# on, in place of the client's own effort (--reasoning-effort).  The client's
+# effort stays the highest rung any call is asked on - a kind's rung only
+# lowers it - and the ladder still only steps down from there
+# (Client.ask_answering): a kind begun on low that is cut off at max_tokens is
+# asked once more with no reasoning.  A retry is a kind of its own
+# (punctuate-retry, format-retry, table-rebuild-retry, the -correction of a
+# fidelity question), so a policy that names only the first question leaves
+# its retry on the client's effort: the retry of a refused answer is asked
+# higher, with no rule of its own.  Which kinds may begin lower without
+# costing characters or marks is not known: the policy exists so that it can
+# be measured, kind by kind, against the golden pages (tests/run_regression.py).
+# It is recorded with the page (effortPolicy, beside reasoningEffort) and, as
+# the effort is, never compared on a resume nor bound into a packet request:
+# it changes how hard the model thinks, not what it is asked.
+EFFORT_POLICY_ENV = "PROOFREAD_EFFORT_POLICY"
+# The rungs of the effort ladder, highest first (Client.EFFORT_LADDER; None:
+# no reasoning asked for).  Here, not read off Client: the checks put a
+# stand-in in Client's place.
+EFFORT_RUNGS: tuple[str | None, ...] = ("xhigh", "medium", "low", None)
+# Every kind an HTTP call is asked as (the kind= of each ask_answering call of
+# proofread_pages.py and book_profile.py, and _content_fidelity's three with
+# their one correction); tests/check_effort_policy.py holds the list to them.
+EFFORT_KINDS = (
+    "adjudicate", "coverage-read", "cell-direction", "orient", "record-order",
+    "table-rebuild", "table-rebuild-retry", "census", "punctuate", "punctuate-retry", "punctuate-shape",
+    "writer", "format", "format-retry", "notation",
+    "page-inventory", "page-inventory-correction", "content-recovery", "content-recovery-correction",
+    "coverage-review", "coverage-review-correction",
+)
+
+
+def parse_effort_policy(text: str | None) -> dict[str, str | None]:
+    """--effort-policy's value as {kind: rung}: KIND=RUNG pairs with commas
+    between, KIND one of EFFORT_KINDS and RUNG a rung of the effort ladder
+    (xhigh, medium, low, or none for no reasoning).  Empty: no policy.  A
+    kind or rung it does not know is refused before any page is asked, since
+    a misspelt kind would otherwise run a whole book on the client's effort
+    unnoticed."""
+    rungs = {str(rung or "none"): rung for rung in EFFORT_RUNGS}
+    policy: dict[str, str | None] = {}
+    for part in (text or "").split(","):
+        if not part.strip():
+            continue
+        kind, separator, rung = (piece.strip() for piece in part.partition("="))
+        if not separator or kind not in EFFORT_KINDS or rung.lower() not in rungs:
+            raise ProofreadError(
+                f"--effort-policy: {part.strip()!r} is not KIND=RUNG; kinds: {', '.join(EFFORT_KINDS)}; "
+                f"rungs: {', '.join(rungs)}")
+        if kind in policy and policy[kind] != rungs[rung.lower()]:
+            raise ProofreadError(f"--effort-policy names {kind} twice, with two rungs")
+        policy[kind] = rungs[rung.lower()]
+    return policy
+
+
+def effort_policy_text(policy: Mapping[str, str | None] | None) -> str:
+    """A policy as it is recorded (effortPolicy) and as --effort-policy takes
+    it again: its pairs in the order of their kinds; "" for none."""
+    return ",".join(f"{kind}={(policy or {})[kind] or 'none'}" for kind in sorted(policy or {}))
+
+
+def effort_policy_record(client: Any) -> dict[str, str]:
+    """The effortPolicy of a page's record or a run report: the client's
+    policy, only when it has one (an HTTP client given --effort-policy)."""
+    text = effort_policy_text(getattr(client, "effort_policy", None))
+    return {"effortPolicy": text} if text else {}
+
+
 class Client:
     """Minimal chat client. Retries only on transport errors, never on HTTP 4xx."""
 
     def __init__(self, endpoint: str, model: str | None, effort: str | None, timeout: float,
                  temperature: float = 0.0, max_inflight: int | None = None,
-                 loop_detector: _loop_watch.Rule | None = None):
+                 loop_detector: _loop_watch.Rule | None = None,
+                 effort_policy: Mapping[str, str | None] | None = None):
         self.endpoint = endpoint
         # No model named: the server's first listed one (resolve_http_model).
         self.model = resolve_http_model(endpoint, model, timeout)
         self.effort = effort
+        # Switch --effort-policy: the rung each kind named begins on (above).
+        self.effort_policy: dict[str, str | None] = dict(effort_policy or {})
         self.timeout = timeout
         self.temperature = temperature
         # Requests on the wire at once, across every page and every page's
@@ -4441,7 +4520,7 @@ class Client:
     # Effort ladder used to recover a page that thought past its token budget.
     # Only reasoning_effort works per-request on an OpenAI-compatible endpoint;
     # an Anthropic-style thinking budget is ignored there (verified).
-    EFFORT_LADDER = ["xhigh", "medium", "low", None]
+    EFFORT_LADDER = list(EFFORT_RUNGS)
 
     def ask_answering(
         self,
@@ -4465,7 +4544,8 @@ class Client:
         START names the rung to begin on instead of the client's effort ("",
         the default): a retry of a call that answered nothing (ask_lower).  It
         only ever lowers the effort: a client set below START begins at its
-        own rung.
+        own rung.  With no START, a kind the client's policy names
+        (--effort-policy) begins on the policy's rung, under the same rule.
 
         Switch --loop-detector (loop_detector): a rung given up in a
         word-for-word loop (_read_stream) is a cut at max_tokens - the ladder
@@ -4478,6 +4558,8 @@ class Client:
             own = self.EFFORT_LADDER.index(self.effort)
         except ValueError:
             own = 0
+        if start == "" and kind in self.effort_policy:
+            start = self.effort_policy[kind]
         try:
             start = own if start == "" else max(own, self.EFFORT_LADDER.index(start))
         except ValueError:
@@ -13031,6 +13113,7 @@ def _proofread_page_inner(
             "generatedAt": utc_now(),
             "model": client.model,
             "reasoningEffort": client.effort,
+            **effort_policy_record(client),
             "renderFile": str(job.render),
             # An unsupported reading is not a clean page: a human should look.
             "auditorClean": not doubts,
@@ -16078,6 +16161,7 @@ def _proofread_page_inner(
         "generatedAt": utc_now(),
         "model": client.model,
         "reasoningEffort": client.effort,
+        **effort_policy_record(client),
         "renderFile": str(job.render),
         "auditorClean": not doubts,
         "mode": mode,
@@ -16449,6 +16533,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "three is asked and pages are sealed without their record")
     parser.add_argument("--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", DEFAULT_EFFORT),
                         help=f"low|medium|xhigh, or 'none' to omit (default {DEFAULT_EFFORT})")
+    parser.add_argument("--effort-policy", default=os.environ.get(EFFORT_POLICY_ENV, ""), metavar="KIND=RUNG,...",
+                        help="with --backend http, the rung of the effort ladder each kind of question named "
+                             "is first asked on, in place of --reasoning-effort, which stays the highest rung "
+                             "of any call: KIND=RUNG pairs with commas between, e.g. census=low,format=low; "
+                             f"KIND one of {', '.join(EFFORT_KINDS)}; RUNG xhigh, medium, low or none.  A kind "
+                             "not named, a retry among them, keeps --reasoning-effort.  For measuring which "
+                             "kinds may begin lower; recorded with each page (effortPolicy), never compared on "
+                             f"a resume.  Default: none (env: {EFFORT_POLICY_ENV}); with packets it is not used")
     parser.add_argument("--max-tokens", type=int, default=16000)
     parser.add_argument("--max-adjudications", type=int, default=24,
                         help="per-page cap on escalated forced-choice calls")
@@ -16744,6 +16836,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.max_items_per_bundle < 1:
             raise ProofreadError("--max-items-per-bundle must be at least 1")
         effort = None if arguments.reasoning_effort.lower() == "none" else arguments.reasoning_effort
+        # Switch --effort-policy: the HTTP client's alone (a packet is answered
+        # by the agent, at whatever effort it works at).
+        arguments.effort_policy_rungs = (parse_effort_policy(arguments.effort_policy)
+                                         if arguments.backend == "http" else {})
         # The book profile: which engine reads THIS book better, what it
         # prints, how its pages are laid out.  Nothing about a book is assumed.
         profile_path = (arguments.profile.expanduser().resolve() if arguments.profile
@@ -17060,7 +17156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             client = Client(arguments.endpoint, arguments.model, effort, arguments.timeout, arguments.temperature,
                             max_inflight=arguments.max_inflight or arguments.workers,
-                            loop_detector=_loop_watch.RULE if arguments.loop_detector else None)
+                            loop_detector=_loop_watch.RULE if arguments.loop_detector else None,
+                            effort_policy=arguments.effort_policy_rungs)
         except ProofreadError as error:
             print(f"ERROR {error}", file=sys.stderr)
             return 2
@@ -17262,6 +17359,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "packetsDir": str(packets_dir) if arguments.backend == "packet" else None,
         "model": arguments.model,
         "reasoningEffort": effort, "workers": arguments.workers,
+        # Switch --effort-policy, only when given (HTTP).
+        **({"effortPolicy": effort_policy_text(arguments.effort_policy_rungs)}
+           if getattr(arguments, "effort_policy_rungs", None) else {}),
         "tableOrientation": arguments.table_orientation,
         "exitStatus": exit_status,
         "counts": {"requested": len(pages), "completed": completed,

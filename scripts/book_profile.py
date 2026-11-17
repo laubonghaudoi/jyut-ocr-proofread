@@ -685,6 +685,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reasoning-effort", default=os.environ.get("PROOFREAD_EFFORT", pp.DEFAULT_EFFORT)
     )
+    parser.add_argument(
+        "--effort-policy", default=os.environ.get(pp.EFFORT_POLICY_ENV, ""), metavar="KIND=RUNG,...",
+        help="with --backend http, the rung of the effort ladder a kind of question is first asked on in place "
+             "of --reasoning-effort, as proofread_pages.py --effort-policy takes it (the profile asks the kind "
+             f"notation, e.g. notation=low).  Default: none (env: {pp.EFFORT_POLICY_ENV}); with packets it is not used",
+    )
     parser.add_argument("--max-tokens", type=int, default=16000)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--timeout", type=float, default=1800.0)
@@ -783,6 +789,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
                 arguments.timeout,
                 arguments.temperature,
                 **({} if arguments.no_inflight_cap else {"max_inflight": max(1, arguments.workers)}),
+                effort_policy=pp.parse_effort_policy(arguments.effort_policy),
             )
         except pp.ProofreadError as error:
             print(f"ERROR {error}", file=sys.stderr)
@@ -930,6 +937,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
         "endpoint": arguments.endpoint if arguments.backend == "http" else None,
         "model": client.model,
         "reasoningEffort": effort,
+        **pp.effort_policy_record(client),
         "sources": {
             "renders": str(renders),
             "draftA": str(drafts),
