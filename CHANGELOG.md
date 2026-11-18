@@ -8,6 +8,15 @@
 - 部機 `env.sh` 嘅設定唔再漏入測試：`env.sh.example` 列嘅名同 `PROOFREAD_*` 一律唔帶入去。之前喺 source 咗 `env.sh` 嘅 shell 跑，會因為引擎名同裝置設定有五個檔唔過。
 - 刪走 `tests/check_review_launcher.py`：佢 13 個測試全部喺 `tests/test_review_launcher.py` 入面有（後者仲多兩個）。
 
+## Unreleased — PaddleOCR-VL 幾個 worker：同一張卡同時讀幾頁（issue #3）
+
+- `run_paddleocr_vl.py --workers N|auto`（`OCR_PADDLE_WORKERS`）：幾個 PaddleOCR-VL worker 由同一條隊攞頁，一頁嘅底稿同邊個 worker 讀佢無關。預設 `auto`：空閒顯存放得落兩份 14 GiB（另留 2 GiB）就開兩個，否則一個；CPU、MLX 後端、或者每個 worker 分唔夠 8 頁都係一個。`OCR_PADDLE_WORKERS=1` 即係以前嘅行為。
+- 幾個 worker 嗰陣每個有顯存上限（`FLAGS_gpu_memory_limit_mb`），因為 Paddle 嘅配置器有幾多攞幾多：一個 worker 讀一本書，實測由 12 GB 升到 27 GB。一個 worker 照舊冇上限。
+- 一個 worker 死咗，佢嗰頁交畀另一個重讀；全部都死晒，就由一個冇上限嘅 worker 讀餘下嘅頁，所以開多個 worker 唔會令單 worker 讀到嘅頁失敗。交接嘅顯存估算跟住明確嘅 worker 數計；`auto` 只要求一個 worker 嘅顯存，唔會為咗開第二個而停本機模型。
+- 實測（一張 32 GB 卡）：現代橫排書 120 頁，一個 worker 503 秒、兩個 321 秒（1.57 倍）；舊書 50 頁，334 秒對 202 秒（1.65 倍）。兩批頁嘅文字同座標框，兩個 worker 同一個 worker 逐頁一樣。GPU 使用率由 53% 升到 93%，顯存峰值 28 至 30 GB，所以 `auto` 最多開兩個。一本 639 頁嘅現代書，OCR 實測 66 分鐘，當中 Paddle 佔 47 分鐘。
+- HunyuanOCR 冇改：同一本書實測 16 個 slot 幾乎全程都滿，GPU 使用率中位數 100%，86% 時間係生成文字。32 個 slot 冇快到，而且 `llama-server` 多食好多系統內存（實測 13.6 GB，部機因此內存用盡）。所以唔開多份 Hunyuan，亦唔同 Paddle 同時跑：佢哋爭嘅係同一張已經滿載嘅卡。
+- 額外 worker 嘅 process 由 runner 嘅主線程啟動：worker 跟父 process 一齊收工嗰個訊號係跟啟動佢嘅線程，由短命線程啟動嘅 worker 會跟住嗰條線程一齊死。新測試用假 Paddle 蓋住分頁、底稿一致、worker 死亡、時間預算同 worker 數計算。
+
 ## Unreleased — 通用標點融合：packet／HTTP 共用拆分及融合開關
 
 - `proofread_pages.py` 加 `--punctuation-mode auto|split|fused`；`auto` 保留 packet 融合、HTTP 拆分嘅原本預設，兩條路線都可以明確選擇。共用融合 prompt、解析及格式檢查，唔綁定模型或者 agent 平台；舊 packet prompt、request ID 同答案格式保持可重播。

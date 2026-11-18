@@ -213,7 +213,7 @@ class RecordedNotComparedTest(DraftIdentityTestBase):
         scripts.mkdir()
         for name in ('run_hunyuanocr.py', 'run_hunyuanocr_second_look.py', 'run_paddleocr_vl.py',
                      'paddleocr_vl_worker.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py',
-                     '_mlx_vlm_server.py'):
+                     '_mlx_vlm_server.py', '_paddle_pool.py'):
             shutil.copy2(SCRIPTS / name, scripts / name)
         return scripts
 
@@ -227,7 +227,7 @@ class RecordedNotComparedTest(DraftIdentityTestBase):
         old_tool = json.loads((self.ocr_b / 'page-0001.json').read_text())['provenance']['toolSha256']
         for name in ('run_hunyuanocr.py', 'run_hunyuanocr_second_look.py', 'run_paddleocr_vl.py',
                      'paddleocr_vl_worker.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py',
-                     '_mlx_vlm_server.py'):
+                     '_mlx_vlm_server.py', '_paddle_pool.py'):
             with (scripts / name).open('a') as handle:
                 handle.write('\n# an edit that changes these bytes\n')
         for name, run in (('paddle', self.run_paddle), ('hunyuan', self.run_hunyuan),

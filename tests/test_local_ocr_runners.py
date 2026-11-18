@@ -84,7 +84,7 @@ class PaddleOCRVL:
                 'layout_detection_model_dir': layout_detection_model_dir,
                 'env': {key: os.environ.get(key) for key in (
                     'CUDA_VISIBLE_DEVICES', 'PADDLE_PDX_DISABLE_DEVICE_FALLBACK',
-                    'PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK')}}))
+                    'PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'FLAGS_gpu_memory_limit_mb')}}))
         if os.environ.get('FAKE_PID_FILE'): Path(os.environ['FAKE_PID_FILE']).write_text(str(os.getpid()))
         atexit.register(self.stopped)
         if os.environ.get('FAKE_LOAD_FAILURE'): raise RuntimeError('fake load failure')
@@ -104,6 +104,19 @@ class PaddleOCRVL:
         gate = os.environ.get('FAKE_RELEASE_FILE')
         while gate and not Path(gate).exists(): time.sleep(0.01)
         if str(page) == os.environ.get('FAKE_BAD_PAGE'): raise RuntimeError('fake page failure')
+        # Several workers: who read the page, a page that takes its worker with it (once, or
+        # every time), and pages slow enough for two workers to share them.
+        if os.environ.get('FAKE_READER_DIR'):
+            Path(os.environ['FAKE_READER_DIR'], 'page-%d-%d' % (page, os.getpid())).write_text('')
+        if str(page) == os.environ.get('FAKE_DEADLY_PAGE'):
+            once = os.environ.get('FAKE_DEADLY_ONCE')
+            if not once or not Path(once).exists():
+                if once: Path(once).write_text('')
+                os._exit(3)
+        # A page too large for a worker's share of the card: it takes every worker that has a ceiling.
+        if str(page) == os.environ.get('FAKE_TOO_LARGE_PAGE') and os.environ.get('FLAGS_gpu_memory_limit_mb'):
+            os._exit(3)
+        time.sleep(float(os.environ.get('FAKE_PAGE_SECONDS', '0')))
         return [Result({'width': 100, 'height': 200, 'pipeline': self.version,
                         'parsing_res_list': [
                             {'block_order': 0, 'block_content': '  輙與弑\n',
@@ -765,6 +778,183 @@ class GPUQueueRunnerTest(LocalOCRTestBase):
             self.release('A')
             server.shutdown(); server.server_close(); thread.join(timeout=2)
         self.finish(first)
+
+
+class PaddleWorkersTest(LocalOCRTestBase):
+    """Several PaddleOCR-VL workers on one card (--workers): the stand-in package, no GPU."""
+
+    def setUp(self):
+        super().setUp()
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import run_paddleocr_vl as runner
+        self.runner = runner
+        self.pages = 2 * runner.MIN_PAGES_A_WORKER
+        for page in range(4, self.pages + 1):
+            (self.renders / f'page-{page:04d}.png').write_text(f'scan {page}')
+        self.paddle_build('gpu', devices=1)
+        self.readers = self.base / 'readers'
+        self.readers.mkdir()
+        self.env.update(FAKE_READER_DIR=str(self.readers), FAKE_PAGE_SECONDS='0.05')
+
+    def read(self, workers, name, env=None):
+        output, report = self.base / f'draft-{name}', self.base / f'report-{name}.json'
+        process = subprocess.run(
+            [sys.executable, str(SCRIPTS / 'run_paddleocr_vl.py'), str(self.renders), str(output),
+             '--report', str(report), '--device', 'gpu:0', '--workers', str(workers)],
+            env=env or self.env, capture_output=True, text=True, timeout=60)
+        self.assertNotIn('Traceback', process.stderr, process.stderr)
+        return process, json.loads(report.read_text()), output
+
+    def who_read(self):
+        """{page: the processes that were given it}"""
+        found = {}
+        for path in self.readers.iterdir():
+            _, page, pid = path.name.split('-')
+            found.setdefault(int(page), set()).add(pid)
+        return found
+
+    def test_two_workers_share_the_pages_and_the_drafts_are_the_ones_one_worker_writes(self):
+        one, one_report, one_dir = self.read(1, 'one')
+        self.assertEqual(one.returncode, 0, one.stderr)
+        self.assertEqual(one_report['workers'], {'asked': '1', 'started': 1, 'lost': 0, 'aloneAfter': False})
+        self.assertEqual(len({pid for pids in self.who_read().values() for pid in pids}), 1)
+        for path in self.readers.iterdir():
+            path.unlink()
+        two, two_report, two_dir = self.read(2, 'two')
+        self.assertEqual(two.returncode, 0, two.stderr)
+        self.assertEqual(two_report['workers'], {'asked': '2', 'started': 2, 'lost': 0, 'aloneAfter': False})
+        self.assertEqual(two_report['counts']['completed'], self.pages)
+        self.assertIn('2 workers', two.stdout)
+        readers = self.who_read()
+        self.assertEqual(sorted(readers), list(range(1, self.pages + 1)))
+        self.assertTrue(all(len(pids) == 1 for pids in readers.values()), readers)
+        self.assertEqual(len({pid for pids in readers.values() for pid in pids}), 2)
+        for page in range(1, self.pages + 1):
+            name = f'page-{page:04d}'
+            self.assertEqual((one_dir / f'{name}.txt').read_bytes(), (two_dir / f'{name}.txt').read_bytes())
+            first = json.loads((one_dir / f'{name}.json').read_text())
+            second = json.loads((two_dir / f'{name}.json').read_text())
+            # Two runs differ in when a page was written and in the hash that covers it,
+            # with one worker as with two; in nothing else.
+            for record in (first, second):
+                record.pop('generatedAt')
+                record['provenance'].pop('jsonPayloadSha256')
+            self.assertEqual(first, second, name)
+        # A page's place in the report is its number, whoever read it first.
+        self.assertEqual([entry['scanPage'] for entry in two_report['pages']], list(range(1, self.pages + 1)))
+
+    def test_one_worker_has_no_ceiling_and_each_of_two_has_its_share(self):
+        kwargs = self.base / 'kwargs.json'
+        env = dict(self.env, FAKE_KWARGS_FILE=str(kwargs))
+        self.read(1, 'one', env)
+        self.assertIsNone(json.loads(kwargs.read_text())['env']['FLAGS_gpu_memory_limit_mb'])
+        self.read(2, 'two', env)
+        self.assertEqual(json.loads(kwargs.read_text())['env']['FLAGS_gpu_memory_limit_mb'],
+                         str(self.runner.WORKER_SHARE_MIB))
+
+    def test_a_worker_that_dies_leaves_its_page_to_the_other_and_every_page_is_read(self):
+        env = dict(self.env, FAKE_DEADLY_PAGE='5', FAKE_DEADLY_ONCE=str(self.base / 'died'))
+        result, report, _ = self.read(2, 'lost', env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['counts'], dict(report['counts'], completed=self.pages, failed=0, deferred=0))
+        self.assertEqual(report['workers'], {'asked': '2', 'started': 2, 'lost': 1, 'aloneAfter': False})
+        self.assertEqual(len(self.who_read()[5]), 2)
+        self.assertIn('page 0005: its worker is gone', result.stderr)
+        self.assertIn('1 worker(s) go on and one reads it again', result.stderr)
+
+    def test_a_page_that_takes_every_worker_fails_with_the_pages_left(self):
+        result, report, output = self.read(2, 'deadly', dict(self.env, FAKE_DEADLY_PAGE='5'))
+        self.assertEqual(result.returncode, 1)
+        # Both workers, then the one with no ceiling that took over: the page takes it too.
+        self.assertEqual(report['workers'], {'asked': '2', 'started': 2, 'lost': 3, 'aloneAfter': True})
+        by_page = {entry['scanPage']: entry for entry in report['pages']}
+        self.assertEqual(by_page[5]['status'], 'failed')
+        self.assertIn('worker unavailable', by_page[5]['error'])
+        done = report['counts']['completed']
+        self.assertEqual(done + report['counts']['failed'], self.pages)
+        self.assertGreater(done, 0)
+        self.assertEqual(len(list(output.glob('page-*.json'))), done)
+        self.assertIn('ERROR worker unavailable', result.stderr)
+
+    def test_a_page_too_large_for_a_share_is_read_by_one_worker_with_no_ceiling(self):
+        # Several workers must never fail a page one worker would have read: when each of them
+        # is gone under its ceiling, a single worker with none (the way one always runs) goes on.
+        result, report, _ = self.read(2, 'large', dict(self.env, FAKE_TOO_LARGE_PAGE='5'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['workers'], {'asked': '2', 'started': 2, 'lost': 2, 'aloneAfter': True})
+        self.assertEqual(report['counts']['completed'], self.pages)
+        self.assertEqual(report['counts']['failed'], 0)
+        self.assertEqual(len(self.who_read()[5]), 3)
+        self.assertIn('one worker with no memory ceiling reads the pages left', result.stderr)
+        # One worker alone has no ceiling, so the page is nothing special to it.
+        alone, alone_report, _ = self.read(1, 'large-one', dict(self.env, FAKE_TOO_LARGE_PAGE='5'))
+        self.assertEqual(alone.returncode, 0, alone.stderr)
+        self.assertEqual(alone_report['workers']['lost'], 0)
+
+    def test_three_workers_lose_two_to_one_page_and_the_third_reads_the_rest(self):
+        for page in range(self.pages + 1, 3 * self.runner.MIN_PAGES_A_WORKER + 1):
+            (self.renders / f'page-{page:04d}.png').write_text(f'scan {page}')
+        result, report, _ = self.read(3, 'three', dict(self.env, FAKE_DEADLY_PAGE='5'))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report['workers'], {'asked': '3', 'started': 3, 'lost': 2, 'aloneAfter': False})
+        self.assertEqual(report['counts']['failed'], 1)
+        self.assertEqual(report['counts']['completed'], 3 * self.runner.MIN_PAGES_A_WORKER - 1)
+        self.assertIn('page 0005: FAILED its second worker is gone too', result.stderr)
+
+    def test_the_budget_ends_every_worker_and_the_pages_left_wait_for_the_next_call(self):
+        env = dict(self.env, FAKE_PAGE_SECONDS='0.4', OCR_PHASE_DEADLINE=str(time.time() + 2.5))
+        result, report, _ = self.read(2, 'budget', env)
+        self.assertEqual(result.returncode, self.runner.EXIT_INCOMPLETE, result.stderr)
+        counts = report['counts']
+        self.assertEqual(counts['failed'], 0)
+        self.assertGreater(counts['completed'], 0)
+        self.assertGreater(counts['deferred'], 0)
+        self.assertEqual(counts['completed'] + counts['deferred'], self.pages)
+        self.assertIn('time budget reached', result.stdout)
+        again, again_report, _ = self.read(2, 'budget', dict(self.env))
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again_report['counts']['skippedCurrent'], counts['completed'])
+        self.assertEqual(again_report['counts']['completed'], counts['deferred'])
+
+    def test_how_many_workers_a_card_and_a_job_get(self):
+        count, share, reserve = self.runner.worker_count, self.runner.WORKER_SHARE_MIB, self.runner.CARD_RESERVE_MIB
+        many = 1000
+        for free_gib, expected in ((8, 1), (12, 1), (16, 1), (24, 1), (32, 2), (48, 2), (80, 2)):
+            with self.subTest(free_gib=free_gib):
+                self.assertEqual(count('auto', gpu=True, pages=many, free_mib=free_gib * 1024)[0], expected)
+        self.assertEqual(count('auto', gpu=True, pages=many, free_mib=reserve + 2 * share)[0], 2)
+        self.assertEqual(count('auto', gpu=True, pages=many, free_mib=reserve + 2 * share - 1)[0], 1)
+        self.assertEqual(count('auto', gpu=True, pages=many, free_mib=None)[0], 1)
+        self.assertEqual(count('3', gpu=True, pages=many, free_mib=None)[0], 3)
+        self.assertEqual(count(None, gpu=True, pages=many, free_mib=None)[0], 1)
+        self.assertEqual(count('4', gpu=False, pages=many, free_mib=None)[0], 1)
+        low = self.runner.MIN_PAGES_A_WORKER
+        self.assertEqual(count('2', gpu=True, pages=2 * low - 1, free_mib=None)[0], 1)
+        self.assertEqual(count('2', gpu=True, pages=2 * low, free_mib=None)[0], 2)
+        for bad in ('0', '-1', 'many'):
+            with self.subTest(bad=bad), self.assertRaises(self.runner.ConfigurationError):
+                count(bad, gpu=True, pages=many, free_mib=None)
+
+    def test_what_the_hand_over_needs_free_before_the_workers_start(self):
+        import _paddle_pool as pool
+        import run_ocr_phase as phase
+        one = phase.PADDLE_MIB
+        self.assertEqual(pool.need_mib('1', one), one)
+        self.assertEqual(pool.need_mib(None, one), one)
+        # auto asks for one worker's memory: the local model is never stopped for a second.
+        self.assertEqual(pool.need_mib('auto', one), one)
+        self.assertEqual(pool.need_mib('2', one), 2 * pool.WORKER_SHARE_MIB)
+        self.assertEqual(pool.need_mib('nonsense', one), one)
+        runner = ['python', 'run_paddleocr_vl.py', 'renders', 'ocr-paddle', '--device', 'gpu:0']
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(pool.WORKERS_ENV, None)
+            self.assertEqual(phase.engine_need(runner), (one, 'Paddle'))
+            self.assertEqual(phase.engine_need([*runner, '--workers', '2']),
+                             (2 * pool.WORKER_SHARE_MIB, 'Paddle, 2 workers'))
+            self.assertEqual(phase.engine_need([*runner, '--workers', 'auto']), (one, 'Paddle'))
+            os.environ[pool.WORKERS_ENV] = '2'
+            self.assertEqual(phase.engine_need(runner)[0], 2 * pool.WORKER_SHARE_MIB)
 
 
 if __name__ == '__main__':

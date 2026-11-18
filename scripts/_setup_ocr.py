@@ -1908,7 +1908,8 @@ def tool_hashes(root: Path, engine: str | Iterable[str]) -> dict[str, str]:
     if "hunyuan" in engines:
         names += ["scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
     if "paddle" in engines:
-        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/_mlx_vlm_server.py",
+        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/_paddle_pool.py",
+                  "scripts/_mlx_vlm_server.py",
                   "runtime/mlx-requirements.txt", "scripts/_gpu_queue.py", "scripts/_phase_budget.py",
                   PADDLE_CONSTRAINTS, *sorted(path.relative_to(root).as_posix()
                                               for path in root.glob(PADDLE_BUILD_CONSTRAINTS.format(index="*", machine="*")))]

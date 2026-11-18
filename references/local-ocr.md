@@ -51,6 +51,7 @@ Paddle runner 唔會畀 PaddleX 第一次用先下載權重：嗰陣下載會喺
 | `PADDLE_VL_MODEL_DIR` | `--vl-model-dir` | 安裝器固定版本嘅 PaddleOCR-VL 權重資料夾 |
 | `PADDLE_LAYOUT_MODEL_DIR` | `--layout-model-dir` | 同一 pipeline 嘅版面偵測（PP-DocLayout）權重資料夾 |
 | `OCR_CPU_RESOURCE` | `--cpu-resource` | Paddle 用 CPU 嗰陣嘅隊列 resource，預設 `local-cpu` |
+| `OCR_PADDLE_WORKERS` | `--workers` | 同一張卡同時讀頁嘅 Paddle worker 數：數字或者 `auto`（預設），見〈並行設定同核圖〉；只記入 run report，唔入底稿身份 |
 | `OCR_HUNYUAN_MODE` | `--server-mode` | 預設 `shared`；`dedicated` 獨佔批次 |
 | `OCR_HUNYUAN_SLOTS` | `--server-slots` | 所有 Hunyuan clients 合共嘅並行上限 |
 
@@ -160,7 +161,15 @@ Agent 跑交接嘅規矩：
 
 ## 並行設定同核圖
 
-本機實驗已確認單 server 多請求可行；樣本／排程大小會影響收益，八頁短測同持續 32 頁測試可以有不同結論。唔因顯存有餘就開多份模型，亦唔將某部機嘅設定寫死成通用預設。
+本機實驗已確認單 server 多請求可行；樣本／排程大小會影響收益，八頁短測同持續 32 頁測試可以有不同結論。唔將某部機嘅設定寫死成通用預設：並行數由執行嗰陣讀到嘅空閒顯存定。
+
+**PaddleOCR-VL 幾個 worker**（`OCR_PADDLE_WORKERS`，或者 `run_paddleocr_vl.py --workers`）：HunyuanOCR 一個 server 已經同時做幾頁（slot）；PaddleOCR-VL 一個 process 一次讀一頁，實測一個 worker 只用到大約一半 GPU。所以同一張卡可以開幾個 worker，由同一條隊攞頁；一頁嘅底稿同邊個 worker 讀佢無關。
+
+- 預設 `auto`：空閒顯存放得落兩份 14 GiB（另留 2 GiB）就開兩個，否則一個。讀唔到空閒顯存、CPU 或者 MLX 後端都係一個；每個 worker 最少要有 8 頁先開。寫數字就照開，張卡放唔落而起唔到嗰個 worker 會被略過，其餘照讀。
+- 幾個 worker 嗰陣每個有顯存上限（Paddle 嘅 `FLAGS_gpu_memory_limit_mb`）：Paddle 嘅配置器有幾多攞幾多，單一個 worker 實測由 12 GB 升到 27 GB。一個 worker 就同以前一樣，冇上限。
+- 一個 worker 死咗，佢嗰頁交畀另一個重讀。全部都死晒（多數係上限唔夠一頁用），就改由一個冇上限嘅 worker 讀餘下嘅頁，即係同單 worker 一樣；所以開多個 worker 唔會令單 worker 讀到嘅頁失敗。
+- 交接（`run_ocr_phase.py`）嘅顯存估算：`auto` 只要求一個 worker 嘅顯存，唔會為咗開第二個而停本機模型；寫明數字先按份數要求。
+- 實測（2026-11-17，一張 32 GB 卡）：現代橫排書 120 頁，一個 worker 503 秒、兩個 321 秒（1.57 倍）；舊書 50 頁，334 秒對 202 秒（1.65 倍）。兩批頁嘅文字同座標框，兩個 worker 同一個 worker 逐頁一樣。GPU 使用率由 53% 升到 93%，顯存峰值 28 至 30 GB：兩個已經用盡張卡，所以 `auto` 最多開兩個。
 
 比較時固定 render hashes、模型、有效 context／輸出上限、prompt 同採樣設定，分開模型啟動、warmup、OCR 同校對時間；量度實際活躍請求、吞吐、顯存、失敗／截斷同逐字差異。並行同重跑都可能改變輸出，即使 temperature 0／固定 seed 亦唔保證 byte-identical。正常完成或者 hashes 相同唔代表來源內容正確。
 

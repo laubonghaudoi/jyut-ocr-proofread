@@ -30,6 +30,7 @@ separate interpreter, the GPU lease, and backend-specific draft identities.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -43,9 +44,13 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Mapping, Sequence
 
+import _paddle_pool
+from _paddle_pool import (CARD_RESERVE_MIB, MAX_AUTO_WORKERS, MIN_PAGES_A_WORKER, WORKERS_ENV,
+                          WORKER_SHARE_MIB)
 from _mlx_vlm_server import (BACKEND as MLX_BACKEND, MLXDeadline, MLXError, MLXServer,
                              SupervisedProcess, probe as probe_mlx)
 
@@ -484,6 +489,23 @@ def atomic_promote(
     os.replace(staged_json, final_json)
 
 
+def gpu_free_mib() -> int | None:
+    """Free memory of the card the workers use (run_ocr_phase.nvidia_free_mib), or None."""
+    try:
+        from run_ocr_phase import nvidia_free_mib
+        return nvidia_free_mib()
+    except Exception:  # noqa: BLE001 - no answer is an answer: one worker
+        return None
+
+
+def worker_count(requested: str | None, *, gpu: bool, pages: int, free_mib: int | None) -> tuple[int, str]:
+    """_paddle_pool.worker_count, a wrong --workers as this runner's configuration error."""
+    try:
+        return _paddle_pool.worker_count(requested, gpu=gpu, pages=pages, free_mib=free_mib)
+    except ValueError as error:
+        raise ConfigurationError(str(error)) from None
+
+
 class BudgetExpired(Exception):
     """The phase's time budget ran out while a page was being read, or while
     the model was still loading."""
@@ -523,8 +545,12 @@ class PaddleWorker:
                  weights: Mapping[str, Mapping[str, Any]] | None = None,
                  log_path: Path | None = None,
                  mlx_url: str | None = None,
-                 ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS, ready_capped: bool = False):
+                 ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS, ready_capped: bool = False,
+                 memory_mib: int | None = None, defer_ready: bool = False):
         worker_env = dict(os.environ, JYUT_PADDLE_PIPELINE_VERSION=pipeline_version)
+        if memory_mib:
+            # One of several on the card: its allocator stops here instead of taking what is left.
+            worker_env["FLAGS_gpu_memory_limit_mb"] = str(memory_mib)
         for name in ("JYUT_PADDLE_DEVICE", "JYUT_PADDLE_VL_MODEL_DIR", "JYUT_PADDLE_LAYOUT_MODEL_DIR",
                      "JYUT_PADDLE_VL_BACKEND", "JYUT_PADDLE_VL_SERVER_URL", "JYUT_PADDLE_VL_API_MODEL"):
             worker_env.pop(name, None)
@@ -554,6 +580,15 @@ class PaddleWorker:
         self.loading = True
         self.response_buffer = b""
         self.execution: dict[str, Any] = {}
+        # DEFER_READY: the caller waits (await_ready) once it has started the others, so
+        # several load side by side.  The process is started here, by the caller's thread:
+        # die_with_parent()'s signal follows the thread that started it, not the process.
+        if not defer_ready:
+            self.await_ready(ready_timeout, ready_capped)
+
+    def await_ready(self, ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS,
+                    ready_capped: bool = False) -> None:
+        """Wait until the models are loaded; a worker that does not come up is closed."""
         try:
             # READY_CAPPED: the phase's budget set READY_TIMEOUT; running past it
             # raises BudgetExpired, so a late start ends with the budget.
@@ -938,6 +973,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"queue resource of a CPU run, apart from the GPU's (default "
                              f"OCR_CPU_RESOURCE or {DEFAULT_CPU_RESOURCE})")
     parser.add_argument("--timeout", type=float, default=PAGE_TIMEOUT_SECONDS)
+    parser.add_argument("--workers", default=os.environ.get(WORKERS_ENV, "auto"), metavar="N|auto",
+                        help=f"workers reading pages at once on one GPU (or {WORKERS_ENV}; default auto: "
+                             f"as many {WORKER_SHARE_MIB} MiB shares as the free memory holds beside "
+                             f"{CARD_RESERVE_MIB} MiB, at most {MAX_AUTO_WORKERS}; 1 where it cannot be read). "
+                             "The pages' drafts do not depend on it")
     parser.add_argument(
         "--worker-source",
         type=Path,
@@ -1122,6 +1162,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
 
     worker: PaddleWorker | None = None
+    workers: list[PaddleWorker] = []
+    spare: list[tuple[int, PaddleWorker]] = []       # the workers beside the first, as started
     mlx_server: MLXServer | None = None
     lease: GPUQueue | None = None
     queue_deferred = local_model_deferred = False
@@ -1159,11 +1201,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                                            ready_timeout=ready_limit, budget_capped=ready_capped)
                     execution["serverHealth"] = mlx_server.health
                     ready_limit, ready_capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
+                wanted, wanted_why = worker_count(
+                    arguments.workers, gpu=not use_mlx and device.startswith("gpu"), pages=len(pending),
+                    free_mib=gpu_free_mib() if str(arguments.workers).strip().lower() == "auto" else None)
+                share = WORKER_SHARE_MIB if wanted > 1 else None
+                # The others are started first and waited for after the first, so all of them
+                # load side by side.  One that does not come up (no memory left for it, a load
+                # the budget cut short) is left out, and the rest read.
+                for number in range(2, wanted + 1):
+                    try:
+                        spare.append((number, PaddleWorker(
+                            interpreter, tool.worker_file, arguments.pipeline_version,
+                            lease_fds=lease.pass_fds, device=device, weights=execution["weights"],
+                            log_path=worker_log.with_name(f"{worker_log.stem}.{number}{worker_log.suffix}"),
+                            memory_mib=share, defer_ready=True)))
+                    except OSError as error:
+                        print(f"  worker {number}: {error}; left out", file=sys.stderr, flush=True)
                 worker = PaddleWorker(interpreter, tool.worker_file, arguments.pipeline_version,
                                       lease_fds=lease.pass_fds, device=device,
                                       weights=execution["weights"], log_path=worker_log,
                                       ready_timeout=ready_limit, ready_capped=ready_capped,
-                                      mlx_url=mlx_server.url if mlx_server else None)
+                                      mlx_url=mlx_server.url if mlx_server else None, memory_mib=share)
                 model_ready_at = time.time()
                 execution.update({key: worker.execution.get(key)
                                   for key in ("vlDevice", "layoutDevice", "dtype")})
@@ -1177,7 +1235,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                                      vlClient=worker.execution)
                 description = (f"Metal GPU, CPU layout ({execution['weightDtype']} weights)" if use_mlx
                                else f"{device} ({execution['dtype'] or 'dtype not reported'})")
-                print(f"  PaddleOCR-VL on {description}, "
+                workers = [worker]
+                for number, extra in spare:
+                    limit, capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
+                    try:
+                        extra.await_ready(limit, capped)
+                        problem = execution_problem(device, extra.execution)
+                    except BudgetExpired:
+                        problem = "the time budget ran out while it loaded"
+                    except (WorkerUnavailable, OSError) as error:
+                        problem = str(error)
+                    if problem:
+                        extra.close()
+                        print(f"  worker {number}: {problem}; left out", file=sys.stderr, flush=True)
+                    else:
+                        workers.append(extra)
+                pool = f", {len(workers)} workers" if len(workers) > 1 else ""
+                print(f"  PaddleOCR-VL on {description}{pool}, "
                       f"queue {execution['queueResource']}", flush=True)
             except GPUQueueTimeout as error:
                 queue_deferred = True
@@ -1214,153 +1288,245 @@ def main(argv: Sequence[str] | None = None) -> int:
                     )
                 pending = []
 
-        for index, page in enumerate(pending):
-            assert worker is not None
-            if not budget.allows_next_page():
-                # Out of time for this call: the pages left are neither failed
-                # nor blocked, just not done yet; the next call resumes them.
-                for later in pending[index:]:
-                    deferred_pages.append(later.scan_page)
-                    page_results.append(
-                        {
-                            "scanPage": later.scan_page,
-                            "status": "deferred",
-                            "renderFile": str(later.render_file),
-                        }
-                    )
-                print(
-                    f"  time budget reached: {len(deferred_pages)} page(s) left "
-                    "for the next call",
-                    flush=True,
+        def seal(reader: PaddleWorker, page: PageInput, page_limit: float, capped: bool,
+                 page_started: float) -> dict[str, Any]:
+            """Read PAGE on READER and write its draft pair; the page's entry in the report."""
+            response = reader.ocr_page(page.render_file, page_limit, capped)
+            lines = response.get("lines")
+            raw_record = {
+                "scanPage": page.scan_page,
+                "renderFile": str(page.render_file),
+                "generatedAt": utc_now(),
+                "engine": current_profile["engine"],
+                "pipelineVersion": current_profile["pipelineVersion"],
+                "recognitionLanguages": current_profile["recognitionLanguages"],
+                "recognitionLevel": current_profile["recognitionLevel"],
+                "usesLanguageCorrection": current_profile["usesLanguageCorrection"],
+                "renderWidth": response.get("width"),
+                "renderHeight": response.get("height"),
+                "lines": lines,
+                "rawResult": response.get("rawResult"),
+                # Layout regions that hold no text (a chart, an image):
+                # apart from the lines, so the text is the lines' alone.
+                "regions": response.get("regions") or [],
+            }
+            if use_mlx:
+                for order, line in enumerate(lines or []):
+                    box = line.get("boundingBox") if isinstance(line, dict) else None
+                    if (not isinstance(box, list) or len(box) != 4 or
+                        any(not isinstance(v, (int, float)) or isinstance(v, bool) or
+                            not math.isfinite(v) or v < 0 or v > 1 for v in box) or
+                        box[2] <= 0 or box[3] <= 0 or box[0] + box[2] > 1.000001 or
+                        box[1] + box[3] > 1.000001):
+                        raise PageOCRFailure(f"invalid layout geometry for MLX line {order}")
+                    # Array order is the final geometric/model merge order;
+                    # rawResult retains the model's original optional order.
+                    line["blockOrder"] = order
+                raw_record["layoutContract"] = {"version": 1, "role": "layout",
+                    "coordinateSystem": "normalized-top-left-xywh", "textJoin": "\n"}
+            field_error = _validate_record_fields(
+                raw_record, page, current_profile
+            )
+            if field_error:
+                raise PageOCRFailure(f"invalid worker output: {field_error}")
+            text_bytes = text_from_lines(lines)
+            record = build_completion_record(
+                raw_record, page, text_bytes, tool, dict(current_profile, execution=execution)
+            )
+            json_bytes = canonical_json_bytes(record, pretty=True)
+
+            with tempfile.TemporaryDirectory(
+                dir=str(page.json_output.parent)
+            ) as staging:
+                staged_json = Path(staging) / "page.json"
+                staged_text = Path(staging) / "page.txt"
+                staged_json.write_bytes(json_bytes)
+                staged_text.write_bytes(text_bytes)
+                atomic_promote(
+                    staged_text, staged_json, page.text_output, page.json_output
                 )
-                break
-            page_started = time.monotonic()
-            page_limit, capped = budget.page_timeout(arguments.timeout)
+            return {
+                "scanPage": page.scan_page,
+                "status": "completed",
+                "renderFile": str(page.render_file),
+                "renderSha256": page.render_sha256,
+                "jsonSha256": sha256_bytes(json_bytes),
+                "textSha256": sha256_bytes(text_bytes),
+                "lineCount": len(lines),
+                "seconds": round(time.monotonic() - page_started, 2),
+            }
+
+        # The pages wait in one line; each reader takes the next when it is free.  One reader
+        # (the default) reads them in order, as before.  `state` guards the line and every
+        # list of the report; the reading itself runs outside it.
+        todo = deque(pending)
+        state = threading.Lock()
+        halted: list[str] = []            # why no further page is taken: "budget" or "lost"
+        expired_on: list[int] = []        # the pages the budget ran out on
+        gone: list[str] = []              # the error of each reader that is gone
+        attempts: dict[int, int] = {}
+        alive = [len(workers)]
+        took_over = False                 # one worker with no ceiling read what several could not
+
+        def serve(reader: PaddleWorker) -> None:
+            nonlocal worker_trouble
+            while True:
+                with state:
+                    if halted or not todo:
+                        return
+                    if not budget.allows_next_page():
+                        # Out of time for this call: the pages left are neither failed
+                        # nor blocked, just not done yet; the next call resumes them.
+                        halted.append("budget")
+                        return
+                    page = todo.popleft()
+                page_started = time.monotonic()
+                page_limit, capped = budget.page_timeout(arguments.timeout)
+                try:
+                    entry = seal(reader, page, page_limit, capped, page_started)
+                    with state:
+                        completed_pages.append(page.scan_page)
+                        budget.record(time.monotonic() - page_started)
+                        budget.sealed(page.scan_page)
+                        page_results.append(entry)
+                        print(
+                            f"  page {page.scan_page:04d}: {entry['lineCount']} blocks in "
+                            f"{time.monotonic() - page_started:.1f}s",
+                            flush=True,
+                        )
+                except BudgetExpired:
+                    # The budget ran out mid-page; this reader is gone with the page.
+                    with state:
+                        todo.appendleft(page)
+                        halted.append("budget")
+                        expired_on.append(page.scan_page)
+                    return
+                except (PageOCRFailure, TypeError, ValueError) as error:
+                    with state:
+                        worker_trouble = True
+                        failed_pages.append(page.scan_page)
+                        page_results.append(
+                            {
+                                "scanPage": page.scan_page,
+                                "status": "failed",
+                                "renderFile": str(page.render_file),
+                                "error": str(error),
+                            }
+                        )
+                        print(f"  page {page.scan_page:04d}: FAILED {error}", file=sys.stderr)
+                except (WorkerUnavailable, OSError) as error:
+                    with state:
+                        worker_trouble = True
+                        alive[0] -= 1
+                        gone.append(str(error))
+                        attempts[page.scan_page] = attempts.get(page.scan_page, 0) + 1
+                        if alive[0] and attempts[page.scan_page] < 2:
+                            # A reader is gone (out of memory, say) and others go on:
+                            # one of them reads its page.
+                            todo.appendleft(page)
+                            print(f"  page {page.scan_page:04d}: its worker is gone ({error}); "
+                                  f"{alive[0]} worker(s) go on and one reads it again",
+                                  file=sys.stderr, flush=True)
+                        elif alive[0]:
+                            # The page has taken two readers with it: it fails, the rest go on.
+                            failed_pages.append(page.scan_page)
+                            page_results.append({"scanPage": page.scan_page, "status": "failed",
+                                                 "renderFile": str(page.render_file),
+                                                 "error": f"worker unavailable: {error}"})
+                            print(f"  page {page.scan_page:04d}: FAILED its second worker is gone too "
+                                  f"({error})", file=sys.stderr, flush=True)
+                        else:
+                            # The pipeline is gone; every remaining page fails with it.
+                            todo.appendleft(page)
+                            halted.append("lost")
+                    return
+
+        def read_with(readers: Sequence[PaddleWorker]) -> None:
+            """READERS take the pages of the line until it is empty or a reason to stop is set."""
+            if len(readers) == 1:
+                serve(readers[0])
+                return
+            crashed: list[BaseException] = []
+
+            def guarded(reader: PaddleWorker) -> None:
+                try:
+                    serve(reader)
+                except BaseException as error:  # noqa: BLE001 - raised again below, in the main thread
+                    with state:
+                        crashed.append(error)
+                        halted.append("budget")
+
+            threads = [threading.Thread(target=guarded, args=(reader,), daemon=True) for reader in readers]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            if crashed:
+                raise crashed[0]
+
+        if workers:
+            read_with(workers)
+        if "lost" in halted and share and todo and budget.allows_next_page():
+            # Every worker of several is gone, each under its ceiling: out of memory is the likely
+            # reason.  One worker with no ceiling - the way a single worker always runs - reads
+            # what is left, so several workers never fail a page that one would have read.
+            print(f"  all {len(workers)} workers are gone ({gone[-1]}); one worker with no memory "
+                  "ceiling reads the pages left", file=sys.stderr, flush=True)
+            limit, capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
             try:
-                response = worker.ocr_page(page.render_file, page_limit, capped)
-                lines = response.get("lines")
-                raw_record = {
-                    "scanPage": page.scan_page,
-                    "renderFile": str(page.render_file),
-                    "generatedAt": utc_now(),
-                    "engine": current_profile["engine"],
-                    "pipelineVersion": current_profile["pipelineVersion"],
-                    "recognitionLanguages": current_profile["recognitionLanguages"],
-                    "recognitionLevel": current_profile["recognitionLevel"],
-                    "usesLanguageCorrection": current_profile["usesLanguageCorrection"],
-                    "renderWidth": response.get("width"),
-                    "renderHeight": response.get("height"),
-                    "lines": lines,
-                    "rawResult": response.get("rawResult"),
-                    # Layout regions that hold no text (a chart, an image):
-                    # apart from the lines, so the text is the lines' alone.
-                    "regions": response.get("regions") or [],
-                }
-                if use_mlx:
-                    for order, line in enumerate(lines or []):
-                        box = line.get("boundingBox") if isinstance(line, dict) else None
-                        if (not isinstance(box, list) or len(box) != 4 or
-                            any(not isinstance(v, (int, float)) or isinstance(v, bool) or
-                                not math.isfinite(v) or v < 0 or v > 1 for v in box) or
-                            box[2] <= 0 or box[3] <= 0 or box[0] + box[2] > 1.000001 or
-                            box[1] + box[3] > 1.000001):
-                            raise PageOCRFailure(f"invalid layout geometry for MLX line {order}")
-                        # Array order is the final geometric/model merge order;
-                        # rawResult retains the model's original optional order.
-                        line["blockOrder"] = order
-                    raw_record["layoutContract"] = {"version": 1, "role": "layout",
-                        "coordinateSystem": "normalized-top-left-xywh", "textJoin": "\n"}
-                field_error = _validate_record_fields(
-                    raw_record, page, current_profile
-                )
-                if field_error:
-                    raise PageOCRFailure(f"invalid worker output: {field_error}")
-                text_bytes = text_from_lines(lines)
-                record = build_completion_record(
-                    raw_record, page, text_bytes, tool, dict(current_profile, execution=execution)
-                )
-                json_bytes = canonical_json_bytes(record, pretty=True)
-
-                with tempfile.TemporaryDirectory(
-                    dir=str(page.json_output.parent)
-                ) as staging:
-                    staged_json = Path(staging) / "page.json"
-                    staged_text = Path(staging) / "page.txt"
-                    staged_json.write_bytes(json_bytes)
-                    staged_text.write_bytes(text_bytes)
-                    atomic_promote(
-                        staged_text, staged_json, page.text_output, page.json_output
-                    )
-
-                completed_pages.append(page.scan_page)
-                budget.record(time.monotonic() - page_started)
-                budget.sealed(page.scan_page)
-                page_results.append(
-                    {
-                        "scanPage": page.scan_page,
-                        "status": "completed",
-                        "renderFile": str(page.render_file),
-                        "renderSha256": page.render_sha256,
-                        "jsonSha256": sha256_bytes(json_bytes),
-                        "textSha256": sha256_bytes(text_bytes),
-                        "lineCount": len(lines),
-                        "seconds": round(time.monotonic() - page_started, 2),
-                    }
-                )
-                print(
-                    f"  page {page.scan_page:04d}: {len(lines)} blocks in "
-                    f"{time.monotonic() - page_started:.1f}s",
-                    flush=True,
-                )
+                last = PaddleWorker(interpreter, tool.worker_file, arguments.pipeline_version,
+                                    lease_fds=lease.pass_fds, device=device, weights=execution["weights"],
+                                    log_path=worker_log.with_name(f"{worker_log.stem}.alone{worker_log.suffix}"),
+                                    ready_timeout=limit, ready_capped=capped)
             except BudgetExpired:
-                # The budget ran out mid-page; the worker is gone with the page.
-                for later in pending[index:]:
-                    deferred_pages.append(later.scan_page)
-                    page_results.append(
-                        {
-                            "scanPage": later.scan_page,
-                            "status": "deferred",
-                            "renderFile": str(later.render_file),
-                        }
-                    )
-                print(
-                    f"  time budget reached during page {page.scan_page:04d}: "
-                    f"{len(deferred_pages)} page(s) left for the next call",
-                    flush=True,
-                )
-                break
-            except (PageOCRFailure, TypeError, ValueError) as error:
-                worker_trouble = True
-                failed_pages.append(page.scan_page)
+                halted[:] = ["budget"]
+            except (WorkerUnavailable, OSError) as error:
+                gone.append(str(error))
+            else:
+                spare.append((0, last))
+                took_over = True
+                halted.clear()
+                attempts.clear()
+                alive[0] = 1
+                read_with([last])
+        left = sorted(todo, key=lambda page: page.scan_page)
+        if "lost" in halted:
+            for lost in left:
+                failed_pages.append(lost.scan_page)
                 page_results.append(
                     {
-                        "scanPage": page.scan_page,
+                        "scanPage": lost.scan_page,
                         "status": "failed",
-                        "renderFile": str(page.render_file),
-                        "error": str(error),
+                        "renderFile": str(lost.render_file),
+                        "error": f"worker unavailable: {gone[-1]}",
                     }
                 )
-                print(f"  page {page.scan_page:04d}: FAILED {error}", file=sys.stderr)
-            except (WorkerUnavailable, OSError) as error:
-                worker_trouble = True
-                # The pipeline is gone; every remaining page fails with it.
-                remaining = pending[pending.index(page) :]
-                for lost in remaining:
-                    failed_pages.append(lost.scan_page)
-                    page_results.append(
-                        {
-                            "scanPage": lost.scan_page,
-                            "status": "failed",
-                            "renderFile": str(lost.render_file),
-                            "error": f"worker unavailable: {error}",
-                        }
-                    )
-                print(f"ERROR worker unavailable: {error}", file=sys.stderr)
-                break
+            print(f"ERROR worker unavailable: {gone[-1]}", file=sys.stderr)
+        elif left:
+            for later in left:
+                deferred_pages.append(later.scan_page)
+                page_results.append(
+                    {
+                        "scanPage": later.scan_page,
+                        "status": "deferred",
+                        "renderFile": str(later.render_file),
+                    }
+                )
+            during = f" during page {min(expired_on):04d}" if expired_on else ""
+            print(
+                f"  time budget reached{during}: {len(deferred_pages)} page(s) left "
+                "for the next call",
+                flush=True,
+            )
     finally:
         try:
-            if worker is not None:
-                worker.close()
+            every = list(workers or ([worker] if worker is not None else []))
+            every += [extra for _, extra in spare if extra not in every]
+            for reader in every:
+                try:
+                    reader.close()
+                except Exception:  # noqa: BLE001 - the others are still to be closed
+                    pass
         finally:
             try:
                 if mlx_server is not None:
@@ -1400,6 +1566,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "ocrProfileSha256": profile_sha256(current_profile),
         "execution": execution,
         "workerLog": str(worker_log) if log_used else None,
+        "workers": {"asked": str(arguments.workers), "started": len(workers), "lost": len(gone) if workers else 0,
+                    "aloneAfter": took_over},
         "counts": {
             "requested": len(pages),
             "completed": len(completed_pages),

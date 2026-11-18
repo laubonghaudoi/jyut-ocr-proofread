@@ -159,6 +159,7 @@ import urllib.request
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _paddle_pool  # noqa: E402
 from _phase_budget import (  # noqa: E402
     CHILDREN_ENV, DEADLINE_ENV, EXIT_INCOMPLETE, PROGRESS_ENV, process_start_time, read_children)
 from _gpu_queue import (  # noqa: E402
@@ -630,6 +631,7 @@ def _engine_options(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--single-engine", action="store_true")
     parser.add_argument("--engine", default=None)
     parser.add_argument("--vl-backend", default=os.environ.get("OCR_PADDLE_VL_BACKEND", "native"))
+    parser.add_argument("--workers", default=os.environ.get(_paddle_pool.WORKERS_ENV, "auto"))
     try:
         known, _ = parser.parse_known_args(arguments)
     except SystemExit:  # a value it cannot read: the runner itself will say so
@@ -653,7 +655,10 @@ def _paddle_need(options: argparse.Namespace) -> tuple[int, str]:
         return PADDLE_MIB, "Paddle layout and MLX VL server (provisional combined peak)"
     if device.startswith("cpu") and sys.platform != "darwin":
         return 0, "Paddle on the CPU"
-    return PADDLE_MIB, "Paddle"
+    # Several workers asked for by number need a share each; auto needs one worker's memory
+    # and takes a second only where the room is (_paddle_pool.need_mib).
+    need = _paddle_pool.need_mib(options.workers, PADDLE_MIB)
+    return need, "Paddle" if need == PADDLE_MIB else f"Paddle, {need // _paddle_pool.WORKER_SHARE_MIB} workers"
 
 
 def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
