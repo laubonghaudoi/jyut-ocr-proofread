@@ -85,6 +85,35 @@ DEVICE_ENVIRONMENT = (
 )
 
 
+# What the server keeps in system memory between requests, which OCR never uses: every page
+# is its own request with its own image, and the runner asks for no prompt cache.  llama.cpp's
+# server still keeps a prompt cache (--cache-ram, 8192 MiB unless told) and context checkpoints
+# for each slot (--ctx-checkpoints, 32 a slot unless told).  Measured 2026-11-17 on one book:
+# 4 slots, 40 pages - the server's resident memory peaked at 10.7 GB with them and 2.6 GB
+# without, the 40 drafts the same and the time the same; 16 slots, 96 pages - 4.4 GB without.
+# With them a 32-slot server reached 13.6 GB and the machine ran out of memory.
+SERVER_MEMORY_ARGUMENTS = (("--cache-ram", "0"), ("--ctx-checkpoints", "0"))
+_SERVER_HELP: dict[tuple[str, float], str] = {}
+
+
+def server_memory_arguments(binary: Path) -> list[str]:
+    """SERVER_MEMORY_ARGUMENTS, each only where BINARY's own --help names the option: a
+    llama-server older than the option would refuse to start on it."""
+    try:
+        key = (str(binary), binary.stat().st_mtime)
+    except OSError:
+        return []
+    if key not in _SERVER_HELP:
+        try:
+            shown = subprocess.run([str(binary), "--help"], capture_output=True, text=True, timeout=20,
+                                   stdin=subprocess.DEVNULL)
+            _SERVER_HELP[key] = shown.stdout + shown.stderr
+        except (OSError, subprocess.SubprocessError):
+            _SERVER_HELP[key] = ""
+    listed = _SERVER_HELP[key]
+    return [word for option, value in SERVER_MEMORY_ARGUMENTS if option in listed for word in (option, value)]
+
+
 class ConfigurationError(ValueError):
     """A command-line or filesystem configuration is unsafe or invalid."""
 
@@ -355,7 +384,7 @@ class HunyuanServer:
                  "--host", "127.0.0.1", "--port", str(port), "--alias", model_id,
                  "--ctx-size", str(ctx), "--parallel", str(parallel),
                  "--no-kv-unified", "--cont-batching", "--no-cache-prompt",
-                 *device_arguments(device)]
+                 *server_memory_arguments(binary), *device_arguments(device)]
             log_handle = log_path.open("ab") if log_path else None
             try:
                 self.process = subprocess.Popen(

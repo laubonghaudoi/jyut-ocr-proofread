@@ -447,6 +447,27 @@ class LocalOCRCLITest(LocalOCRTestBase):
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)
 
+    def test_the_server_keeps_no_cache_in_system_memory_where_it_has_the_options(self):
+        # The stand-in server's --help names neither option (an older llama-server): none is
+        # passed, or it would refuse to start.  One that names them is started with both off.
+        argv_file = self.base / 'argv.json'
+        env = dict(self.env, FAKE_ARGV_FILE=str(argv_file))
+        result, _ = self.run_cli('hunyuan', ['--pages', '1'], env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plain = json.loads(argv_file.read_text())
+        self.assertNotIn('--cache-ram', plain)
+        self.assertNotIn('--ctx-checkpoints', plain)
+        source = self.binary.read_text()
+        self.binary.write_text(source.replace("parser.add_argument('--alias')",
+                               "parser.add_argument('--alias')\nparser.add_argument('--cache-ram', help='prompt cache')"
+                               "\nparser.add_argument('--ctx-checkpoints', help='checkpoints a slot')"))
+        result, _ = self.run_cli('hunyuan', ['--pages', '1', '--overwrite'], env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads(argv_file.read_text())
+        self.assertEqual(args[args.index('--cache-ram') + 1], '0')
+        self.assertEqual(args[args.index('--ctx-checkpoints') + 1], '0')
+        self.assertIn('--no-cache-prompt', args)
+
     def test_paddle_selected_pages_raw_preserved_closed_and_resume(self):
         result, report = self.run_cli('paddle', ['--pages', '1,3'])
         self.assertEqual(result.returncode, 0, result.stderr)
