@@ -60,13 +60,16 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 ## 六、答 packet 題（A 套）
 
-- exit `10` 嗰陣，stdout 嘅 `[packets] PENDING` 行講 wave 目錄，下一行講 `apply_packet_answers.py` command。
-- 逐個 `bundle-*.json`：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
-- 答晒成個 wave 先跑嗰條 command，加 `--answered-by` 你確實嘅 model ID，再重跑同一條步驟 command，直到 exit `0`。
-- 一個 bundle 最多 20 題（`--max-items-per-bundle`）。長書可以一個 subagent 答一個 bundle，淨係寫自己嗰份 answers，由你跑 apply。
-- 雙引擎短文件可選用每包一個新 worker。先確認佢睇到 PNG 同有指定嘅實際 effort。主 agent 淨係派工同推進，worker 一次過開包內圖片，寫一份齊晒嘅答案檔。平台能力唔夠就沿用同模型、同 effort 嘅主 session 順序作答。詳見 `references/subagent-orchestration.md`。
-- 答錯咗：同一條 apply command 加 `--amend --reason "..."`；已封嘅頁要 `--overwrite --pages N` 重做先用新答案。
-- 唔准手改 `answers.jsonl` 或者封存頁；bundle 冇問嘅頁唔使自己覆核。格式見 `references/subagent-orchestration.md`。
+題目等緊答（exit `10` 或者 `11`）就行呢個循環，直到嗰步 exit `0`：
+
+1. **攞派工單**：`"$JYUT_OCR_PYTHON" scripts/packet_dispatch.py PACKETS_DIR`，stdout 最尾嗰行 `[packets]` 有寫成條 command（PACKETS_DIR 係 `[packets] PENDING` 行嗰個 wave 目錄嘅上一層）。幾本書同時停咗，就將佢哋嘅 packets 目錄一次過列晒，一輪答題者服務晒所有書。佢印出 JSON：`assignments` 每份係一個答題者嘅工作，連一段現成嘅 `prompt`。
+2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
+3. **冇 subagent**：自己照 `references/packet-worker.md` 逐包答：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
+4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。
+5. **重跑同一條步驟 command**。又 exit `10` 就返去第 1 步；一本書通常三四輪。
+
+- 答錯咗：`apply_packet_answers.py` 嗰條 command（派工單 `apply` 有寫）加 `--amend --reason "..."`；已封嘅頁要 `--overwrite --pages N` 重做先用新答案。
+- 唔准手改 `answers.jsonl` 或者封存頁；bundle 冇問嘅頁唔使自己覆核。每種題點答、限流點處理見 `references/subagent-orchestration.md`。
 
 ## 七、`finish_book.py` 同 `clean_book.py` 嘅 exit 碼
 
@@ -102,6 +105,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - `references/local-ocr.md`：〈GPU 交接（本機模型佔住 GPU）〉、〈GPU 交接期間嘅其他 client〉、〈模型同裝置〉、〈輸出、續跑同核圖〉、〈等背景步驟跑完（`wait_for_run.py`）〉：交接、底稿 blocked 或者截斷嗰陣讀。
 - `references/install.md`：安裝、平台、本機校對模型。
 - `references/subagent-orchestration.md`：A 套 bundle 每種題點答、subagent 分工。
+- `references/packet-worker.md`：答題者（subagent）淨係讀呢一頁；你自己答包都係照佢。
 - `references/content-fidelity.md`：開 `--content-fidelity on` 之前讀。
 - `references/jyut-ocr-detailed-rules.md`、`references/common-ocr-traps.md`：版面、表格同常見錯字；A 套答題、用戶覆核用。
 - `references/structured-workflow.md`：冇 OCR 引擎、或者用戶要人手分段轉錄、structured 定稿先用（B 套唔用）。

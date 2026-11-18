@@ -145,6 +145,9 @@ class SharedContractTests(unittest.TestCase):
             "同時運行嘅 LLM 子 agent 預設最多 8 個",
             "用戶明確要求可以去到 16 個",
             "永遠唔超過平台實際有嘅 slot",
+            # Packet bundles are shared out by scripts/packet_dispatch.py's plan (2026-11-17).
+            "有幾多份 assignment 就開幾多個",
+            "答題者淨係讀 `references/packet-worker.md`",
             "Apple Vision 用獨立嘅 bounded 本機 process pool，唔係 LLM agent",
             "STOP-WRITE",
             "覆核 100% 指定 scan",

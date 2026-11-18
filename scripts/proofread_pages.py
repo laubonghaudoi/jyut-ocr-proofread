@@ -77,6 +77,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import threading
 import time
@@ -17870,6 +17871,10 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"{len(wave_summary['bundles'])} bundle(s) in {wave_summary['waveDir']}", flush=True)
         print(f"  [packets] after subagents write answers-*.json, run: {wave_summary['applyCommand']}",
               flush=True)
+        # The plan that shares the bundles among answerers (packet_dispatch.py).
+        print("  [packets] to share the bundles among subagents: "
+              + shlex.join([sys.executable, str(Path(__file__).with_name("packet_dispatch.py")),
+                            str(Path(wave_summary["waveDir"]).parent)]), flush=True)
         if failed or blocked:
             print(f"  [packets] exit {exit_status}: answers are pending AND {failed} page(s) failed and "
                   f"{blocked} were blocked (see the report's pages): answer this wave and run the same "

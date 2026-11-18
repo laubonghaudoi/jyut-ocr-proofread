@@ -37,6 +37,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import statistics
 import sys
 import time
@@ -924,7 +925,10 @@ def profile_book(arguments: argparse.Namespace) -> int:
         print(
             f"[packets] PENDING {summary['pending']} question(s) in {summary['waveDir']} "
             f"({len(summary['bundles'])} bundle(s)); answer and run:\n"
-            f"  {summary['applyCommand']}",
+            f"  {summary['applyCommand']}\n"
+            "[packets] to share the bundles among subagents: "
+            + shlex.join([sys.executable, str(Path(__file__).with_name("packet_dispatch.py")),
+                          str(Path(summary["waveDir"]).parent)]),
             flush=True,
         )
         return EXIT_PACKETS_PENDING

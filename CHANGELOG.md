@@ -14,6 +14,16 @@
 - 下游封條記語義指紋，換引擎／後端或 block 文字／座標／label／次序會 stale；未變嘅 legacy native 封頁照收。macOS 可回收記憶體估計統一用 free + inactive + speculative，唔重複加 purgeable；順序引擎取峰值需求，保留手動預算同 Hunyuan slots。
 - CER 唔作啟用門檻，通用 Paddle 記憶體預算保持。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
 
+## Unreleased — 派工單：答 packet 題可以一次過開多個答題者（issue #6）
+
+- **新 script `packet_dispatch.py PACKETS_DIR [...]`**：一步停低等答案（exit `10`／`11`）就跑佢。佢讀最新嗰個 wave，將未答齊嘅 bundle 分成幾份 assignment，每份有一段現成嘅 `prompt`，主 agent 每份開一個 subagent、原文照貼就得。`--max-workers`（預設 24）係平台同時開到幾多個，`--items-per-worker`（預設 10）係每個答題者大約幾多題。答題者返晒之後再跑一次：仲有未齊嘅包就再列出嚟；齊晒就加 `--apply --answered-by MODEL` 交晒答案，然後重跑同一條步驟 command。
+- **幾本書一齊派**：一次過列幾個 packets 目錄，佢哋嘅 bundle 放埋一齊分，一個答題者可以服務幾本書。
+- **`references/packet-worker.md`**：答題者淨係讀呢一頁，唔載入技能、唔跑 script、唔計 hash。
+- **`SKILL.md` 六改寫成一個循環**：攞派工單 → 一次過開晒 subagent → 再跑派工單交答案 → 重跑步驟。冇 subagent 嘅平台自己照同一頁逐包答。答 packet bundle 嘅並行上限由「預設最多 8 個、由 2 個開始」改成「有幾多份 assignment 就開幾多個，唔超過平台嘅 slot」；分段 writer 同 auditor 嘅上限照舊。
+- `proofread_pages.py` 同 `book_profile.py` 停低等答案嗰陣，`[packets]` 多一行寫成條派工 command。
+- 點解：之前每包開一個會載入成個技能嘅 worker，一個大模型每題要約 245 秒，長 session 係約 35 秒；而一個細模型嘅答題者淨係攞自己嗰幾包同一頁指示，127 條題每題 6.4 秒、6.2 萬輸入 token，一案一個長 session 係 7.6 秒、9 萬。
+- 新測試 `tests/test_packet_dispatch.py`。
+
 ## Unreleased — `--unmarked-page-sample`：無標點嘅頁抽樣問；裁決答「睇唔到」就用成段大圖再問（issue #6）
 
 - **`--unmarked-page-sample`（預設關）**：成頁兩個引擎各自讀到嘅標點都唔多過兩個，而且引擎 A 讀成淨係得字嘅 block 多過三個，就先問最長三個 block 嘅標點題；三個都答冇標點，其餘 block 照原文寫、唔問（`censusNotAsked` 記 `page-unmarked-sample`），否則其餘 block 喺下一個 wave 照常問。Profile 見到雙圈或者旁點嘅書唔用。封條記 `unmarkedPageSample: "on"`，入 provenance。

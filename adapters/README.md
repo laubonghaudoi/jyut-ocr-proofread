@@ -1,6 +1,6 @@
 # 可選平台 adapters
 
-核心 `SKILL.md` 同 `references/subagent-orchestration.md` 只描述讀圖、檔案、腳本能力，以及 writer、packet worker、independent auditor 嘅職責。平台工具名稱、custom-agent 註冊、模型繼承及權限語法放喺呢一層。冇 adapters 時，用普通 worker 接受完整 assignment，或者由主 agent 順序寫稿／回答 packets。
+核心 `SKILL.md` 同 `references/subagent-orchestration.md` 只描述讀圖、檔案、腳本能力，以及 writer、packet worker、independent auditor 嘅職責。平台工具名稱、custom-agent 註冊、模型繼承及權限語法放喺呢一層。冇 adapters 時，用普通 worker 接受完整 assignment，或者由主 agent 順序寫稿／回答 packets。答 packet bundle 唔使 adapter：`scripts/packet_dispatch.py` 嘅派工單每份都有現成 prompt，交畀平台嘅普通子 agent 就得，佢淨係讀 `references/packet-worker.md`。
 
 呢啲角色淨係 A 套（當前 agent 校對）同人手分段轉錄用。B 套（本機模型校對，包括 agent 本身就係本機模型）唔派 writer 或者 packet worker：題目由腳本經 http 問模型，agent 同佢嘅 subagent 都唔讀頁圖（`SKILL.md` 第一節）。
 
