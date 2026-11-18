@@ -819,9 +819,9 @@ class EstimateTests(BatchCase):
         b.env["PATH"] = f"{tools}{os.pathsep}{b.env['PATH']}"
         out = b.begin()
         line = next(text for text in out.splitlines() if text.startswith("[batch] ESTIMATE "))
-        self.assertIn("ESTIMATE 1200 page(s): about 3 thousand to 10 thousand questions for the answerers, "
-                      "187 million to 1.0 billion input tokens (nine tenths of them cache reads) and "
-                      "7 million to 49 million output tokens", line)
+        self.assertIn("ESTIMATE 1200 page(s): about 3 thousand to 11 thousand questions for the answerers, "
+                      "187 million to 1.2 billion input tokens (nine tenths of them cache reads) and "
+                      "7 million to 55 million output tokens", line)
         self.assertIn("Say this to the person in ONE line and go on at once", line)
         self.assertIn("do not stop, pause or change the route because of the cost", line)
 

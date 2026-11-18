@@ -98,11 +98,16 @@ crop, the question, its own answer).  Measured on eight books with a small visio
 at 144 thousand, about 10 thousand more a question, in 8 turns.  That model's price is five times
 higher for a prompt of more than 100 thousand tokens; 98 in 100 answerers crossed that line, 39
 in 100 of all their requests were over it, and a question cost 1.5 cents where the same tokens
-under the line would have cost 0.44.  By that measure four questions keep an answerer under 100
-thousand tokens to its last turn (not yet measured).  With about 38 questions an answerer (one 639-page book, 2026-11-17) a question
-took 85 thousand input tokens; with 10, 80 thousand.  Fewer questions an answerer mean more
-answerers and more hand-outs; they take about as long, since the places are topped up as they
-come free.
+under the line would have cost 0.44.  Measured in the same run with four (2,122 answerers): 98
+thousand tokens at the end, 40 in 100 over the line, 6.5 turns, and 0.85 cents a question
+against 1.55 with ten.  With about 38 questions an answerer (one 639-page book, 2026-11-17) a
+question took 85 thousand input tokens; with 10, 80 thousand.
+
+What four cost in time: every answerer has its start and its return to pay, and the agent
+starts only so many a minute.  One session's 20 places answered about 48 questions a minute
+with ten an answerer and 26 to 36 with four; two sessions (--caller) with four, 60 to 90.  So
+four is the cheaper setting and ten the faster one for a single session; a second session buys
+the time back at the same price a question.
 
 The estimate
 ------------
@@ -152,13 +157,13 @@ DEFAULT_WAIT = 540
 DEFAULT_MAX_WORKERS = 20
 DEFAULT_ITEMS_PER_WORKER = 4        # see "How many questions an answerer is given" in the docstring
 # What a batch is likely to need, for the estimate the first call prints.  Measured with a small
-# vision model answering (2026-11-17 and -18): one 639-page book asked 2.6 questions a page, three
-# volumes of an eight-volume set 6.3, 7.1 and 8.7; a question took 85 to 96 thousand input tokens
-# (nine tenths of them cache reads, the main agent's included) and 2.3 to 4.7 thousand output tokens
-# at 10 to 38 questions an answerer.
-QUESTIONS_A_PAGE = (2.6, 8.7)
-INPUT_TOKENS_A_QUESTION = (60_000, 100_000)
-OUTPUT_TOKENS_A_QUESTION = (2_300, 4_700)
+# vision model answering (2026-11-17 and -18): one 639-page book asked 2.6 questions a page, the
+# eight volumes of one set 6.3 to 8.8 (32,969 questions on 4,244 pages); a question took 85 to
+# 107 thousand input tokens (nine tenths of them cache reads, the main agent's included) and 2.3
+# to 5.2 thousand output tokens.
+QUESTIONS_A_PAGE = (2.6, 8.8)
+INPUT_TOKENS_A_QUESTION = (60_000, 110_000)
+OUTPUT_TOKENS_A_QUESTION = (2_300, 5_200)
 DEFAULT_JOBS = 4                    # steps of different books that run at once (packet backend)
 GATHER_SECONDS = 90                 # nobody at work, questions waiting: how long to wait for a step about to ask more
 TOP_UP_SECONDS = 30                 # answerers at work: how long a free place waits for more places to come free
