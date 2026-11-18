@@ -5,6 +5,7 @@
     python3 scripts/ocr_batch.py --ocr BATCH          2. the OCR phase of every book, one after another
     python3 scripts/ocr_batch.py --round BATCH        3. one round for every book, until all are delivered
     python3 scripts/ocr_batch.py --status BATCH       where every book stands, and nothing else
+    python3 scripts/ocr_batch.py --pause BATCH        hand out no more questions (--resume BATCH: go on)
 
 BATCH is the folder call 1 prints.  Every call can be run again: it carries on where the books are.
 
@@ -74,6 +75,12 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
   --caller NAME: each has its own --max-workers places, and no bundle goes to two of them;
 - exit 4: books wait for the OCR and call 2 is not running: the line says how it ended.  Start
   call 2 again (SKILL.md 五 for a hand-over's exit code);
+- exit 3: the batch is paused (--pause BATCH [--reason TEXT], by the person or by a session
+  that watches the cost): complete answers were handed in, nothing new is handed out, and the
+  agent stops until the person says to go on (--resume BATCH, then the round as before).  Why
+  there is a pause at all: on eight books (2026-11-18) the answering came to some 30 thousand
+  questions, several times what the one book measured before had needed, and the only way to
+  hold the spending was to stop the session that ran the round;
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
   (--retry-failed tries those again); 2: wrong arguments.
 
@@ -125,6 +132,8 @@ PY = sys.executable
 SCHEMA = 1
 EXIT_QUESTIONS = 10
 EXIT_OCR_STOPPED = 4
+EXIT_PAUSED = 3
+PAUSE_NAME = "PAUSED"               # BATCH/PAUSED: no question is handed out while it is there (--pause, --resume)
 PENDING = (10, 11)
 DEFAULT_WAIT = 540
 DEFAULT_MAX_WORKERS = 20
@@ -899,6 +908,16 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
     working = sum(1 for flight in flights if (flight.get("caller") or "") == caller)
     others = len(flights) - working
     free = places - working
+    pause = batch / PAUSE_NAME
+    if pause.is_file() and not all(state in OVER for state in states):
+        # Answers that were complete are handed in and the steps they free have started (above);
+        # nothing new goes out.  The agent stops here: a pause is its owner's decision.
+        why = " ".join(pause.read_text(encoding="utf-8", errors="replace").split())[:300]
+        say(f"[batch] RESULT exit={EXIT_PAUSED} PAUSED - {status_line(rows)} - {len(flights)} answerer(s) still at work; "
+            f"no question is handed out while the batch is paused ({why or 'no reason given'}). Do NOT run this "
+            f"again until the person says to go on: then {shlex.join(this('--resume', str(batch)))} and the round "
+            "command as before")
+        return EXIT_PAUSED
     shares = to_hand_out(record, arguments)[0] if "waiting" in states and free > 0 else []
     if shares:
         memo["free_since"] = memo.get("free_since") or time.monotonic()
@@ -979,6 +998,26 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
         time.sleep(max(0.05, min(arguments.poll, deadline - time.monotonic())))
 
 
+def pause(batch: Path, reason: str | None) -> int:
+    load(batch)
+    (batch / PAUSE_NAME).write_text(f"{reason or 'paused'} (since {time.strftime('%Y-%m-%d %H:%M')})\n", encoding="utf-8")
+    event(batch, event="paused", reason=reason or "")
+    say(f"[batch] RESULT exit=0 PAUSED - no question is handed out from now on; answerers at work finish what they "
+        f"have. To go on: {shlex.join(this('--resume', str(batch)))}, then the round command")
+    return 0
+
+
+def resume(batch: Path) -> int:
+    load(batch)
+    was = (batch / PAUSE_NAME).is_file()
+    (batch / PAUSE_NAME).unlink(missing_ok=True)
+    if was:
+        event(batch, event="resumed")
+    say(f"[batch] RESULT exit=0 {'RESUMED' if was else 'NOT PAUSED'} - run the round command again "
+        "(with --answerers-gone once when the answerers started before the pause are gone)")
+    return 0
+
+
 def status(batch: Path) -> int:
     record = load(batch)
     rows = [describe(entry, record["route"]) for entry in record["books"]]
@@ -986,7 +1025,9 @@ def status(batch: Path) -> int:
         say(f"[batch] {row['name']}: {row['state']}; {row['pages']} page(s), read {row['read']}, sealed {row['sealed']}"
             + (f", {row['questions']} question(s) waiting" if row.get("questions") else "")
             + (f" - {row['error']}" if row.get("error") else ""))
-    say(f"[batch] RESULT exit=0 STATUS - {status_line(rows)}")
+    paused = "; PAUSED (" + " ".join((batch / PAUSE_NAME).read_text(encoding="utf-8").split())[:200] + ")" \
+        if (batch / PAUSE_NAME).is_file() else ""
+    say(f"[batch] RESULT exit=0 STATUS - {status_line(rows)}{paused}")
     return 0
 
 
@@ -999,6 +1040,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--ocr", action="store_true", help="read every book of BATCH (the OCR phase), one after another")
     mode.add_argument("--round", action="store_true", help="one round for every book of BATCH")
     mode.add_argument("--status", action="store_true", help="print where every book of BATCH stands")
+    mode.add_argument("--pause", action="store_true",
+                      help="hand out no more questions of BATCH until --resume (the round then ends with exit 3)")
+    mode.add_argument("--resume", action="store_true", help="end the pause of BATCH")
     mode.add_argument("--render", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--run-step", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--batch", help="first call: the batch folder (default: under WORK_ROOT/batches, named after the PDFs)")
@@ -1028,6 +1072,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--settle", type=float, default=SETTLE_SECONDS, metavar="SECONDS",
                         help="--round: how long an answerer keeps its place after its last answers file is written, "
                              f"the time it takes to return (default {SETTLE_SECONDS})")
+    parser.add_argument("--reason", help="--pause: why, shown by the round and by --status")
     parser.add_argument("--caller", default="", metavar="NAME",
                         help="--round: a name for this session when several sessions answer one batch at the same "
                              "time, each with its own --max-workers places (default: the one session)")
@@ -1046,14 +1091,17 @@ def main(argv: list[str] | None = None) -> int:
         if len(arguments.inputs) != 3:
             return 2
         return run_detached_step(Path(arguments.inputs[0]), arguments.inputs[1], arguments.inputs[2])
-    if not (arguments.ocr or arguments.round or arguments.status or arguments.render):
+    if not (arguments.ocr or arguments.round or arguments.status or arguments.render or arguments.pause
+            or arguments.resume):
         return start(arguments)
     if len(arguments.inputs) != 1:
-        say("ERROR --ocr, --round and --status take one argument: the batch folder")
+        say("ERROR --ocr, --round, --status, --pause and --resume take one argument: the batch folder")
         return 2
     batch = Path(arguments.inputs[0]).expanduser().resolve()
     if arguments.render:
         return render_all(batch)
+    if arguments.pause or arguments.resume:
+        return pause(batch, arguments.reason) if arguments.pause else resume(batch)
     return read_books(batch) if arguments.ocr else round_(batch, arguments) if arguments.round else status(batch)
 
 

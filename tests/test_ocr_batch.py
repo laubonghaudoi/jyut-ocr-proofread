@@ -532,6 +532,48 @@ class FailureTests(BatchCase):
         self.assertEqual(b.record()["books"][0]["lost"], 1)
 
 
+class PauseTests(BatchCase):
+    def test_a_paused_batch_hands_out_nothing_and_goes_on_where_it_was(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        self.assertEqual(b.round()[0], 10)
+        b.answer()                                           # the answerers at work finish what they have
+        code, out = b.call("--pause", str(b.batch), "--reason", "the cost is the person's to decide")
+        self.assertEqual(code, 0, out)
+        code, out = b.round()
+        self.assertEqual(code, 3, out)
+        self.assertIn("RESULT exit=3 PAUSED", out)
+        self.assertIn("the cost is the person's to decide", out)
+        self.assertIn("Do NOT run this again until the person says to go on", out)
+        self.assertIn(f"--resume {b.batch}", out)
+        # What was answered in full was handed in and the books' steps go on; nothing new goes out.
+        self.assertEqual(len([item for item in b.events() if item.get("event") == "applied"]), 2)
+        code, out = b.call("--status", str(b.batch))
+        self.assertIn("; PAUSED (the cost is the person's to decide", out)
+        b.settle()
+        self.assertEqual(b.round()[0], 3)                    # and again: the profiles are done, the pages' step starts
+        b.settle()
+        self.assertTrue(b.calls("proofread_pages.py"))
+        self.assertEqual(b.round()[0], 3)
+        self.assertEqual(len(list((b.batch / "plans").glob("round-*"))), 1)      # its questions wait for the resume
+        code, out = b.call("--resume", str(b.batch))
+        self.assertEqual(code, 0, out)
+        self.assertIn("RESUMED", out)
+        code, out, _ = b.until_done()
+        self.assertEqual(code, 0, out)
+        self.assertIn("RESULT exit=0 DONE - 2/2 delivered", out)
+
+    def test_a_batch_that_is_done_is_done_paused_or_not(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        self.assertEqual(b.until_done()[0], 0)
+        self.assertEqual(b.call("--pause", str(b.batch))[0], 0)
+        code, out = b.round()
+        self.assertEqual(code, 0, out)
+
+
 class RoundSizeTests(BatchCase):
     def test_a_round_hands_out_no_more_than_the_platform_runs_at_once(self) -> None:
         b = self.b
