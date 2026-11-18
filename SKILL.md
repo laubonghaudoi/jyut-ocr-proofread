@@ -40,6 +40,8 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 5. **定稿**（一律放背景，唔好前景跑）：`"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK > BOOK/finish.log 2>&1`，用 `wait_for_run.py BOOK BOOK/finish.log` 等；exit 碼照七。
 6. **交付同清走**：exit 0 之後，有 `WARNING` 先 `grep -n WARNING BOOK/finish/finish-book.log`；跟住 `"$JYUT_OCR_PYTHON" scripts/clean_book.py BOOK --all`（成個 `BOOK` 刪走，淨係留 PDF 隔籬嘅交付檔），再照九交付。掃描圖資料夾開嘅書唔跑佢（冇 PDF，佢 exit 3：交付檔淨係喺 `BOOK`）。
 
+**標點融合**（量度或用戶指定先加）：第 4 步可加 `--punctuation-mode auto|split|fused`，兩套都支援。預設 `auto` 保持 A 套一次答「數標點＋插標點」、B 套分兩次問；`split` 明確拆開，`fused` 一次問晒。融合答案過唔到格式或點算檢查，就返去分開問；改字、標點數量、雙圈同導引點照原本守門，唔因為融合而放寬。兩次實驗要用全新輸出目錄；模式改咗唔可以續用另一模式嘅封頁。詳見 `references/long-book-workflow.md`〈逐頁校對（proofread_pages.py）〉。
+
 **純 Apple Vision**：第 2 步直接跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine apple-vision`，唔包 `run_ocr_phase.py`，唔加 OCR 嘅 `--single-engine`，冇 HF 模型／Hunyuan 補讀／未校對草稿。跳過第 3 步；第 4 步用 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-vision BOOK/proofread --single-engine`；第 5 步用 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision`。B 套校對加 `--backend http`；工作檔保留，唔跑 `--all`。
 
 **Hunyuan＋Paddle**：第 2 步可明確加 `--engine hunyuan-paddle`，其餘按上面雙引擎步驟。Linux／WSL2 保留單引擎例外：第 2 步用 `ocr_book.py BOOK --engine hunyuan`（有模型交接就包 `run_ocr_phase.py`）；跳過第 3 步，第 4、5 步按純 Vision 單引擎命令，但底稿目錄用 `BOOK/ocr-hunyuan`。macOS 唔接受 Hunyuan-only。
@@ -65,7 +67,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 1. **攞派工單**：`"$JYUT_OCR_PYTHON" scripts/packet_dispatch.py PACKETS_DIR`，stdout 最尾嗰行 `[packets]` 有寫成條 command（PACKETS_DIR 係 `[packets] PENDING` 行嗰個 wave 目錄嘅上一層）。幾本書同時停咗，就將佢哋嘅 packets 目錄一次過列晒，一輪答題者服務晒所有書。佢印出 JSON：`assignments` 每份係一個答題者嘅工作，連一段現成嘅 `prompt`。
 2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles N` 決定（四；冇加就係 8）。開咗就等齊佢哋返嚟：未返晒唔好行第 4 步，亦唔好中途停佢哋（早咗行只會多一輪）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
 3. **冇 subagent**：自己照 `references/packet-worker.md` 逐包答：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
-4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。
+4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。 `--model` 只係 packet 標籤，唔會揀答題 agent；要指定模型及 effort，喺實際啟動 agent 嗰度設，並保留啟動記錄。唔可以靠標籤聲稱用咗某個模型；未量度到嘅 provider tokens 留空。
 5. **重跑同一條步驟 command**。又 exit `10` 就返去第 1 步；一本書通常三四輪。
 
 - 平台唔畀你睇到自己嘅 model ID：`--answered-by` 寫平台顯示嗰個模型名，唔好估。

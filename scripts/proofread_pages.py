@@ -94,6 +94,7 @@ import _loop_watch  # noqa: E402
 import _content_fidelity  # noqa: E402
 import _note_markers  # noqa: E402
 import _packet_events  # noqa: E402
+import _punctuation_fusion  # noqa: E402
 from _packet_client import (  # noqa: E402
     DEFAULT_MAX_ITEMS_PER_BUNDLE,
     EXIT_PACKETS_PENDING,
@@ -4308,7 +4309,7 @@ EFFORT_RUNGS: tuple[str | None, ...] = ("xhigh", "medium", "low", None)
 # their one correction); tests/check_effort_policy.py holds the list to them.
 EFFORT_KINDS = (
     "adjudicate", "coverage-read", "cell-direction", "orient", "record-order",
-    "table-rebuild", "table-rebuild-retry", "census", "punctuate", "punctuate-retry", "punctuate-shape",
+    "table-rebuild", "table-rebuild-retry", "census", "census+punctuate", "punctuate", "punctuate-retry", "punctuate-shape",
     "writer", "format", "format-retry", "notation",
     "page-inventory", "page-inventory-correction", "content-recovery", "content-recovery-correction",
     "coverage-review", "coverage-review-correction",
@@ -8174,7 +8175,7 @@ def validate_completion(job: PageJob, expect: Mapping[str, str]) -> tuple[bool, 
         # the informational keys not at all; engine B's draft and the
         # fidelity switch below.
         if (key in OPTIONAL_PROVENANCE or key in INFORMATIONAL_PROVENANCE
-                or key in (DRAFT2_KEY, CONTENT_FIDELITY_KEY)):
+                or key in (DRAFT2_KEY, CONTENT_FIDELITY_KEY, "punctuationMode")):
             continue
         if key not in provenance and key in _draft_contract.SEMANTIC_KEYS:
             source = (job.draft_json if key == "draftSemanticsSha256" else
@@ -8187,6 +8188,19 @@ def validate_completion(job: PageJob, expect: Mapping[str, str]) -> tuple[bool, 
             continue
         if provenance.get(key, PROVENANCE_ABSENT_MEANS.get(key)) != value:
             return False, f"provenance {key} differs"
+    # Before mode was explicit, packet always fused and HTTP always split.
+    # An old seal with no transport evidence may resume only under auto;
+    # explicit experiments must never silently reuse an unknown mode.
+    if "punctuationMode" in expect:
+        sealed_mode = provenance.get("punctuationMode")
+        if sealed_mode is None:
+            transport = provenance.get("proofreadTransport")
+            sealed_mode = {"packet": "fused", "http": "split"}.get(transport)
+        if sealed_mode is None:
+            if expect.get("punctuationModeRequested", "auto") != "auto":
+                return False, "provenance punctuationMode is unknown in legacy seal"
+        elif sealed_mode != expect["punctuationMode"]:
+            return False, "provenance punctuationMode differs"
     # Engine B's draft: a page sealed with another (or none, where there now
     # is one) was merged from other readings.  A seal without the key was
     # made before it was recorded and is taken as it is.
@@ -9028,9 +9042,12 @@ SEALED_ON = {
 # and endpoint proofread a page, and the bytes of the helper code.  The
 # user's decision of 2026-11-14: editing the scripts, switching between the
 # agent's packets and a local model, or renaming the model or the endpoint
-# does not make a sealed page stale or orphan a stored answer.
+# does not itself make a sealed page stale or orphan a stored answer. The
+# explicit punctuation mode is compared separately: transport auto defaults
+# differ, so changing transport can change the decision mode.
 INFORMATIONAL_PROVENANCE = ("proofreadTransport", "proofreadModel", "proofreadEndpoint",
-                            "proofreadScriptSha256", "contentFidelitySha256", "contentNoteMarkersSha256")
+                            "proofreadScriptSha256", "contentFidelitySha256", "contentNoteMarkersSha256",
+                            "punctuationModeRequested", "punctuationFusionSha256")
 # Keys decision_provenance gained after pages were first sealed without them,
 # with the value their absence stands for: a page sealed before the key
 # existed was decided that way.
@@ -9059,12 +9076,48 @@ def content_fidelity_on(arguments: Any) -> bool:
     return getattr(arguments, "content_fidelity", "off") == "on"
 
 
+def punctuation_mode(arguments: Any, client: Any = None) -> str:
+    """Resolve auto without tying the shared fusion to a provider or model."""
+    requested = getattr(arguments, "punctuation_mode", "auto")
+    if requested in ("split", "fused"):
+        return requested
+    backend = getattr(arguments, "backend", None)
+    if backend in ("packet", "http"):
+        return "fused" if backend == "packet" else "split"
+    # Compatibility for library callers that supplied a client and a small
+    # Namespace before the CLI mode existed.
+    if client is not None:
+        return "fused" if getattr(client, "supports_fused_punctuate", False) else "split"
+    return "fused"  # The CLI's default backend is packet.
+
+
+def punctuation_fusion_summary(passes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Completed passes only; success means no independent fallback/retry."""
+    rows = [p["fusion"] for p in passes if p.get("fusion", {}).get("attempted")]
+    return {"attempts": len(rows), "successes": sum(bool(r.get("success")) for r in rows),
+            "fallbacks": sum(bool(r.get("fallbackReason")) for r in rows),
+            "fallbackReasons": dict(Counter(r["fallbackReason"] for r in rows if r.get("fallbackReason")))}
+
+
+def sum_fusion_summaries(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    summaries = [row.get("punctuationFusion") or {} for row in rows]
+    return {**{key: sum(row.get(key, 0) for row in summaries)
+               for key in ("attempts", "successes", "fallbacks")},
+            "fallbackReasons": dict(sum((Counter(row.get("fallbackReasons") or {})
+                                          for row in summaries), Counter()))}
+
+
 def packet_request_config(arguments: Any) -> dict[str, str]:
     """The part of decision_provenance a packet request ID is bound to: what
     decides an answer, not the informational keys nor the fidelity switch
     (the question asked is the same either way)."""
-    return {key: value for key, value in decision_provenance(arguments).items()
-            if key not in INFORMATIONAL_PROVENANCE and key != CONTENT_FIDELITY_KEY}
+    config = {key: value for key, value in decision_provenance(arguments).items()
+              if key not in INFORMATIONAL_PROVENANCE and key != CONTENT_FIDELITY_KEY}
+    # Packet's historical default was fusion. The exact same question keeps
+    # its stored answer ID, whether requested as auto or explicitly fused.
+    if punctuation_mode(arguments) == "fused":
+        config.pop("punctuationMode", None)
+    return config
 
 
 def decision_provenance(arguments: Any) -> dict[str, str]:
@@ -9073,6 +9126,9 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
     mixed in.  INFORMATIONAL_PROVENANCE is recorded with them, not compared."""
     return {
         "proofreadTransport": getattr(arguments, "backend", "packet"),
+        "punctuationMode": punctuation_mode(arguments),
+        "punctuationModeRequested": getattr(arguments, "punctuation_mode", "auto"),
+        "punctuationFusionSha256": sha256_file(Path(_punctuation_fusion.__file__)),
         # The packet label, or the HTTP model the client resolved (main).
         "proofreadModel": getattr(arguments, "model", None)
                           or (DEFAULT_MODEL if getattr(arguments, "backend", "packet") == "packet" else ""),
@@ -10183,10 +10239,11 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
     # output; measured without it, an unpunctuated 1910 report came back with
     # 。and ，throughout.
     ceiling = census_ceiling(arguments, len(CJK(span)))
-    fused = getattr(client, "supports_fused_punctuate", False)
+    fused = punctuation_mode(arguments, client) == "fused"
+    fusion = {"attempted": fused, "success": False, "fallbackReason": None}
     fused_out = ""
     if fused:
-        census_text, fused_out, m = client.fused_census_and_punctuate(
+        census_text, fused_out, m = _punctuation_fusion.ask_fused(client,
             crop_bytes=crop,
             span=span,
             hint=hint,
@@ -10197,7 +10254,17 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
             punct_system=punct_system,
         )
         used.append(m)
-    else:
+        n = parse_census(census_text)
+        doubled_n = parse_census(census_text, DOUBLED_LINE)
+        problem = m.get("fusionFormatProblem") or ("invalid-census" if n is None else "")
+        if not problem and n + (doubled_n or 0) > ceiling:
+            problem = "census-over-ceiling"
+        if problem:
+            # A malformed fusion never weakens the census gate to unknown:
+            # ask the independent count and punctuation questions as before.
+            fusion["fallbackReason"] = problem
+            fused = False
+    if not fused:
         census_text, m = client.ask_answering(
             CENSUS_SYSTEM, "數清楚呢個 block 印咗幾多個標點符號。", crop, arguments.max_tokens, kind="census")
         used.append(m)
@@ -10211,7 +10278,9 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         # marks (measured: 178 for a 430-character block - it counted
         # characters). Unknown, not zero.
         census = doubled_census = None
-    counted = {"censusConvention": "places", "doubledCensus": doubled_census}
+    counted = {"censusConvention": "places", "doubledCensus": doubled_census,
+               "punctuationMode": getattr(arguments, "punctuation_mode", "auto"),
+               "punctuationModeEffective": punctuation_mode(arguments, client), "fusion": fusion}
     if shape_line and any(c in PUNCT_MARKS or c in BULLET_MARKS for c in shape_line.group(1)):
         counted["censusShapes"] = shape_line.group(1).strip()[:40]
     if leaders is not None:
@@ -10221,6 +10290,7 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         # out: the census held to is at least that many.
         counted["modelCensus"], census = census, leaders
     if census == 0:
+        fusion["success"] = fused
         return span, {"ok": True, "marks": 0, "places": 0, "census": 0, "reason": "no printed marks", **counted}, used
     told = census_hint(census, doubled_census, show) + (
         f"裁圖上量到 {leaders} 串點（導引點線或者刪節號），每串寫「……」。\n" if leaders else "")
@@ -10248,7 +10318,10 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
     # Kept when refused: a refused pass leaves its text bare, and without the
     # output nobody can tell a wrong refusal from a right one afterwards.
     refused = [] if ok_p else [answered]
+    fusion["success"] = fused and ok_p
     if not ok_p:
+        if fused:
+            fusion["fallbackReason"] = "punctuation-validation"
         realigned = None
         # The retry is told the census too (it was not, and a retry after a
         # count refusal then wrote to no number at all).
@@ -10280,6 +10353,9 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         # tolerance the places are held to.  One retry that names both
         # numbers; the answer nearer the count stands, and only one that keeps
         # the characters and the places.
+        if fused:
+            fusion["success"] = False
+            fusion["fallbackReason"] = "doubled-circle-validation"
         again, m = client.ask_answering(
             punct_system,
             f"已定嘅字（唔准改）：\n---\n{span}\n---\n" + told +
@@ -13348,6 +13424,9 @@ def _proofread_page_inner(
             "model": client.model,
             "reasoningEffort": client.effort,
             **effort_policy_record(client),
+            "punctuationMode": getattr(arguments, "punctuation_mode", "auto"),
+            "punctuationModeEffective": punctuation_mode(arguments, client),
+            "punctuationFusion": punctuation_fusion_summary([]),
             "renderFile": str(job.render),
             # An unsupported reading is not a clean page: a human should look.
             "auditorClean": not doubts,
@@ -16471,6 +16550,9 @@ def _proofread_page_inner(
         "model": client.model,
         "reasoningEffort": client.effort,
         **effort_policy_record(client),
+        "punctuationMode": getattr(arguments, "punctuation_mode", "auto"),
+        "punctuationModeEffective": punctuation_mode(arguments, client),
+        "punctuationFusion": punctuation_fusion_summary(punctuation_passes),
         "renderFile": str(job.render),
         "auditorClean": not doubts,
         "mode": mode,
@@ -16828,6 +16910,10 @@ def build_parser() -> argparse.ArgumentParser:
                              f"default {DEFAULT_MAX_ITEMS_PER_BUNDLE}): a wave with more than --max-bundles times "
                              "this many is written in more bundles, so no bundle hands one answerer hundreds "
                              "of page images")
+    parser.add_argument("--punctuation-mode", choices=("auto", "split", "fused"), default="auto",
+                        help="census and punctuation questions: auto preserves packet fusion and HTTP split; "
+                             "split asks independently; fused asks together with guarded split fallback. "
+                             "The effective mode is sealed and a different mode cannot reuse the page")
     parser.add_argument("--table-orientation", choices=("auto", "as-printed"),
                         default=os.environ.get("PROOFREAD_TABLE_ORIENTATION", "auto"),
                         help="table orientation policy: 'auto' (default) puts vertical-column records into "
@@ -17470,7 +17556,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             skipped += 1
             record = json.loads(job.out_json.read_text(encoding="utf-8"))
             entry = {"scanPage": scan_page, "status": "skipped-current",
-                     "auditorClean": record.get("auditorClean")}
+                     "auditorClean": record.get("auditorClean"),
+                     # Packet waves complete pages at different times. Keep
+                     # their sealed fusion evidence in the selected-range
+                     # total even when this replay asks no further question.
+                     "punctuationFusion": record.get("punctuationFusion") or
+                         punctuation_fusion_summary(record.get("punctuationPasses") or [])}
             if reason != "current":
                 # Sealed by the old skill before some of its rules (LEGACY_ABSENT_KEYS).
                 legacy += 1
@@ -17575,7 +17666,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for kind, row in (record.get("calls") or {}).items():
                     total = call_totals.setdefault(kind, Counter())
                     for key, value in row.items():
-                        if key == "maxCompletion":
+                        if key == "efforts":
+                            # This distribution is nested, unlike the numeric
+                            # call totals. Missing legacy/packet metadata stays
+                            # absent; never infer it from the run's policy.
+                            if value:
+                                counts = Counter(total.get(key) or {})
+                                counts.update(value)
+                                total[key] = dict(sorted(counts.items()))
+                        elif key == "maxCompletion":
                             total[key] = (None if total.get(key, 0) is None or value is None
                                           else max(total.get(key, 0), value))
                         elif value is None:
@@ -17613,6 +17712,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "needsResearch": len(research) + len(record.get("needsResearch", [])),
                     "reasoningTokens": record["usage"]["reasoning_tokens"],
                     "calls": sum(row.get("n", 0) for row in (record.get("calls") or {}).values()),
+                    "punctuationFusion": record.get("punctuationFusion") or punctuation_fusion_summary([]),
                     "circlesDropped": sum(1 for d in record.get("engineDisagreements") or []
                                           if d.get("resolved_by") == "circle-not-numeral"),
                     "bracketNumerals": sum(1 for d in record.get("engineDisagreements") or []
@@ -17723,6 +17823,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         **({"effortPolicy": effort_policy_text(arguments.effort_policy_rungs)}
            if getattr(arguments, "effort_policy_rungs", None) else {}),
         "tableOrientation": arguments.table_orientation,
+        "punctuationMode": arguments.punctuation_mode,
+        "punctuationModeEffective": punctuation_mode(arguments),
+        # Unlike calls (this process's completed pages), the fusion summary
+        # covers every completed/current selected page across packet waves.
+        "punctuationFusion": sum_fusion_summaries(results),
         "exitStatus": exit_status,
         "counts": {"requested": len(pages), "completed": completed,
                    "pending": pending_pages,

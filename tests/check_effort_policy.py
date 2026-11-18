@@ -23,10 +23,12 @@ Usage:
 
 from __future__ import annotations
 
+from collections import Counter
 import json
 from pathlib import Path
 import re
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -140,7 +142,7 @@ def check_kinds() -> None:
     names is one the policy takes (a kind added later and left out could not
     be given a rung), and the fidelity questions' three with their correction."""
     named = set()
-    for name in ("proofread_pages.py", "book_profile.py"):
+    for name in ("proofread_pages.py", "book_profile.py", "_punctuation_fusion.py"):
         source = (SCRIPTS / name).read_text(encoding="utf-8")
         named |= set(re.findall(r'\bkind="([a-z+-]+)"', source))
     fidelity = (SCRIPTS / "_content_fidelity.py").read_text(encoding="utf-8")
@@ -162,10 +164,11 @@ def check_summary() -> None:
     check("a packet answer has no rung", "efforts" in rows["writer"], False)
 
 
-def proofread(root: Path, recorder: Recorder, extra: list[str]) -> tuple[dict, str, dict]:
+def proofread(root: Path, recorder: Recorder, extra: list[str], *,
+              pages: str = "1", overwrite: bool = True) -> tuple[dict, str, dict]:
     status = pp.main([str(root / "renders"), str(root / "a"), str(root / "out"),
-                      "--draft2-directory", str(root / "b"), *stand_in.preferring(root), "--pages", "1",
-                      "--overwrite", "--report", str(root / "report.json"),
+                      "--draft2-directory", str(root / "b"), *stand_in.preferring(root), "--pages", pages,
+                      *(["--overwrite"] if overwrite else []), "--report", str(root / "report.json"),
                       "--backend", "http", "--endpoint", recorder.endpoint, "--model", "stand-in",
                       # Unstreamed requests: the stand-in server answers with one JSON payload.
                       "--no-loop-detector", "--workers", "1", "--page-concurrency", "1", *extra])
@@ -184,6 +187,7 @@ def check_run() -> None:
         check("no switch: nothing recorded with the page", "effortPolicy" in record, False)
         check("nor in the run report", "effortPolicy" in report, False)
         check("and every request on the client's effort", set(plain.efforts()), {"xhigh"})
+        check("the report preserves the page's effort counts", efforts(report), efforts(record))
     with stand_in.book(page) as root:
         policed = Recorder()
         record2, markdown2, report2 = proofread(root, policed, ["--effort-policy", "census=low"])
@@ -194,6 +198,7 @@ def check_run() -> None:
         check("recorded with the page, beside its effort", (record2.get("reasoningEffort"), record2.get("effortPolicy")),
               ("xhigh", "census=low"))
         check("and in the run report", report2.get("effortPolicy"), "census=low")
+        check("the report preserves the policy's effort counts", efforts(report2), efforts(record2))
         check("the page's text is the same", markdown2, markdown)
         check("and its provenance: the policy is not a decision", record2["provenance"].keys(), record["provenance"].keys())
     with stand_in.book(page) as root:
@@ -208,8 +213,66 @@ def check_run() -> None:
         check("nothing was sealed", list((root / "out").glob("page-*.json")), [])
 
 
+def efforts(record: dict) -> dict:
+    return {kind: row["efforts"] for kind, row in record["calls"].items() if "efforts" in row}
+
+
+def check_report_calls() -> None:
+    page = ([stand_in.block("天地玄黃宇宙洪荒日月盈昃辰宿列張", (0.1, 0.1, 0.4, 0.6), order=0)],
+            "天地玄黃宇宙洪荒日月盈昃辰宿列張")
+    with stand_in.book({1: page, 2: page, 3: page}) as root:
+        # Each census starts low, is cut off, then succeeds on the last rung.
+        recorder = Recorder(cut=("low",))
+        extra = ["--effort-policy", "census=low"]
+        _, _, report = proofread(root, recorder, extra, pages="1-2")
+        records = [json.loads((root / f"out/page-{number:04d}.json").read_text(encoding="utf-8"))
+                   for number in (1, 2)]
+        expected: dict[str, Counter] = {}
+        for record in records:
+            for kind, counts in efforts(record).items():
+                expected.setdefault(kind, Counter()).update(counts)
+        check("two completed pages sum every kind and rung", efforts(report), expected)
+        check("both the policy rung and the fallback rung were counted",
+              set(expected["census"]), {"low", "none"})
+        check("effort counts account for every HTTP request",
+              sum(sum(counts.values()) for counts in efforts(report).values()), len(recorder.seen))
+
+        before = {path.name: path.read_bytes() for path in (root / "out").glob("page-*.*")}
+        seen = len(recorder.seen)
+        _, _, continued = proofread(root, recorder, extra, pages="1-3", overwrite=False)
+        third = json.loads((root / "out/page-0003.json").read_text(encoding="utf-8"))
+        check("a continued run skips two pages and completes one",
+              (continued["counts"]["skippedCurrent"], continued["counts"]["completed"]), (2, 1))
+        check("only newly completed pages contribute effort counts", efforts(continued), efforts(third))
+        check("the continued report counts only this run's requests",
+              sum(sum(counts.values()) for counts in efforts(continued).values()), len(recorder.seen) - seen)
+        check("continued pages retain their seals and text",
+              {name: (root / "out" / name).read_bytes() for name in before}, before)
+
+        seen = len(recorder.seen)
+        _, _, resumed = proofread(root, recorder, extra, pages="1-3", overwrite=False)
+        check("an entirely current run has no call totals", resumed["calls"], {})
+        check("and makes no requests", len(recorder.seen), seen)
+
+    # This older client shape supplies usage but no recorded effort. The
+    # report must not infer a rung from the CLI or the page's reasoningEffort.
+    summarize = pp.summarize_calls
+
+    def without_efforts(calls: list) -> dict:
+        rows = summarize(calls)
+        for row in rows.values():
+            row.pop("efforts", None)
+        return rows
+
+    with stand_in.book({1: page, 2: page}) as root:
+        with mock.patch.object(pp, "summarize_calls", side_effect=without_efforts):
+            _, _, report = proofread(root, Recorder(), extra, pages="1-2")
+        check("legacy call rows still have numeric totals", bool(report["calls"]), True)
+        check("missing effort metadata stays absent", efforts(report), {})
+
+
 def main() -> int:
-    for step in (check_rungs, check_policy_text, check_kinds, check_summary, check_run):
+    for step in (check_rungs, check_policy_text, check_kinds, check_summary, check_run, check_report_calls):
         step()
     if FAILED:
         print(f"\n{len(FAILED)} check(s) failed: " + "; ".join(FAILED))

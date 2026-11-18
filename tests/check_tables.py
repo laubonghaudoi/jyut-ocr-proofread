@@ -286,7 +286,9 @@ def run_page(blocks: list[tuple[str, str, list[float]]], b_text: str, client: Fa
         (tmp / "b.txt").write_text(b_text, encoding="utf-8")
         job = pp.PageJob(1, tmp / "page-0001.png", tmp / "a.txt", tmp / "a.json", tmp / "b.txt",
                          tmp / "page-0001.json", tmp / "page-0001.md")
-        arguments = pp.build_parser().parse_args([str(tmp), str(tmp), str(tmp), *switches])
+        # Table fixtures script the original independent census/punctuation calls.
+        arguments = pp.build_parser().parse_args([str(tmp), str(tmp), str(tmp),
+                                                  "--punctuation-mode", "split", *switches])
         arguments.prefer_engine, arguments.fallback_engine = prefer, "A"
         arguments.profile_data, arguments.profile_sha = None, ""
         arguments.variant_rulings, arguments.variant_rulings_sha = {}, ""

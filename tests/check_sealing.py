@@ -207,7 +207,8 @@ PROFILE = {"preferEngine": "A"}
 
 
 def seal(record: dict, markdown: str, render: Path, draft: Path, out: Path) -> None:
-    decided = pp.decision_provenance(SimpleNamespace(prefer_engine="A", fallback_engine="A",
+    # These synthetic seals are resumed by the HTTP/split run below.
+    decided = pp.decision_provenance(SimpleNamespace(prefer_engine="A", fallback_engine="A", backend="http",
                                                      profile_sha=pp.profile_fingerprint(PROFILE)))
     record["provenance"] = {"renderSha256": pp.sha256_file(render), "draftSha256": pp.sha256_file(draft),
                             **decided, "markdownSha256": pp.sha256_bytes(markdown.encode("utf-8"))}

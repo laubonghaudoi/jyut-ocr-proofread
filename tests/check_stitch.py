@@ -506,7 +506,8 @@ def check_main_runs_the_stitch() -> None:
         (tmp / "profile.json").write_text(json.dumps({"preferEngine": "A"}))
         profile = ["--profile", str(tmp / "profile.json")]
         arguments = pp.build_parser().parse_args(
-            [str(tmp / "renders"), str(tmp / "drafts"), str(tmp / "out"), *profile, *old_defaults])
+            [str(tmp / "renders"), str(tmp / "drafts"), str(tmp / "out"), *profile, *old_defaults,
+             "--backend", "http"])  # Match the resumed run's effective punctuation mode.
         arguments.prefer_engine, arguments.fallback_engine = "A", "A"
         arguments.profile_sha = pp.profile_fingerprint({"preferEngine": "A"})
         provenance = pp.decision_provenance(arguments)

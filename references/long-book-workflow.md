@@ -78,10 +78,16 @@ A 套佢一樣出 packet 題（exit `10`）；B 套經 http 問模型。`--worke
 
 每頁按情況走一條路，`mode` 記入 seal：
 
-- **merge**（兩個引擎都有字）：對齊兩份底稿；一致嘅字唔問，分歧（唔係異體）裁圖問校對者（裁決，「字: …」）；逐段數標點（census）再加標點，唔准改字；之後補讀同排版（段落、標題、表格），排版結果要過字元守門（`verify_characters`、刪字檢查）；被拒就重試一次，再唔得就用退返嘅版本加疑點。排版唔准加標點（除咗編號括號）；不過引擎格仔唔收嘅表（`tablesRejected`）冇逐段加標點，由排版對住頁圖寫，表入面兩個引擎都喺同一位讀到嘅標點（例如列舉嘅「、」、表頭嘅括號）准寫喺佢寫嘅表入面，每個最多兩個引擎讀到嘅次數，記入 seal 嘅 `tableMarksAllowed`；表外正文照舊一個都唔准加。排版步收到嘅文字原文記入 seal 嘅 `structureInput`（`text`、`characters`、`sha256`；超過兩萬字淨留頭兩萬字，記 `truncated`），排版有冇漏嘢可以直接對。
+- **merge**（兩個引擎都有字）：對齊兩份底稿；一致嘅字唔問，分歧（唔係異體）裁圖問校對者（裁決，「字: …」）；逐段數標點（census）同加標點（按 `--punctuation-mode` 一次問晒或者分開問），唔准改字；之後補讀同排版（段落、標題、表格），排版結果要過字元守門（`verify_characters`、刪字檢查）；被拒就重試一次，再唔得就用退返嘅版本加疑點。排版唔准加標點（除咗編號括號）；不過引擎格仔唔收嘅表（`tablesRejected`）冇逐段加標點，由排版對住頁圖寫，表入面兩個引擎都喺同一位讀到嘅標點（例如列舉嘅「、」、表頭嘅括號）准寫喺佢寫嘅表入面，每個最多兩個引擎讀到嘅次數，記入 seal 嘅 `tableMarksAllowed`；表外正文照舊一個都唔准加。排版步收到嘅文字原文記入 seal 嘅 `structureInput`（`text`、`characters`、`sha256`；超過兩萬字淨留頭兩萬字，記 `truncated`），排版有冇漏嘢可以直接對。
 - **transcribe**：得一份底稿（`--single-engine`、缺引擎 A、加咗 `--allow-missing-engine-b` 而缺引擎 B、引擎 B 截斷而且一開始就重複到底、冇漢字但有西文或者數字嘅頁）：對住頁圖轉錄，底稿做提示。
 - **merge-order-conflict**：兩個引擎嘅閱讀次序對唔上（例如直排題名頁一個引擎亂咗欄序），逐字對齊冇意義，成頁用偏好嗰個引擎嘅讀法。
 - **blank-page**：兩個引擎都冇字（或者淨係頁碼、書眉），唔問就封空頁；一個引擎讀出一大段自己重複、另一個冇見過嘅字，當冇支持丟咗，記 `unsupported-reading`。開咗 `--content-fidelity on` 而清點話有內容，就改走 **image-recovery**：對住整頁原圖補讀同覆核。
+
+**標點模式（`--punctuation-mode`）**：`auto` 係預設，packet 融合、http 拆分，保留兩條路線原本做法；`split` 兩條路線都先 census 再 punctuate；`fused` 兩條路線共用同一 prompt、答案格式同解析器，一次答「符號／雙圈／形狀」、分隔線 `---PUNCTUATED---` 同加標點後嘅原文。唔綁定模型或者 agent 平台。HTTP 融合題型叫 `census+punctuate`，可以由 `--effort-policy` 單獨設定；重試題型保持獨立，冇列入 policy 就用原本全局上限。
+
+融合答唔齊、分隔格式錯、符號數讀唔到或者高過本書上限，會重新獨立數標點、再插標點；舊 packet 嘅「符號：0」無分隔答案保留相容。字元、標點數量、雙圈、導引點、重對齊及有界重試照原本規則。每段 `punctuationPasses[].fusion` 記有冇嘗試、首次答案有冇直接成功、回退原因；改字或雙圈檢查要重試都唔當直接成功。每頁同 run report 記 `punctuationMode`（要求）、`punctuationModeEffective`（實際模式）、`punctuationFusion`（attempts、successes、fallbacks、fallbackReasons）；融合統計涵蓋本次所選、已完成或 current 嘅頁，所以 packet 分幾個 wave 完成亦唔漏計；呢個係封頁證據總結，唔等於本次新增模型請求。`calls` 仍然只合計本次完成嘅頁，未知 provider 用量唔推算。
+
+Packet 嘅 `--model` 係題目標籤，唔係 agent 啟動指令。做指定模型實驗時，保留實際啟動模型及 effort 嘅記錄，apply 用 `--answered-by` 記確實答題者；冇 provider 用量就保留未知。量度完整逐頁校對牆鐘時間要包埋出題、agent 啟動／排隊／睇圖／答題、套用答案同重播；一條 packet 題唔等於一次模型請求，亦唔可以淨係加總每次腳本執行時間。
 
 全部頁封好，同一條命令自己接跨頁表格（〈跨頁表格〉）。
 
@@ -96,6 +102,7 @@ Exit：`0` 揀咗嘅頁全部封好；`1` 有頁 failed 或者 blocked（包括�
 每頁封 `page-NNNN.md` 同 `page-NNNN.json`：JSON 記 render、兩份底稿、profile、異體裁定、字表、規則 key 同開關（provenance），封條驗 Markdown 同 JSON 嘅 hash。續跑淨係重做唔 current 嘅頁：
 
 - **淨係記錄、唔判過期**：校對 transport（packet／http）、model 名、endpoint、script 同 helper 嘅 hash。改 code、換答題模型都唔使重做。
+- **標點模式**：封頁用實際 `split`／`fused` 判相容，要求嘅 `auto` 只作記錄；同一實際模式嘅 `auto` 同明確開關互通。舊封頁未有模式 key，就由記錄嘅 transport 推斷（packet 融合、http 拆分）；連 transport 都冇嘅舊封頁只喺 `auto` 照舊接收，明確 `split`／`fused` 唔會當佢已驗證。改模式要用新輸出目錄，或者查清楚後指定頁 `--overwrite`。Packet 融合題保留舊 prompt 同 request ID；拆分模式另有身份，唔混用答案。
 - **判過期**：render、底稿（連引擎 B 嗰份）、profile、異體裁定、字表同開關改咗，或者封條對唔上：報 blocked，講明邊個 key；查清楚先對嗰幾頁加 `--overwrite --pages N`，唔好成本 overwrite。
 - **舊版技能封好嘅頁照收**：封頁嗰陣仲未有嘅規則 key（`variantPairs`、`agreedMarks`、`unreadTableCharacters`，同而家長開嘅規則）缺咗都當已完成，run report 逐頁標 `legacy`，計入 `counts.legacy`。有記錄嘅 key 值唔同就仲係 blocked。
 - **round-4 開關**：`--keep-arabic-numerals`、`--loop-detector`、`--neighbour-guard`、`--learned-heads` 預設開。一本書喺佢哋未預設開之前封過頁，續跑嗰陣唔加返相應 `--no-…` 就會一半開一半關：腳本一開始就 exit 2，`ERROR resume with --no-…` 講明要加乜；照加，之後呢本書每次都加。
@@ -256,8 +263,9 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 - `--no-unread-table-characters`：關 headerCharacters：重建嘅表寫咗冇引擎讀到嘅字就唔收。
 - `--same-print-marks`（預設關）：agreedMarks 唔收嘅 block，如果兩個引擎喺每個空位讀到同一樣嘅印刷字（數字、拉丁字、註號），就照用引擎 A 嘅標點，唔問模型；比較時唔計註號，因為兩個引擎寫同讀錯註號都唔同，而註號另外還原；封條記 `samePrintMarks: "on"`，開咗嘅頁同關咗嘅頁互相唔算 current；呢啲 block 喺 `censusNotAsked` 記做 `engines-agree-print`。
 - `--unmarked-page-sample`（預設關）：無標點嘅頁少問啲。成頁兩個引擎各自讀到嘅標點都唔多過兩個，而且引擎 A 讀成淨係得字（冇標點、數字、拉丁字、註號）嘅 block 多過三個，就先問最長嗰三個 block 嘅標點題，連同頁上其他 block 一齊問；三個都答冇標點，其餘嗰啲 block 照原文寫、唔問（`censusNotAsked` 記 `page-unmarked-sample`）；有一個答有標點，或者答案被拒，其餘就喺下一個 wave 照常問。Profile 見到雙圈或者旁點嘅書唔用。封條記 `unmarkedPageSample: "on"`，開咗嘅頁同關咗嘅頁互相唔算 current。適合無標點嘅古書；有標點嘅書引擎多數讀到標點，呢個開關唔會生效。A 套新書照 `SKILL.md` 第 4 步，連同 `--same-print-marks` 一齊加：28 案實測，強模型同細模型開咗都冇跌準確度（`CHANGELOG.md`）。
+- `--punctuation-mode auto|split|fused`：逐頁校對嘅標點提問方式，預設 `auto`（packet 融合、http 拆分）；兩個 backend 都可以明確揀 `split` 或 `fused`。格式錯先回退拆分，內容守門及重試不變；詳見〈逐頁校對（proofread_pages.py）〉。
 - `--content-fidelity on`：完整性 v2（預設 `off`）；`--table-orientation as-printed`：保留物理格網，唔轉直排表（預設 `auto`）。
-- `--effort-policy KIND=RUNG,...`（環境變數 `PROOFREAD_EFFORT_POLICY`；預設冇，淨係 `--backend http` 用）：量度用嘅開關，新書唔使加。指定邊類題第一次用邊一級 effort 去問，例如 `census=low,format=low`；`RUNG` 係 `xhigh`、`medium`、`low` 或者 `none`，`KIND` 係 `--help` 列嘅題型（寫錯會即刻 exit 2，一頁都唔問）。`--reasoning-effort` 照舊係所有題嘅最高一級，policy 只可以調低；冇列嘅題型照用 `--reasoning-effort`，重試（`punctuate-retry`、`format-retry` 等）係另一個題型，所以唔列就即係重試用返最高一級。答案撞 `max_tokens` 照舊淨係向下一級。設咗就記入每頁封條嘅 `effortPolicy`（同 `reasoningEffort` 並排）同 run report，run report 嘅每類題多一個 `efforts`（每一級問咗幾多次）；同 effort 一樣唔入 provenance，續跑唔會因為佢唔同而重做已封嘅頁。`book_profile.py` 有同一個開關（佢問嘅題型係 `notation`）。邊類題調低唔會掉字、掉標點未量度過，要逐類對住 golden 用 `tests/run_regression.py` 比較先好用喺正式跑書。
+- `--effort-policy KIND=RUNG,...`（環境變數 `PROOFREAD_EFFORT_POLICY`；預設冇，淨係 `--backend http` 用）：量度用嘅開關，新書唔使加。指定邊類題第一次用邊一級 effort 去問，例如 `census=low,format=low`；`RUNG` 係 `xhigh`、`medium`、`low` 或者 `none`，`KIND` 係 `--help` 列嘅題型（寫錯會即刻 exit 2，一頁都唔問）。`--reasoning-effort` 照舊係所有題嘅最高一級，policy 只可以調低；冇列嘅題型照用 `--reasoning-effort`，重試（`punctuate-retry`、`format-retry` 等）係另一個題型，所以唔列就即係重試用返最高一級。答案撞 `max_tokens` 照舊淨係向下一級。設咗就記入每頁封條嘅 `effortPolicy`（同 `reasoningEffort` 並排）同 run report，run report 嘅每類題多一個 `efforts`（每一級問咗幾多次）；同 effort 一樣唔入 provenance，續跑唔會因為佢唔同而重做已封嘅頁。`book_profile.py` 有同一個開關（佢問嘅題型係 `notation`）。未有適用於各書同模型嘅建議值，要逐類對住原圖及固定評分規則量度品質同時間先好用喺正式跑書。
 - `--single-engine`、`--draft2-directory`、`--profile`、`--variant-rulings`：輸入；`--allow-missing-engine-b`：缺引擎 B 底稿嘅頁淨用引擎 A 轉錄（預設唔封，當 failed）；`--pages`、`--first-page`、`--last-page`、`--overwrite`：揀頁同重做；`--backend`、`--endpoint`、`--model`、`--packets-dir`、`--max-bundles`、`--max-items-per-bundle`：校對 transport；`--workers`、`--page-concurrency`、`--max-inflight`、`--max-adjudications`、`--reasoning-effort`、`--max-tokens`、`--temperature`、`--timeout`：並行同模型請求。
 
 `book_profile.py`：`--no-learned-heads`（唔學書眉）、`--no-doubled-notation`、`--force-calibrate-engines`（短檔都校準引擎）、`--probe-pages`、`--pages`、`--max-crops`、`--reuse-engines`（同一批頁、同一個模型就沿用上次嘅引擎量度）、`--no-inflight-cap`、`--workers`。

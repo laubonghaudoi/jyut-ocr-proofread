@@ -281,7 +281,9 @@ class FormatterFallbackIntegrationTests(unittest.TestCase):
                             return "符號：0\n雙圈：0\n形狀：無", {}
                         raise AssertionError(f"unexpected call {kind}")
                 self_checked = self
-                args = pp.build_parser().parse_args([str(root), str(root), str(root), "--content-fidelity", "on"])
+                # This formatter fixture implements the original separate census call.
+                args = pp.build_parser().parse_args([str(root), str(root), str(root), "--content-fidelity", "on",
+                                                     "--punctuation-mode", "split"])
                 args.prefer_engine, args.furniture, args.profile_data = "", frozenset(), {}
                 job = pp.PageJob(1, render, a, block_file if with_layout else None, b,
                                  root / "out.json", root / "out.md")

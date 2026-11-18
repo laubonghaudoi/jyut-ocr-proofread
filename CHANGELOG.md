@@ -1,5 +1,12 @@
 # 更新摘要
 
+## Unreleased — 通用標點融合：packet／HTTP 共用拆分及融合開關
+
+- `proofread_pages.py` 加 `--punctuation-mode auto|split|fused`；`auto` 保留 packet 融合、HTTP 拆分嘅原本預設，兩條路線都可以明確選擇。共用融合 prompt、解析及格式檢查，唔綁定模型或者 agent 平台；舊 packet prompt、request ID 同答案格式保持可重播。
+- 缺格式、符號數讀唔到或超出上限就回退獨立 census／punctuate；字元、標點數量、雙圈、導引點、重對齊及重試守門不變。HTTP 題型 `census+punctuate` 支援既有 effort policy；重試仍然係獨立題型。
+- 每段、每頁及 run report 記錄融合嘗試、首次成功、回退及原因；封頁以實際模式判相容，模式轉咗唔可以混用封頁。舊封頁按記錄嘅 transport 推斷；未記 transport 嘅舊封頁只保留 `auto` 相容。
+- 新合成離線測試覆蓋兩種 backend、格式回退、無標點、改字、計數、雙圈、導引點、重對齊、effort、歷史答案重播及封頁模式。呢啲測試驗證程式契約；實際速度同品質要由固定案例嘅對照實驗另外報告，唔因此更改通用預設。
+
 ## 2026-11-17：精簡 macOS 路線
 
 - macOS 只支援原生 Apple Silicon，移除 Intel Mac 同 Vision＋Hunyuan 混合路線。
@@ -65,6 +72,7 @@
 
 - `proofread_pages.py` 同 `book_profile.py` 加 `--effort-policy KIND=RUNG,...`（`PROOFREAD_EFFORT_POLICY`），淨係 `--backend http` 用，預設冇：唔設就同以前一模一樣，每條題都由 `--reasoning-effort` 嗰級問起。設咗之後，列出嘅題型（例如 `census=low`）第一次就用嗰級；`--reasoning-effort` 仍然係上限，冇列嘅題型同所有重試照用上限，撞 `max_tokens` 照舊向下一級。寫錯題型或者級別即刻 exit 2。
 - 記錄：每頁封條多 `effortPolicy`（只喺有設嗰陣），run report 亦有；run report 每類題多一個 `efforts`，數每一級問咗幾多次。同 `reasoningEffort` 一樣只係記錄，唔入 provenance、唔入 packet 題目 ID，所以唔會令已封嘅頁過期。
+- 修正 run report 漏咗合計每頁 `calls.*.efforts`：逐題型、逐級相加，仍然只計今次完成嘅頁；續跑略過嘅頁唔重計，舊記錄冇 effort 資料就唔推算。
 - 呢個係 issue #2 第 2 步嘅機制，**未有建議值**：邊類題可以調低而唔掉字、掉標點，要喺有本機模型嘅機器逐類對 golden 量度先知。
 - 新檢查 `tests/check_effort_policy.py`（本機 stub server，包括由頭跑一次 `proofread_pages.py`）。
 
