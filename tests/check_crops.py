@@ -110,6 +110,32 @@ check("a run past the block's end: the whole run is shown",
 check("... and not more than the run and its reach", shown_one(27, 12, 5), False)
 
 
+# ACROSS: the column fit puts a spot a character or two off, and at a column's end that is
+# the next column (measured: a spot estimated second from a column's foot is printed second
+# from the head of the next one, and the crop ended at the foot).  A spot estimated within
+# four characters of its column's end is shown with the neighbouring column's end as well,
+# the parts set side by side; anywhere else, and without ACROSS, the crop is as before.
+def across_crop(index: int, red: set[int]) -> tuple[bytes | None, dict]:
+    info: dict = {}
+    return pp.crop_glyph(page(red), BLOCK, index, 1, across=info), info
+
+
+png, info = across_crop(9, {11})
+check("across: a spot at a column's foot is shown with the next column's head, in two parts",
+      (shown_in(png), info), (True, {"parts": 2}))
+check("... reaching eight characters into it, and no further",
+      [shown_in(across_crop(9, {k})[0]) for k in (17, 18)], [True, False])
+check("... and the characters above the spot are shown as before", shown_in(across_crop(9, {2})[0]), True)
+png, info = across_crop(10, {8})
+check("across: a spot at a column's head is shown with the foot of the column before",
+      (shown_in(png), info), (True, {"parts": 2}))
+check("across: four characters from the foot is near it, five is not",
+      [across_crop(k, set())[1] for k in (5, 4)], [{"parts": 2}, {}])
+check("across: away from a column's end the crop is cut as without it, byte for byte",
+      [across_crop(k, set()) == (pp.crop_glyph(page(set()), BLOCK, k, 1), {}) for k in (2, 27)], [True, True])
+check("without across a spot at a column's foot stays in its column, as before", shown_one(9, 1, 11), False)
+
+
 
 # Only crop_glyph takes the columns of text (text_columns).  The layout the census and
 # punctuate calls are cut by (block_tiles, column_reach) and the edges a boundary crop
@@ -313,6 +339,11 @@ check("paragraph: the crop of a spot shows it in its line - an indented head, a 
       [red_glyph(pp.crop_glyph(wide_page(PARAGRAPH_GLYPHS, k), PARAGRAPH, k, 1, context=2), PARAGRAPH_GLYPHS[k])
        for k in (0, 27, 28, 250, 444)],
       [(True, 6, 2, 0), (True, 6, 2, 5), (True, 6, 2, 0), (True, 10, 2, 5), (True, 4, 1, 2)])
+# ACROSS is for columns: on a turned render (lines printed across) the crop is not joined.
+turned_info: dict = {}
+check("paragraph: with across, the crop of a spot at a line's end is as without it",
+      (pp.crop_glyph(paragraph_page, PARAGRAPH, 27, 1, context=2, across=turned_info)
+       == pp.crop_glyph(paragraph_page, PARAGRAPH, 27, 1, context=2), turned_info), (True, {}))
 
 
 # The measured pages, where the calibration corpus is on this machine.

@@ -89,6 +89,43 @@ check("an answer two characters longer than both readings stands", judge("四", 
 check("... three characters longer does not", judge("四", "丶", "一〇〇四"), ("四", "adjudicator-invalid"))
 
 
+# 睇唔到: the crop does not show the spot, which the system prompt asks 裁決 to say and not
+# to guess past.  No verdict, whatever the readings' length: the fallback engine's reading
+# stands.  Measured (two runs of the benchmark with a small model, 2026-11-17): 無法判定 and
+# 無法由圖判定 were written unasked, on one-character disputes, where an answer that long
+# is no verdict anyway; on a dispute of two characters 無法判定 is at most two characters
+# longer than the readings and was written into the page.
+def unseen(a: str, b: str, answer: str, fallback: str = "A"):
+    seg = {"a": a, "b": b, "before": "往我等商人受此遭", "after": "告訴無門聽天主意"}
+    piece, record, _ = pp.adjudicate_segment(Verdict(f"構件：略\n判定：{answer}\n定案：{answer}\nRESEARCH: no"),
+                                             None, seg, 16000, fallback_engine=fallback)
+    return piece, record["resolved_from"], record.get("unseen"), record["winner"]
+
+
+check("睇唔到 is no verdict: engine A's reading stands, and the record says the spot was not seen",
+      unseen("刧", "刼", "睇唔到"), ("刧", "adjudicator-invalid", True, "undecided"))
+check("... engine B's where the book prefers engine B", unseen("刧", "刼", "睇唔到", "B")[:2],
+      ("刼", "adjudicator-invalid"))
+check("無法判定 on a dispute of two characters is not written into the page",
+      unseen("與興", "與", "無法判定"), ("與興", "adjudicator-invalid", True, "undecided"))
+check("... nor with words in brackets after it", unseen("與興", "與", "睇唔到（裁圖冇呢個位）")[:2],
+      ("與興", "adjudicator-invalid"))
+check("an answer that is a reading is a verdict as before", unseen("刧", "刼", "刼"),
+      ("刼", "adjudicator", None, "B"))
+# What 裁決 is asked for: the answer by name, and one order for its last two lines (the
+# system prompt asked for the RESEARCH line last and the question for the 定案 line last).
+question = pp.adjudicate_prompt({"a": "刧", "b": "刼", "before": "受此遭", "after": "告訴無門"})
+check("the system prompt names the answer for a crop that does not show the spot",
+      "定案：睇唔到" in pp.ADJUDICATE_SYSTEM and "睇唔到" in pp.UNSEEN_VERDICTS, True)
+check("the system prompt asks for the 定案 line and then, last, the RESEARCH line",
+      0 < pp.ADJUDICATE_SYSTEM.find("先係題目要求嘅 `定案：<字>`") < pp.ADJUDICATE_SYSTEM.find("RESEARCH: yes"), True)
+check("the question asks for the 定案 line after the reasoning, not as the last line",
+      ("另起一行淨係寫：`定案：<字>`" in question, "最後另起一行" in question), (True, False))
+check("a crop set from parts is said to be one (COLUMN_BREAK_NOTE)",
+      pp.COLUMN_BREAK_NOTE in pp.adjudicate_prompt({"a": "刧", "b": "刼", "before": "受此遭", "after": "告訴無門"},
+                                                   note=pp.COLUMN_BREAK_NOTE), True)
+
+
 # A book printed in simplified script (simplified=True): 裁決 often answers in
 # traditional script.  A character of its answer only traditional script has, which
 # engine B did not read there, is written in the simplified form an engine read there;

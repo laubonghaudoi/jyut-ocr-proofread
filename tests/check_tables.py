@@ -2182,9 +2182,9 @@ def check_window_block_spans() -> None:
     cropped: list[str] = []
     real = pp.segment_crop_kind
 
-    def spy(render, render_bytes, block, offset, seg):
+    def spy(render, render_bytes, block, offset, seg, **more):
         cropped.append(f"{seg['b']}@{(block or {}).get('label')}")
-        return real(render, render_bytes, block, offset, seg)
+        return real(render, render_bytes, block, offset, seg, **more)
 
     pp.segment_crop_kind = spy
     try:

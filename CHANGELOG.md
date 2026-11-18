@@ -14,6 +14,17 @@
 - 下游封條記語義指紋，換引擎／後端或 block 文字／座標／label／次序會 stale；未變嘅 legacy native 封頁照收。macOS 可回收記憶體估計統一用 free + inactive + speculative，唔重複加 purgeable；順序引擎取峰值需求，保留手動預算同 Hunyuan slots。
 - CER 唔作啟用門檻，通用 Paddle 記憶體預算保持。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
 
+## Unreleased — 裁決題：裁圖跨欄、影唔到就答「睇唔到」、每題都要答（issue #6 實測帶出）
+
+- **裁圖跨欄**（`crop_glyph` 嘅 `across`，逐頁校對嘅裁決題用）：直排 block 入面，估計喺欄尾四個字以內嘅爭議位，裁圖而家連埋下一欄嘅頭；喺欄頭四個字以內就連埋上一欄嘅尾。幾段由右至左並排，中間隔一條紙色空白，題目會講明裁圖係拼出嚟（`COLUMN_BREAK_NOTE`）。原因：每欄字數係由墨跡長度估出嚟，喺欄尾差一兩個字就落咗隔籬欄，而裁圖以前唔跨欄，爭議字唔喺圖上，答題者只能估。實例：一個 548 字、15 欄嘅 block，爭議字印喺下一欄第二個字，裁圖喺上一欄尾就完咗。
+- 影響範圍（benchmark 28 案第一波，重出題目對比）：168 條裁決題有 16 條變成拼圖，其餘 152 張裁圖逐 byte 一樣，其他題型嘅圖全部一樣。Book profile 嘅異體字裁圖同 coverage 盲讀冇傳 `across`，照舊。橫排（轉向量度）嘅裁圖唔拼。
+- **裁圖影唔到爭議位**：裁決 system prompt 叫答題者寫 `定案：睇唔到`，唔好靠上下文估。呢類答案（連模型自己寫嘅「無法判定」「無法由圖判定」等，`UNSEEN_VERDICTS`）唔當裁決：保留 fallback 引擎嘅讀法，紀錄係 `adjudicator-invalid` 加 `unseen: true`。以前呢啲字長過兩邊讀法兩個字以上先會作廢，所以兩個字或以上嘅爭議，「無法判定」會當成讀法寫入正文。
+- **裁決答案最尾兩行**：system prompt 講明先 `定案：<字>`，最後一行 `RESEARCH: yes/no`；題目唔再話定案嗰行係「最後」。以前兩邊各自話自己嗰行係最後一行。
+- **每題都要答**：bundle 嘅 `answer_format_instructions`、`SKILL.md` 六、`references/subagent-orchestration.md` 同 Codex packet worker 講明，圖睇唔清或者定唔到，唔係留空一題或者成包唔交嘅理由：照嗰題自己講嘅做法答，冇講就寫最有根據嘅讀法。實測一個細模型答題，40 個案次有 5 個因為「唔肯估」成包唔答。
+- 已封嘅頁唔受影響。裁決題嘅 prompt 改咗，所以未封嘅頁入面，已答而未用到嘅裁決答案對唔返新題目 ID，會再問一次。
+- 未做：答「睇唔到」之後自動用大啲嘅裁圖再問一次；而家只係保留引擎讀法同記低。
+- 新檢查喺 `tests/check_crops.py`（跨欄）同 `tests/check_adjudication.py`（睇唔到、最尾兩行）。
+
 ## Unreleased — `--same-print-marks`：兩個引擎印刷字一致嘅 block 唔問標點（issue #6）
 
 - `proofread_pages.py` 加 `--same-print-marks`（預設關）：規則 agreedMarks 因為空位有其他印刷字（數字、拉丁字、註號）而唔收嘅 block，如果兩個引擎喺每個空位讀到嘅印刷字一樣，就照用引擎 A 嘅標點，唔出 census／punctuate 題。比較時唔計註號：兩個引擎寫法同讀錯都唔同，而註號另外還原。

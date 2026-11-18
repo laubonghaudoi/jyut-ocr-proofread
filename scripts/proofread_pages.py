@@ -302,12 +302,15 @@ ADJUDICATE_SYSTEM = """你係古籍字形鑑定專家。下面係一個放大嘅
 如果判定唔屬於任何一個候選，明確寫 `判定：<字>（兩個候選皆非）`。
 如果爭議係「有冇字」（一方冇字），而你喺圖上嗰個位置真係冇字——例如另一方將括號、格線或者筆畫讀成咗「一」——就寫 `判定：無`。
 如果嗰個位置係括住嘅編號（例如「（二）」），定案寫括號入面嘅數字，唔好寫上下文嘅字。
+如果裁圖根本影唔到爭議嗰個位置——喺圖上搵唔到上文同下文之間嗰個位，或者個位喺圖嘅邊界外面——
+唔好靠上下文估，亦唔好寫隔籬嘅字：寫 `判定：睇唔到`，定案嗰行亦寫 `定案：睇唔到`。
 
 有啲爭議係**單靠字形永遠解決唔到**嘅——特別係人名、地名、官職、年號、書名。
 呢類情況下，幾個候選可能都符合圖上嘅筆畫，要靠歷史脈絡同外部資料先分得出。
 你冇上網能力，所以唔好靠記憶亂猜一個名，亦唔好因為某個名眼熟就揀佢。
 
-輸出最後必須有獨立一行，格式一模一樣：
+輸出最尾係兩行，各自獨立一行：先係題目要求嘅 `定案：<字>`（同你嘅判定一樣），
+之後最後一行，格式一模一樣：
 RESEARCH: yes
 或
 RESEARCH: no
@@ -2649,8 +2652,14 @@ def column_reach(render: Path, block: Mapping[str, Any], span_length: int) -> in
     return math.ceil(max(counts) * span_length / max(sum(counts), 1))
 
 
+# What 裁決 is told about a crop that follows the text over a column break
+# (crop_glyph's ACROSS).
+COLUMN_BREAK_NOTE = ("裁圖由幾段拼成，段同段之間隔住一條空白：每段係一欄字嘅尾或者頭，由右至左連住讀"
+                     "（右邊一段最尾嘅字，下一個就係左邊一段最頭嘅字）。爭議位可能喺任何一段，照上文同下文搵。")
+
+
 def crop_glyph(render: Path, block: Mapping[str, Any], index: int, run: int,
-               context: int = 4, pad: float = 0.02) -> bytes | None:
+               context: int = 4, pad: float = 0.02, across: dict[str, Any] | None = None) -> bytes | None:
     """Crop the cells of characters index..index+run of a block.
 
     Columns come from measure_columns, the columns of text only (TEXT_ONLY:
@@ -2716,6 +2725,20 @@ def crop_glyph(render: Path, block: Mapping[str, Any], index: int, run: int,
     books): reading a wide box along its lines whenever they fit turned 7
     blocks of four books printed in columns, and refusing a fit with a
     column two pitches wide left blocks of columns without one.
+
+    ACROSS, when a dict is given, lets the crop follow the text over a column
+    break (not on a turned render): where the spot is estimated within CONTEXT
+    characters of its column's foot, the reach the foot cuts off is shown from
+    the head of the next column, and for a spot that near its column's head,
+    from the foot of the column before.  The parts are set side by side in
+    reading order, right to left, with a strip of paper between (as
+    boundary_crop sets two blocks' edges), and ACROSS is given "parts", how
+    many; the caller tells 裁決 so (COLUMN_BREAK_NOTE).  Measured (2026-11-17,
+    a 548-character block of 15 columns): the fit put a spot second from its
+    column's foot that is printed second from the head of the next column;
+    the crop ended at the foot, and in two runs the proofreader reported that
+    the disputed character was not on it.  Without ACROSS the crop is as
+    before (the book profile's variant crops, the coverage reads).
     """
     n = len(CJK(str(block["text"])))
     if n == 0:
@@ -2758,28 +2781,71 @@ def crop_glyph(render: Path, block: Mapping[str, Any], index: int, run: int,
     start = max(0, min(index, total - run))
     end = min(total, start + run)
     boxes = []
+    touched: list[tuple[int, int, int]] = []     # (column, its first character, one past its last)
     first = 0
-    for (x0, x1, top, bottom), count in zip(columns, counts):
+    for number, ((x0, x1, top, bottom), count) in enumerate(zip(columns, counts)):
         last = first + count
         local_pitch = (bottom - top) / count
         if first < end and last > start:
             # The reach stays inside the columns the run touches.
             lo, hi = max(first, start - 2 * context), min(last, end + 2 * context)
             boxes.append((x0, x1, top + (lo - first) * local_pitch, top + (hi - first) * local_pitch))
+            touched.append((number, first, last))
         first = last
     if not boxes:
         return None
     x0, x1 = min(b[0] for b in boxes), max(b[1] for b in boxes)
     y0, y1 = min(b[2] for b in boxes), max(b[3] for b in boxes)
     colw = max(b[1] - b[0] for b in boxes)
+    # With ACROSS: the reach a column's end cuts off, from the column before
+    # (its foot) and the column after (its head), for a spot estimated within
+    # CONTEXT characters of that end.
+    before = after = None
+    if across is not None and not turned:
+        number, first, _ = touched[0]
+        if number > 0 and start - first <= context:
+            # A quarter of a character of paper past the column's own end:
+            # its last (first) glyph whole.
+            px0, px1, ptop, pbottom = columns[number - 1]
+            shown, pitch = min(2 * context - (start - first), counts[number - 1]), (pbottom - ptop) / counts[number - 1]
+            before = (px0, px1, pbottom - shown * pitch, pbottom + 0.25 * pitch)
+        number, _, last = touched[-1]
+        if number < len(columns) - 1 and last - end <= context:
+            nx0, nx1, ntop, nbottom = columns[number + 1]
+            shown, pitch = min(2 * context - (last - end), counts[number + 1]), (nbottom - ntop) / counts[number + 1]
+            after = (nx0, nx1, ntop - 0.25 * pitch, ntop + shown * pitch)
     try:
         from PIL import Image
         with Image.open(render) as image:
             if turned:
                 image = image.transpose(Image.ROTATE_270)
             width, height = image.size
-            crop = image.crop((max(0, int(x0 - 0.3 * colw)), max(0, int(y0)),
-                               min(width, int(x1 + 0.3 * colw)), min(height, int(y1))))
+
+            def cut(source: "Image.Image", box: tuple[float, float, float, float], margin: float) -> "Image.Image":
+                return source.crop((max(0, int(box[0] - margin)), max(0, int(box[2])),
+                                    min(width, int(box[1] + margin)), min(height, int(box[3]))))
+
+            crop = cut(image, (x0, x1, y0, y1), 0.3 * colw)
+            if before or after:
+                # One scale, one mode, and the page's own paper between the parts.
+                source = image if image.mode in ("L", "RGB") else image.convert("L")
+                levels = source.convert("L").histogram()
+                paper = max(range(256), key=lambda level: levels[level])
+                parts = [cut(source, box, 0.3 * (box[1] - box[0])) if box else None
+                         for box in (before, None, after)]
+                parts[1] = cut(source, (x0, x1, y0, y1), 0.3 * colw)
+                parts = [part for part in parts if part is not None and min(part.size) >= 2]
+                if len(parts) > 1:
+                    gap = max(8, min(part.width for part in parts) // 2)
+                    joined = Image.new(source.mode, (sum(part.width for part in parts) + gap * (len(parts) - 1),
+                                                     max(part.height for part in parts)),
+                                       paper if source.mode == "L" else (paper, paper, paper))
+                    right = joined.width
+                    for part in parts:               # reading order: from the right
+                        joined.paste(part, (right - part.width, 0))
+                        right -= part.width + gap
+                    crop = joined
+                    across["parts"] = len(parts)
             if turned:
                 crop = crop.transpose(Image.ROTATE_90)
             buffer = io.BytesIO(); crop.save(buffer, format="PNG")
@@ -3279,10 +3345,12 @@ def segment_crop(render: Path, render_bytes: bytes | None, block: Mapping[str, A
 
 
 def segment_crop_kind(render: Path, render_bytes: bytes | None, block: Mapping[str, Any] | None,
-                      offset: int | None, seg: Mapping[str, Any]) -> tuple[bytes | None, str]:
+                      offset: int | None, seg: Mapping[str, Any],
+                      across: dict[str, Any] | None = None) -> tuple[bytes | None, str]:
     """segment_crop, and which kind of crop it is: "glyph" or "band" (cut to the
     disputed characters' column), "block" (a whole horizontal block), "table"
-    (a whole table) or "page" (the whole render)."""
+    (a whole table) or "page" (the whole render).  ACROSS is crop_glyph's: a
+    glyph crop may then follow the text over a column break, in parts."""
     if block is not None and block.get("label") != "table" and \
             block_is_vertical(render, block["box"]) is False:
         # Column geometry is measured for vertical text only; for a horizontal
@@ -3297,7 +3365,7 @@ def segment_crop_kind(render: Path, render_bytes: bytes | None, block: Mapping[s
         # grid). Show the whole table.
         crop = upscale_crop(crop_block(render, block["box"], pad=0.01))
         return (crop, "table") if crop else (render_bytes, "page")
-    measured = (crop_glyph(render, block, offset, max(len(seg["a"]), len(seg["b"]), 1))
+    measured = (crop_glyph(render, block, offset, max(len(seg["a"]), len(seg["b"]), 1), across=across)
                 if block is not None and offset is not None else None)
     if measured:
         return measured, "glyph"
@@ -3356,12 +3424,23 @@ def adjudicate_prompt(seg: Mapping[str, Any], swap: bool = False, note: str = ""
         f"  乙) {(seg['a'] if swap else seg['b']) or '（冇字）'}\n"
         f"  下文：{seg['after']}…\n\n"
         "先淨係描述圖上構件（唔准提甲乙），再由構件推出係邊個字，最後先同甲乙對照。"
-        "若兩者皆非，寫出你見到嘅字。最後另起一行淨係寫：`定案：<字>`")
+        "若兩者皆非，寫出你見到嘅字。講完之後另起一行淨係寫：`定案：<字>`")
     return prompt
 
 
-# The line adjudicate_prompt asks 裁決 to end on.
+# The line adjudicate_prompt asks 裁決 for after its reasoning (ADJUDICATE_SYSTEM
+# asks for the RESEARCH line after it, last).
 ANSWER_LINE = re.compile(r"^[ \t]*定案[：:][ \t]*(\S+)", re.M)
+
+# Answers that mean "the crop does not show the spot" (ADJUDICATE_SYSTEM asks
+# for 睇唔到; the others were written unasked).  No verdict: the fallback
+# engine's reading stands and the record says so (adjudicator-invalid, unseen).
+# Measured on two runs of the benchmark's 28 samples with a small model
+# answering (2026-11-17): 3 of 337 verdicts wrote 無法判定 or 無法由圖判定, each on a
+# one-character dispute, where an answer that long is no verdict already; on
+# a dispute of two characters or more it would have been written into the page.
+UNSEEN_VERDICTS = {"睇唔到", "睇唔見", "見唔到", "看不到", "看不見", "無法判定", "無法由圖判定", "無法判斷",
+                   "不能判定"}
 
 
 def verdict_answer(verdict: str) -> str | None:
@@ -3429,7 +3508,10 @@ def adjudicate_segment(client: "Client", crop: bytes | None, seg: Mapping[str, A
     empty_not_allowed = explicit_empty and bool(CJK(seg["a"]) and CJK(seg["b"])) and not numeral
     if empty_not_allowed:
         explicit_empty = False
-    picked = "" if explicit_empty else (CJK(answer) if chosen and not empty_not_allowed else "")
+    # 睇唔到: the crop does not show the spot (UNSEEN_VERDICTS).  The words are
+    # no reading of it, whatever the readings' length: no verdict.
+    unseen = chosen and answer in UNSEEN_VERDICTS and answer not in (CJK(seg["a"]), CJK(seg["b"]))
+    picked = "" if explicit_empty or unseen else (CJK(answer) if chosen and not empty_not_allowed else "")
     as_given, picked = picked, (simplified_as_read(picked, CJK(seg["a"]), CJK(seg["b"])) if simplified else picked)
     converted = picked != as_given
     # An answer longer than both readings by more than ANSWER_DELETION_LIMIT
@@ -3440,7 +3522,8 @@ def adjudicate_segment(client: "Client", crop: bytes | None, seg: Mapping[str, A
     # NUMERAL_CHARS does not hold, and the fallback would write engine A's
     # misread with no doubt.
     longer = max(len(CJK(seg["a"])), len(CJK(seg["b"])))
-    invalid = (empty_not_allowed or (bool(as_given) and numeral and not all(c in NUMERAL_CHARS for c in as_given))
+    invalid = (unseen or empty_not_allowed
+               or (bool(as_given) and numeral and not all(c in NUMERAL_CHARS for c in as_given))
                or len(picked) > longer + ANSWER_DELETION_LIMIT)
     agreed = seg.get("agreed") or []
     if picked and agreed and not all(part in picked for part in agreed):
@@ -3579,6 +3662,8 @@ def adjudicate_segment(client: "Client", crop: bytes | None, seg: Mapping[str, A
         # D16 measures, and writes where the reading stands nearby), with the
         # answer as given in answeredTraditional, which the doubts quote.
         **({"answered": written} if partial or kept_side is not None else {}),
+        # 裁決 said the crop does not show the spot (UNSEEN_VERDICTS).
+        **({"unseen": True} if unseen else {}),
         **({"answeredTraditional": as_given} if converted else {}),
         # The cut-off engine whose reading the deletion guard would have kept
         # over the answer, had its reply been whole (cutOffSides).
@@ -14055,7 +14140,13 @@ def _proofread_page_inner(
                     if insertion:
                         changes[-1][1]["evidence"]["boundaryCrop"] = shown
             if not crop:
-                crop, crop_kind = segment_crop_kind(job.render, render_bytes, block, offset, seg)
+                # A spot estimated at a column's end is shown with the
+                # neighbouring column's end too (crop_glyph's ACROSS), and
+                # 裁決 is told the crop has parts (COLUMN_BREAK_NOTE).
+                across: dict[str, Any] = {}
+                crop, crop_kind = segment_crop_kind(job.render, render_bytes, block, offset, seg, across=across)
+                if across.get("parts", 1) > 1:
+                    seg = dict(seg, columnBreakCrop=dict(across))
             if crop_kind in ("glyph", "band") and block is not None and offset is not None:
                 # A crop cut where the spot is estimated to be (crop_glyph,
                 # crop_band) must be shown to hold it before 裁決's 無 deletes
@@ -14114,7 +14205,8 @@ def _proofread_page_inner(
             slot, seg, crop, _, engine = item
             with call_site(spot_sites[slot]):
                 answer = adjudicate_segment(client, crop, seg, arguments.max_tokens, fallback_engine=engine,
-                                            note=BOUNDARY_NOTES.get((seg.get("boundaryCrop") or {}).get("set"), ""),
+                                            note=(BOUNDARY_NOTES.get((seg.get("boundaryCrop") or {}).get("set"), "")
+                                                  or (COLUMN_BREAK_NOTE if seg.get("columnBreakCrop") else "")),
                                             simplified=getattr(arguments, "simplified_script", False))
                 return confirm_nothing(client, crop, seg, answer, arguments.max_tokens, engine)
 

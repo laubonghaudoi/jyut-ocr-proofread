@@ -665,7 +665,11 @@ class PacketClient:
                         "Optional answered_by names the model that answered (else apply_packet_answers.py "
                         "--answered-by records it). "
                         "Inspect every item's image_path visually (when non-null) before answering, "
-                        "and follow each item's system and user_text instructions strictly."
+                        "and follow each item's system and user_text instructions strictly. "
+                        "Answer every item: an image that is hard to read, or that does not settle "
+                        "the question, is no reason to leave an item or the bundle unanswered. Give "
+                        "the answer the item's own instructions name for that case, else your best "
+                        "reading; the scripts check every answer and ask again where they must."
                     ),
                     "item_count": len(bucket),
                     "pages": sorted({it.scan_page for it in bucket if it.scan_page is not None}),
