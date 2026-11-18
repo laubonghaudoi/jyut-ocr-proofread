@@ -75,12 +75,12 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
   --caller NAME: each has its own --max-workers places, and no bundle goes to two of them;
 - exit 4: books wait for the OCR and call 2 is not running: the line says how it ended.  Start
   call 2 again (SKILL.md 五 for a hand-over's exit code);
-- exit 3: the batch is paused (--pause BATCH [--reason TEXT], by the person or by a session
-  that watches the cost): complete answers were handed in, nothing new is handed out, and the
-  agent stops until the person says to go on (--resume BATCH, then the round as before).  Why
-  there is a pause at all: on eight books (2026-11-18) the answering came to some 30 thousand
-  questions, several times what the one book measured before had needed, and the only way to
-  hold the spending was to stop the session that ran the round;
+- exit 3: the batch is paused (--pause BATCH [--reason TEXT]): complete answers were handed
+  in, nothing new is handed out, and the agent stops until the person says to go on (--resume
+  BATCH, then the round as before).  The pause is the person's: an agent does not pause a batch
+  because of what it costs (see "The estimate").  Why there is a pause at all: on eight books
+  (2026-11-18) the only way to hold a batch was to stop the session that ran the round, and
+  with it the answerers at work;
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
   (--retry-failed tries those again); 2: wrong arguments.
 
@@ -90,16 +90,29 @@ the model stopped), and exits 75 until all are done.
 
 How many questions an answerer is given
 ---------------------------------------
-Measured with a small vision model as the answerer, input tokens (almost all cache reads) for one
-question: 85 thousand when an answerer was given about 38 questions (one 639-page book, 1,682
-questions, 44 answerers, 2026-11-17), and 64 thousand when it was given 10 or fewer (two short
-books, 86 questions, 10 answerers, 2026-11-18: about 50 thousand for those given exactly 10).
-Fewer is not always cheaper: an answerer reads its own instructions again on every turn, about
-300 thousand tokens before any question counts, so one given 3 questions cost 112 thousand each.
-So the default is 10, and the proofreading call is given --max-items-per-bundle with the same
-number, since a bundle is never split between two answerers.  Twenty has not been measured.
-Fewer questions an answerer mean more rounds; with the GPU reading the next book meanwhile, the
-rounds are not what the batch waits for.
+Four (--items-per-worker), and the proofreading call is given --max-items-per-bundle with the
+same number, since a bundle is never split between two answerers.  Why four: an answerer reads
+its whole context again on every turn, and the context grows with every question it reads (the
+crop, the question, its own answer).  Measured on eight books with a small vision model
+(2026-11-18, 1,505 answerers of 10 questions): an answerer began at 47 thousand tokens and ended
+at 144 thousand, about 10 thousand more a question, in 8 turns.  That model's price is five times
+higher for a prompt of more than 100 thousand tokens; 98 in 100 answerers crossed that line, 39
+in 100 of all their requests were over it, and a question cost 1.5 cents where the same tokens
+under the line would have cost 0.44.  By that measure four questions keep an answerer under 100
+thousand tokens to its last turn (not yet measured).  With about 38 questions an answerer (one 639-page book, 2026-11-17) a question
+took 85 thousand input tokens; with 10, 80 thousand.  Fewer questions an answerer mean more
+answerers and more hand-outs; they take about as long, since the places are topped up as they
+come free.
+
+The estimate
+------------
+The first call counts the pages (pdfinfo) and prints one line, `[batch] ESTIMATE ...`: about
+how many questions, input tokens and output tokens the answering is likely to take, as a range,
+from what the books measured so far needed.  It is for the person's information.  The agent
+says it in one line and goes on at once: the cost, the number of questions, the time or its own
+token budget are no reason to stop, to pause, to ask, or to change the route.  A rate limit or
+an API error is waited out and the same command run again.  The pause (--pause) is the
+person's.
 
 The last line is always `[batch] RESULT exit=N ...`.  BATCH/batch-status.json holds the same
 state for a program to read - per book its stage, pages read by each engine, pages sealed,
@@ -137,7 +150,15 @@ PAUSE_NAME = "PAUSED"               # BATCH/PAUSED: no question is handed out wh
 PENDING = (10, 11)
 DEFAULT_WAIT = 540
 DEFAULT_MAX_WORKERS = 20
-DEFAULT_ITEMS_PER_WORKER = 10       # see "How many questions an answerer is given" in the docstring
+DEFAULT_ITEMS_PER_WORKER = 4        # see "How many questions an answerer is given" in the docstring
+# What a batch is likely to need, for the estimate the first call prints.  Measured with a small
+# vision model answering (2026-11-17 and -18): one 639-page book asked 2.6 questions a page, three
+# volumes of an eight-volume set 6.3, 7.1 and 8.7; a question took 85 to 96 thousand input tokens
+# (nine tenths of them cache reads, the main agent's included) and 2.3 to 4.7 thousand output tokens
+# at 10 to 38 questions an answerer.
+QUESTIONS_A_PAGE = (2.6, 8.7)
+INPUT_TOKENS_A_QUESTION = (60_000, 100_000)
+OUTPUT_TOKENS_A_QUESTION = (2_300, 4_700)
 DEFAULT_JOBS = 4                    # steps of different books that run at once (packet backend)
 GATHER_SECONDS = 90                 # nobody at work, questions waiting: how long to wait for a step about to ask more
 TOP_UP_SECONDS = 30                 # answerers at work: how long a free place waits for more places to come free
@@ -276,6 +297,32 @@ def existing_book(root: Path, pdf: Path) -> Path | None:
     return None
 
 
+def pdf_pages(pdf: Path) -> int:
+    """The pages of PDF by pdfinfo (poppler, which the render needs anyway); 0 when it cannot say."""
+    try:
+        out = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    found = re.search(r"^Pages:\s+(\d+)", out, re.M)
+    return int(found.group(1)) if found else 0
+
+
+def estimate(pages: int) -> str:
+    """What answering the questions of PAGES pages is likely to take, as a range (the constants above)."""
+    low, high = pages * QUESTIONS_A_PAGE[0], pages * QUESTIONS_A_PAGE[1]
+
+    def amount(value: float) -> str:
+        return f"{value / 1e9:.1f} billion" if value >= 1e9 else f"{value / 1e6:.0f} million"
+
+    def questions(value: float) -> str:
+        return f"{value / 1000:.0f} thousand" if value >= 1000 else f"{max(1, round(value)):d}"
+
+    return (f"about {questions(low)} to {questions(high)} questions for the answerers, "
+            f"{amount(low * INPUT_TOKENS_A_QUESTION[0])} to {amount(high * INPUT_TOKENS_A_QUESTION[1])} input tokens "
+            f"(nine tenths of them cache reads) and {amount(low * OUTPUT_TOKENS_A_QUESTION[0])} to "
+            f"{amount(high * OUTPUT_TOKENS_A_QUESTION[1])} output tokens")
+
+
 def rendered(book: Path) -> bool:
     return (book / "page-manifest.json").is_file()
 
@@ -320,6 +367,7 @@ def step_command(step: str, entry: dict[str, Any], record: dict[str, Any], backe
     single = route != _ocr_engines.DEFAULT_ROUTE
     asking = ["--backend", "http"] if backend == "http" else ["--max-bundles", str(bundles)]
     # A bundle is never split between answerers, so none may hold more than one answerer is given.
+    # It only packs the questions of the wave this call writes: it may differ from call to call.
     sized = [] if backend == "http" else ["--max-items-per-bundle", str(entry.get("bundleItems") or DEFAULT_ITEMS_PER_WORKER)]
     if step == "render":
         return [PY, script("survey_pdf.py"), entry["pdf"], str(book)]
@@ -501,6 +549,12 @@ def start(arguments: argparse.Namespace) -> int:
             f"{phase} -- {ocr} > {log} 2>&1; echo \"exit=$?\"; tail -3 {log}")
     say(f"[batch] NEXT 2, again and again until its RESULT says exit=0 (or 1): "
         f"{shlex.join(this('--round', str(batch)))} --answered-by YOUR-MODEL-ID")
+    counted = [pdf_pages(Path(entry["pdf"])) for entry in books]
+    if counted and all(counted):
+        say(f"[batch] ESTIMATE {sum(counted)} page(s): {estimate(sum(counted))} - a range from the books measured so "
+            "far; it varies with the book. Say this to the person in ONE line and go on at once: it is for their "
+            "information, not a question. Do not wait for an answer, and do not stop, pause or change the route "
+            "because of the cost, the time or the number of questions: go on until every book is delivered")
     say(f"[batch] RESULT exit=0 STARTED - {len(books)} book(s) in {batch}")
     return 0
 
@@ -612,6 +666,7 @@ class Round:
             # book with sealed pages keeps the switches it was sealed with.
             fresh = self.backend != "http" and not count(Path(entry["book"]) / "proofread")
             entry["switches"] = list(NEW_BOOK_SWITCHES) if fresh else []
+        if step == "proofread":
             entry["bundleItems"] = max(1, self.arguments.items_per_worker)
         start_step(self.batch, entry["name"], step, step_command(step, entry, self.record, self.backend, self.bundles))
         self.running += 1

@@ -352,7 +352,7 @@ class WholeBatchTests(BatchCase):
             self.assertEqual(first[:5], [str(b.work / name / "renders"), str(b.work / name / "ocr-paddle"),
                                          str(b.work / name / "proofread"), "--draft2-directory",
                                          str(b.work / name / "ocr-hunyuan")])
-            self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "10", "--same-print-marks",
+            self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "4", "--same-print-marks",
                                          "--unmarked-page-sample"])
             self.assertTrue(all(call["argv"] == first for call in b.calls("proofread_pages.py", name)))
             self.assertEqual(b.calls("book_profile.py", name)[0]["argv"][4:], ["--max-bundles", "20"])
@@ -809,6 +809,41 @@ class OcrCallTests(BatchCase):
         self.assertEqual(len(b.calls("survey_pdf.py", b.names[1])), 2)
 
 
+class EstimateTests(BatchCase):
+    def test_the_first_call_says_what_the_answering_is_likely_to_take_and_to_go_on(self) -> None:
+        b = self.b
+        tools = b.root / "bin"
+        tools.mkdir()
+        (tools / "pdfinfo").write_text("#!/bin/sh\necho 'Title: x'\necho 'Pages:          600'\n")
+        (tools / "pdfinfo").chmod(0o755)
+        b.env["PATH"] = f"{tools}{os.pathsep}{b.env['PATH']}"
+        out = b.begin()
+        line = next(text for text in out.splitlines() if text.startswith("[batch] ESTIMATE "))
+        self.assertIn("ESTIMATE 1200 page(s): about 3 thousand to 10 thousand questions for the answerers, "
+                      "187 million to 1.0 billion input tokens (nine tenths of them cache reads) and "
+                      "7 million to 49 million output tokens", line)
+        self.assertIn("Say this to the person in ONE line and go on at once", line)
+        self.assertIn("do not stop, pause or change the route because of the cost", line)
+
+    def test_no_estimate_is_made_up_when_the_pages_cannot_be_counted(self) -> None:
+        b = self.b
+        tools = b.root / "bin"
+        tools.mkdir()
+        (tools / "pdfinfo").write_text("#!/bin/sh\nexit 1\n")
+        (tools / "pdfinfo").chmod(0o755)
+        b.env["PATH"] = f"{tools}{os.pathsep}{b.env['PATH']}"
+        self.assertNotIn("ESTIMATE", b.begin())
+
+    def test_the_bundle_size_follows_the_round_it_only_packs_the_questions(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        code, out, _ = b.until_done("--items-per-worker", "3")
+        self.assertEqual(code, 0, out)
+        sizes = {call["argv"][call["argv"].index("--max-items-per-bundle") + 1] for call in b.calls("proofread_pages.py")}
+        self.assertEqual(sizes, {"3"})
+
+
 class StartTests(BatchCase):
     def test_the_same_pdfs_name_the_same_batch_and_keep_what_it_has_reached(self) -> None:
         b = self.b
@@ -907,7 +942,7 @@ class SingleEngineTests(BatchCase):
         self.assertEqual(b.calls("proofread_pages.py", name)[0]["argv"],
                          [str(b.work / name / "renders"), str(b.work / name / "ocr-hunyuan"),
                           str(b.work / name / "proofread"), "--single-engine", "--max-bundles", "20",
-                          "--max-items-per-bundle", "10"])
+                          "--max-items-per-bundle", "4"])
         self.assertEqual(b.calls("finish_book.py", name)[0]["argv"],
                          [str(b.work / name), "--single-engine", "--ocr-a", str(b.work / name / "ocr-hunyuan")])
         self.assertEqual(b.calls("clean_book.py"), [])

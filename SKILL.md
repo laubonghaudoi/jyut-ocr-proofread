@@ -20,7 +20,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - 以 PDF 圖像為最終依據：保留原有異體字、舊字形同舊式標點（頁面印乜字形就寫乜字形），唔好靜靜正規化，亦唔好過度古化；唔好憑空補字；原書嘅 `[]`、`〈〉`、`□` 呢類符號唔可以當 residual 一律刪；既有轉錄（連你自己上一版）唔係 ground truth，只係底稿。
 - 輸出：只刪書眉、頁碼、版心／書口、印章、索書號、條碼同館藏印；正文數字、註號、圖表入面嘅字同表外說明照轉。印出嘅 `*` 寫 `\*`，雙圈句號寫 `。。`。註：引用 `[^n]` 留喺原位，定義預設留喺頁底，同一原印號再用就寫 `[^n-2]`，得一半就留一半。表：橫排表照原行列；直排表將由右至左嘅直欄變成由上至下嘅行，唔按內容重排；冇表頭或者有合併格用 HTML `<table>`；跨頁續表合併。交付稿冇頁碼分隔。
 - **唔可以話「已逐頁視覺校對」「已逐頁同 PDF 對照」**：流程淨係喺佢問嘅位睇圖。定唔到嘅位喺 `doubts.md`，冇列出嚟嘅字唔代表一定啱。
-- 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。題多、要等好耐、要用好多 token 都唔係停低問用戶嘅理由：一直做到交付。
+- 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。成本同 token 係用戶嘅決定，佢叫你做就係已經決定咗：唔好因為覺得貴、題多、要等好耐或者自己嘅 token 預算唔夠而停低、暫停、問用戶、改用其他路線或者淨係交草稿，一直做到交付。撞到 rate limit 或者 API 錯誤就等一陣再試，唔好收工。
 - 引擎冇裝好，runner 出 ERROR 講缺乜：照講畀用戶知，唔好改用其他引擎或者其他 OCR 工具。
 - 唔好成份讀 `references/` 入面嘅檔：照十淨係讀嗰一節。
 
@@ -50,7 +50,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 **幾個 PDF 一齊做**（`ocr_batch.py`）：所有書嘅 OCR 喺一個 call 入面逐本讀（有交接就係一個窗口，本機模型淨係停、開一次）；一本書讀完就即刻校對，唔等其餘嘅書；所有書嘅題目夾埋一輪派。三條 command，依次係「開批」「OCR」「逐輪」，`BATCH` 係開批嗰條印嘅路徑：
 
-- **開批**（前景，即刻返回；render 佢自己喺背景做）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py A.pdf B.pdf ...`。每個 PDF 一個普通嘅 `BOOK`，開喺 `JYUT_OCR_WORK_ROOT` 之下，名佢自己起。佢印 `[batch] BATCH 路徑`，同埋後面兩條寫成嘅 command（`NEXT 1`、`NEXT 2`）：照抄嚟用。
+- **開批**（前景，即刻返回；render 佢自己喺背景做）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py A.pdf B.pdf ...`。每個 PDF 一個普通嘅 `BOOK`，開喺 `JYUT_OCR_WORK_ROOT` 之下，名佢自己起。佢印 `[batch] BATCH 路徑`，同埋後面兩條寫成嘅 command（`NEXT 1`、`NEXT 2`）：照抄嚟用。有 `[batch] ESTIMATE` 行（估計要答幾多題、用幾多 token）就用一行話畀用戶知，然後即刻做落去，唔使等佢回覆。
 - **OCR**（一個 call 讀晒全部書）：照 `NEXT 1`。冇 `OCR_PHASE_RELEASE_CMD` 就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --ocr BATCH > BATCH/ocr.log 2>&1`；有就照五包 `run_ocr_phase.py`：你唔係用嗰部本機模型諗嘢就加 `--background` 放背景，你係（一 B）就前景分輪，exit 75 再叫。放咗背景就唔使等佢：即刻去逐輪嗰條。
 - **逐輪**（前景，tool call timeout 開到最大；一個 call 最多等 540 秒，淨係印幾行）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL`（`MODEL` 照六第 4 步；佢當你同時開到 20 個答題者，平台開唔到咁多先加 `--max-workers N`；B 套改為 `--round BATCH --backend http`，全部書 OCR 完先開始校對）。佢自己行每本書嘅第 3 至 6 步：步驟喺背景行，唔使你開、唔使 `wait_for_run.py`；派工同交答案都係佢做，唔使照六跑 `packet_dispatch.py`。照最尾 `[batch] RESULT exit=N`：
   - **10** 有題要派：`ANSWERERS K` 行講幾多個、喺邊個目錄。每個 `worker-KK.txt` 開一個答題者，**一次過開晒**，prompt 淨係一句 `Read <嗰個檔嘅完整路徑> and do exactly what it says.`；**開晒就即刻再跑同一條，唔使等佢哋返嚟**（亦唔好中途停佢哋）：位滿咗佢自己會等，邊個答題者寫好答案佢就補派新嘅檔，唔會將同一包派兩次。冇 subagent：你自己就係唯一嘅答題者，逐個檔順序照做，全部寫好先再跑同一條。
@@ -59,9 +59,9 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
   - **4** 仲有書未讀，但 OCR 嗰個 call 已經完咗：嗰行抄咗佢最尾嘅 RESULT，照五嘅 exit 碼處理，再開 OCR 嗰條；
   - **0** 全部書交付晒：每本嘅 `[finish] RESULT` 行、交付檔同 `[clean] RESULT` 行都印咗，照九逐本講；
   - **1** 做完但有書失敗：`failed:` 行講邊本、點解，其餘嘅書照樣交付咗。照實話畀用戶知；原因改好先加 `--retry-failed` 再跑（OCR 失敗嘅仲要再開 OCR 嗰條）；
-  - **3** 成批暫停咗（用戶或者睇住成本嘅 session 落咗 `--pause BATCH`）：唔好再跑，用一兩行講去到邊就收工。用戶話繼續先跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --resume BATCH`，再照舊逐輪；
+  - **3** 成批暫停咗（用戶落咗 `--pause BATCH`）：唔好再跑，用一兩行講去到邊就收工。用戶話繼續先跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --resume BATCH`，再照舊逐輪；
   - **2** 參數錯。
-- 一批書嘅題可以過萬條，照做：題多、要幾個鐘都唔係停低問用戶嘅理由。你個 session 嘅 token 預算唔夠做晒，就做到差唔多用完先停，講明停喺邊：之後任何 session 跑返逐輪嗰條就接得返，乜都唔使重做；唔好因此自己改用本機模型或者淨係交草稿。你認為成本要用戶先決定：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --pause BATCH --reason "…"`（唔再派新題，做緊嘅答題者照做完，乜都唔會嘥），用實數話畀用戶知，等佢講。
+- 一批書嘅題可以過萬條，照做到全部書交付：成本、題量、時間、你自己 session 嘅 token 預算都唔係停低、暫停、問用戶或者改路線（本機模型、淨係交草稿）嘅理由，估算已經喺開批嗰陣講咗。撞到 rate limit 或者 API 錯誤：等一兩分鐘再跑同一條（答題者全部失敗就加一次 `--answerers-gone`），唔好收工。真係行唔落去（平台唔再畀你開答題者、你個 session 完咗）先算停，停之前講明停喺邊：之後任何 session 跑返逐輪嗰條就接得返，乜都唔使重做。`--pause` 係用戶嘅掣，你唔好自己落。
 - 用戶想快啲、叫你搵多個 session 幫手：另一個 session 跑同一條逐輪 command，加 `--caller 名`（每個 session 自己一個名，原本嗰個唔使加），兩邊各自有 `--max-workers` 個位，同一包唔會派畀兩邊。冇人叫就唔好自己開。
 - 邊本書去到邊：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --status BATCH`。交付咗嘅書佢自己清走 `BOOK`（即第 6 步；加 `--keep-work` 就留），失敗嘅書留低。單引擎路線：開批嗰條加 `--engine apple-vision` 或者 `--engine hunyuan`，佢自己用上面兩段嘅單引擎 command。細節見 `references/long-book-workflow.md`〈幾個 PDF 一齊做（ocr_batch.py）〉。
 
