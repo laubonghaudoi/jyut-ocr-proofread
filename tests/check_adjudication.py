@@ -172,6 +172,13 @@ _, asked, wider = look_again("睇唔到", "刼")
 check("the second question says its crop is the whole block, and shows it",
       (pp.WIDER_CROP_NOTE in asked.asked[1][0], pp.WIDER_CROP_NOTE in asked.asked[0][0],
        asked.asked[1][1] == wider, (wider or b"")[:4]), (True, False, True, b"\x89PNG"))
+# A crop that is the whole of a block, a table or the page shows the spot by how it is
+# cut, and the question says so (WHOLE_CROP_NOTES).  Measured (a small model, one book's
+# tables, 29 verdicts): with no such word 14 answered 睇唔到, with it 2.
+check("a whole block, a whole table and the whole page each have their word, and it is in the question",
+      (sorted(pp.WHOLE_CROP_NOTES), all(note in pp.adjudicate_prompt(SPOT, note=note)
+                                        for note in pp.WHOLE_CROP_NOTES.values())),
+      (["block", "page", "table"], True))
 
 
 # A book printed in simplified script (simplified=True): 裁決 often answers in

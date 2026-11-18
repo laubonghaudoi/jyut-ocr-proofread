@@ -3953,6 +3953,19 @@ def confirm_nothing(client: "Client", crop: bytes | None, seg: Mapping[str, Any]
     return kept, record, metrics
 
 
+# What 裁決 is told about a crop that is the whole of what holds the spot (a
+# horizontal block, a table, the page: segment_crop_kind), by its kind.  Such a
+# crop shows the spot by how it is cut, and 睇唔到 there leaves an engine's
+# reading unjudged.  Measured (2026-11-17, a small model on the benchmark's 28
+# samples): 15 of 26 睇唔到 answers were on such crops, 9 of them on one
+# book's tables, and of the 8 the reference settles the reading kept was right
+# on 3 where the same model, with no such answer to give, had been right on 6.
+WHOLE_CROP_NOTES = {
+    "block": "呢張裁圖係爭議位所在嘅成段字，冇裁走任何部份，個位喺入面：照上文同下文喺段入面搵返佢先答。",
+    "table": "呢張裁圖係爭議位所在嘅成個表格，冇裁走任何部份，個位喺入面：照上文同下文喺表入面搵返嗰一格先答。",
+    "page": "呢張圖係成頁，爭議位喺入面：照上文同下文喺頁上搵返佢先答。",
+}
+
 # What 裁決 is told when it is asked a second time, on the whole block
 # (widened_answer).
 WIDER_CROP_NOTE = ("頭先嗰張裁圖影唔到爭議嗰個位。呢張係嗰個位所在成段字嘅裁圖，個位應該喺入面："
@@ -14235,6 +14248,8 @@ def _proofread_page_inner(
                 crop, crop_kind = segment_crop_kind(job.render, render_bytes, block, offset, seg, across=across)
                 if across.get("parts", 1) > 1:
                     seg = dict(seg, columnBreakCrop=dict(across))
+                elif crop and crop_kind in WHOLE_CROP_NOTES:
+                    seg = dict(seg, wholeCrop=crop_kind)
             if crop_kind in ("glyph", "band") and block is not None and offset is not None:
                 # A crop cut where the spot is estimated to be (crop_glyph,
                 # crop_band) must be shown to hold it before 裁決's 無 deletes
@@ -14297,7 +14312,8 @@ def _proofread_page_inner(
                 simplified = getattr(arguments, "simplified_script", False)
                 answer = adjudicate_segment(client, crop, seg, arguments.max_tokens, fallback_engine=engine,
                                             note=(BOUNDARY_NOTES.get((seg.get("boundaryCrop") or {}).get("set"), "")
-                                                  or (COLUMN_BREAK_NOTE if seg.get("columnBreakCrop") else "")),
+                                                  or (COLUMN_BREAK_NOTE if seg.get("columnBreakCrop") else "")
+                                                  or WHOLE_CROP_NOTES.get(seg.get("wholeCrop"), "")),
                                             simplified=simplified)
                 # 睇唔到 on a crop cut where the spot was estimated: once more,
                 # on the whole block, which needs no blind read to hold it.
