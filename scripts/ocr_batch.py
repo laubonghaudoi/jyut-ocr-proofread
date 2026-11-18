@@ -771,8 +771,14 @@ def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[d
 
 
 def to_hand_out(record: dict[str, Any], arguments: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """(the shares no answerer has yet, in the books' order; what waits in all, in numbers)."""
-    waiting = [entry for entry in record["books"] if entry.get("state") == "waiting"]
+    """(the shares no answerer has yet; what waits in all, in numbers).  The book with the fewest
+    questions left in its wave comes first: a wave that is answered in full lets its book take
+    its next step, so a short wave - a book profile's two dozen questions, the last retries of a
+    book - is not kept waiting behind another book's two thousand.  Found on eight books
+    (2026-11-18): handed out in the books' order, the fourth and fifth book's profile questions
+    stood for an hour behind the first three books' pages, and their proofreading with them."""
+    waiting = sorted((entry for entry in record["books"] if entry.get("state") == "waiting"),
+                     key=lambda entry: entry.get("questions") or 0)
     busy = [bundle for flight in record.get("flights") or [] for bundle, answers in flight["bundles"]
             if not Path(answers).is_file()]
     found = packet_dispatch.plan([Path(entry["book"]) / "packets" for entry in waiting], 10 ** 6,

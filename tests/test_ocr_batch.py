@@ -557,6 +557,23 @@ class RoundSizeTests(BatchCase):
         self.assertFalse(set(handed) & {bundle["bundle"] for a in first["assignments"] for bundle in a["bundles"]})
         self.assertEqual(second["questions"], 4)
 
+    def test_the_book_with_the_fewest_questions_left_is_served_first(self) -> None:
+        b = self.b
+        b.begin()
+        b.knob(b.names[0], "profile-questions", 8)
+        b.knob(b.names[1], "profile-questions", 2)            # the second book's wave is the short one
+        self.assertEqual(b.ocr()[0], 0)
+        code, out = b.round("--max-workers", "1", "--items-per-worker", "2")
+        self.assertEqual(code, 10, out)
+        first = b.answer()
+        self.assertEqual({Path(bundle["bundle"]).parents[2].name for a in first["assignments"] for bundle in a["bundles"]},
+                         {b.names[1]})
+        # Answered in full, the second book goes on to its pages while the first is still at its profile.
+        code, out = b.round("--max-workers", "1", "--items-per-worker", "2")
+        self.assertEqual(code, 10, out)
+        self.assertTrue(b.calls("proofread_pages.py", b.names[1]))
+        self.assertEqual(b.calls("proofread_pages.py", b.names[0]), [])
+
     def test_an_answerer_that_wrote_nothing_has_its_bundles_handed_out_again(self) -> None:
         b = self.b
         b.begin()
@@ -568,7 +585,8 @@ class RoundSizeTests(BatchCase):
         code, out = b.round("--items-per-worker", "2")
         self.assertEqual(code, 10, out)
         second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
-        self.assertEqual([bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]][-len(left):], left)
+        again = [bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]]
+        self.assertEqual(again[:len(left)], left)        # and first: theirs is the shortest wave left now
 
     def test_a_place_that_comes_free_is_filled_while_the_other_answerers_are_still_at_work(self) -> None:
         b = self.b
