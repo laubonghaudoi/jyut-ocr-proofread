@@ -230,6 +230,7 @@ class Batch:
 
     def round(self, *extra: str, wait: int = 20) -> tuple[int, str]:
         grace = [] if "--answer-grace" in extra else ["--answer-grace", "0"]
+        grace += [] if "--settle" in extra else ["--settle", "0"]
         return self.call("--round", str(self.batch), "--answered-by", MODEL, "--wait", str(wait), "--poll", "0.1",
                          *grace, *extra)
 
@@ -592,6 +593,15 @@ class RoundSizeTests(BatchCase):
         self.assertEqual(code, 75, out)
         self.assertIn("2 answerer(s) at work, no place free or nothing more to hand out", out)
         self.assertEqual(len(list((b.batch / "plans").glob("round-*"))), 2)
+        # The agent says its answerers are gone (they failed): their shares go out again at once.
+        code, out = b.round(*sized, "--answerers-gone")
+        self.assertEqual(code, 10, out)
+        third = json.loads((b.batch / "plans" / "round-0003" / "plan.json").read_text())
+        again = [bundle["bundle"] for a in third["assignments"] for bundle in a["bundles"]]
+        unanswered = [bundle["bundle"] for plan in (first, second) for a in plan["assignments"] for bundle in a["bundles"]
+                      if not Path(bundle["answers"]).is_file()]
+        self.assertEqual(again, unanswered)
+        self.assertNotIn("--answerers-gone", out.split("run this command again AT ONCE")[1])
         # Every answer written: the batch goes on to the end with the same commands.
         for folder in sorted((b.batch / "plans").glob("round-*")):
             plan = json.loads((folder / "plan.json").read_text())
@@ -622,6 +632,12 @@ class RoundSizeTests(BatchCase):
         self.assertEqual([flight["worker"] for flight in ocr_batch.at_work(record, 600)], [2])
         record["flights"][0]["t"] -= 601                               # its time is over: handed out again
         self.assertEqual(ocr_batch.at_work(record, 600), [])
+        # An answerer keeps its place for a moment after its last file: it has yet to return.
+        fresh = {"flights": [{"t": time.time(), "round": "round-0004", "worker": 1, "bundles": [pair(1), pair(2)]}]}
+        self.assertEqual(len(ocr_batch.at_work(fresh, 600, settle=30)), 1)
+        for number in (1, 2):
+            os.utime(folder / f"answers-0{number}.json", (time.time() - 31, time.time() - 31))
+        self.assertEqual(ocr_batch.at_work(fresh, 600, settle=30), [])
         # A batch that an earlier version handed out as one whole round.
         old = {"lastRound": {"round": "round-02", "t": time.time(), "bundles": [pair(3), pair(4)]}}
         self.assertEqual(len(ocr_batch.at_work(old, 600)), 1)

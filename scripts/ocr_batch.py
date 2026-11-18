@@ -67,7 +67,9 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
   round went out took over 7 minutes for 200 questions, 27 a minute, where the two engines'
   reading made about 45 a minute to answer;
 - exit 75: nothing to hand out yet - books are still being read or worked on, or the answerers
-  are still at work: run it again;
+  are still at work: run it again.  When the answerers failed (the platform says so) or were
+  started by a session that is gone, say so once with --answerers-gone: their unanswered shares
+  are handed out again at once, not only when their time is over;
 - exit 4: books wait for the OCR and call 2 is not running: the line says how it ended.  Start
   call 2 again (SKILL.md 五 for a hand-over's exit code);
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
@@ -128,6 +130,7 @@ DEFAULT_ITEMS_PER_WORKER = 10       # see "How many questions an answerer is giv
 DEFAULT_JOBS = 4                    # steps of different books that run at once (packet backend)
 GATHER_SECONDS = 90                 # nobody at work, questions waiting: how long to wait for a step about to ask more
 TOP_UP_SECONDS = 30                 # answerers at work: how long a free place waits for more places to come free
+SETTLE_SECONDS = 30                 # an answerer keeps its place this long after its last answers file is written
 STARTING_SECONDS = 20               # a detached step counts as running for this long before it holds its lock
 MAX_HANDOUTS = 4                    # a bundle handed out this often and never answered fails its book
 MAX_LOST = 3                        # a step killed this often before it ended fails its book
@@ -732,11 +735,30 @@ def write_status(batch: Path, record: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def at_work(record: dict[str, Any], grace: float) -> list[dict[str, Any]]:
+def unsettled(flight: dict[str, Any], now: float, settle: float) -> bool:
+    """Whether the answerer of FLIGHT still has its place: a bundle of it has no answers file, or
+    its last answers file was written less than SETTLE seconds ago."""
+    newest = 0.0
+    for bundle, answers in flight["bundles"]:
+        if not Path(bundle).is_file():
+            continue                     # its book was delivered and removed since: not waited for
+        try:
+            newest = max(newest, Path(answers).stat().st_mtime)
+        except OSError:
+            return True
+    return now - newest < settle
+
+
+def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[dict[str, Any]]:
     """The answerers still at work: every hand-out (one answerer's bundles) with a bundle that has
     no answers file yet, while its time is not over.  One that has written every file is done; one
     whose time is over has its unwritten bundles handed out again; a bundle that is gone (its book
-    was delivered and removed since) is not waited for.  The record keeps only those at work."""
+    was delivered and removed since) is not waited for.  The record keeps only those at work.
+
+    SETTLE: an answerer writes its last file, then says so and returns; until it has returned
+    the platform still counts it.  Found on eight books (2026-11-18): topped up the moment the
+    files were written, the twentieth answerer of 20 was refused - `Concurrent subagent limit
+    reached` - and its share stood unanswered until its time was over."""
     if "flights" not in record and record.get("lastRound"):
         # A batch a call before this one handed out as whole rounds: each bundle its own answerer.
         last = record.pop("lastRound")
@@ -744,16 +766,15 @@ def at_work(record: dict[str, Any], grace: float) -> list[dict[str, Any]]:
                              for pair in last.get("bundles") or []]
     now = time.time()
     record["flights"] = [flight for flight in record.get("flights") or []
-                         if now - float(flight.get("t") or 0) < grace
-                         and any(Path(bundle).is_file() and not Path(answers).is_file()
-                                 for bundle, answers in flight["bundles"])]
+                         if now - float(flight.get("t") or 0) < grace and unsettled(flight, now, settle)]
     return record["flights"]
 
 
 def to_hand_out(record: dict[str, Any], arguments: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """(the shares no answerer has yet, in the books' order; what waits in all, in numbers)."""
     waiting = [entry for entry in record["books"] if entry.get("state") == "waiting"]
-    busy = [bundle for flight in record.get("flights") or [] for bundle, _ in flight["bundles"]]
+    busy = [bundle for flight in record.get("flights") or [] for bundle, answers in flight["bundles"]
+            if not Path(answers).is_file()]
     found = packet_dispatch.plan([Path(entry["book"]) / "packets" for entry in waiting], 10 ** 6,
                                  arguments.items_per_worker, skip=busy)
     return found["assignments"], found["waiting"]
@@ -831,7 +852,7 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
     deadline = time.monotonic() + max(0, arguments.wait)
     free_since = None
     places = max(1, arguments.max_workers)
-    again = shlex.join(this(*(item for item in sys.argv[1:] if item != "--retry-failed")))
+    again = shlex.join(this(*(item for item in sys.argv[1:] if item not in ("--retry-failed", "--answerers-gone"))))
     with held(mark(batch, "round.lock")) as mine:
         if not mine:
             say("[batch] RESULT exit=2 another --round call is running for this batch: wait for it")
@@ -843,7 +864,11 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
             if any(not rendered(Path(entry["book"])) and entry.get("state") in ("new", "render")
                    for entry in record["books"]) and not renderer_running(batch):
                 start_render(batch)
-            working = len(at_work(record, arguments.answer_grace))
+            if arguments.answerers_gone:
+                # The agent says none of its answerers is running any more: their shares go out again.
+                record["flights"] = []
+                arguments.answerers_gone = False
+            working = len(at_work(record, arguments.answer_grace, arguments.settle))
             free = places - working
             shares = to_hand_out(record, arguments)[0] if "waiting" in states and free > 0 else []
             if shares:
@@ -950,6 +975,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answer-grace", type=float, default=DEFAULT_ANSWER_GRACE, metavar="SECONDS",
                         help="--round: how long an answerer is taken to be at work on what it was handed, while its "
                              f"answers files are not written; after that they are handed out again (default {DEFAULT_ANSWER_GRACE})")
+    parser.add_argument("--settle", type=float, default=SETTLE_SECONDS, metavar="SECONDS",
+                        help="--round: how long an answerer keeps its place after its last answers file is written, "
+                             f"the time it takes to return (default {SETTLE_SECONDS})")
+    parser.add_argument("--answerers-gone", action="store_true",
+                        help="--round: none of the answerers started earlier is running any more (they failed, or the "
+                             "session that started them ended): hand their unanswered shares out again now")
     parser.add_argument("--keep-work", action="store_true",
                         help="--round: keep each book's folder after delivery (default: clean_book.py --all)")
     parser.add_argument("--retry-failed", action="store_true", help="--round: try the failed books again")

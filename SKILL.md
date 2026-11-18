@@ -55,6 +55,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - **逐輪**（前景，tool call timeout 開到最大；一個 call 最多等 540 秒，淨係印幾行）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL`（`MODEL` 照六第 4 步；佢當你同時開到 20 個答題者，平台開唔到咁多先加 `--max-workers N`；B 套改為 `--round BATCH --backend http`，全部書 OCR 完先開始校對）。佢自己行每本書嘅第 3 至 6 步：步驟喺背景行，唔使你開、唔使 `wait_for_run.py`；派工同交答案都係佢做，唔使照六跑 `packet_dispatch.py`。照最尾 `[batch] RESULT exit=N`：
   - **10** 有題要派：`ANSWERERS K` 行講幾多個、喺邊個目錄。每個 `worker-KK.txt` 開一個答題者，**一次過開晒**，prompt 淨係一句 `Read <嗰個檔嘅完整路徑> and do exactly what it says.`；**開晒就即刻再跑同一條，唔使等佢哋返嚟**（亦唔好中途停佢哋）：位滿咗佢自己會等，邊個答題者寫好答案佢就補派新嘅檔，唔會將同一包派兩次。冇 subagent：你自己就係唯一嘅答題者，逐個檔順序照做，全部寫好先再跑同一條。
   - **75** 未有新題要派（仲讀緊書、行緊步驟，或者答題者未答完）：即刻再跑同一條，description 寫第幾次；
+  - 開答題者嗰陣平台話已經滿（concurrent limit），或者個別答題者失敗：唔使理嗰個檔，照舊再跑同一條，佢嗰份遲啲會再派。**全部**答題者都冇咗（平台通知佢哋 failed，例如斷線）：下一次加 `--answerers-gone`（一次就夠），未答嘅即刻再派；
   - **4** 仲有書未讀，但 OCR 嗰個 call 已經完咗：嗰行抄咗佢最尾嘅 RESULT，照五嘅 exit 碼處理，再開 OCR 嗰條；
   - **0** 全部書交付晒：每本嘅 `[finish] RESULT` 行、交付檔同 `[clean] RESULT` 行都印咗，照九逐本講；
   - **1** 做完但有書失敗：`failed:` 行講邊本、點解，其餘嘅書照樣交付咗。照實話畀用戶知；原因改好先加 `--retry-failed` 再跑（OCR 失敗嘅仲要再開 OCR 嗰條）；
@@ -109,7 +110,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 2. 由上而下第一個啱嘅：有 `BOOK/finish/` → 第 5 步；有 `BOOK/proofread/` 或者 `book-profile.json` → 第 4 步；有 `BOOK/ocr-hunyuan/` 或者淨係 manifest → 第 2 步（照四.2 揀：有 `OCR_PHASE_RELEASE_CMD` 就一樣經五嘅交接前景跑同一條 `run_ocr_phase.py` command，唔好直接跑 `ocr_book.py`）。每個 script 都跳過已經封好嘅頁；A 套未答嘅 wave 照答。
 3. 舊版技能封好嘅頁同 OCR 底稿照收，唔重做（限未變嘅原生 Paddle／Hunyuan 輸入）：run report 標 `legacy`。Vision／MLX 要符合新版座標、版面同引擎身份封條；舊 Vision 原始座標唔當新版版面用。JSON 版面或者 backend 變咗會拒絕續用，照 ERROR 處理指定頁，唔自動覆蓋。
 4. 第 4 步一開始 exit 2，`ERROR` 以 `resume with --no-…` 開頭：照嗰行加齊，之後呢本書每次都加；唔好 `--overwrite` 成本，唔好重跑 `book_profile.py`。
-5. 一批書（四〈幾個 PDF 一齊做〉）：`BATCH` 喺 `JYUT_OCR_WORK_ROOT` 嘅 `batches/` 入面；同一堆 PDF 再跑開批嗰條亦會認返同一個 `BATCH`，乜都唔重做。跟住直接跑逐輪嗰條：佢講每本書去到邊；exit 4 就再開 OCR 嗰條。
+5. 一批書（四〈幾個 PDF 一齊做〉）：`BATCH` 喺 `JYUT_OCR_WORK_ROOT` 嘅 `batches/` 入面；同一堆 PDF 再跑開批嗰條亦會認返同一個 `BATCH`，乜都唔重做。跟住直接跑逐輪嗰條（新 session 接手就第一次加 `--answerers-gone`：上一個 session 開嘅答題者已經冇咗）：佢講每本書去到邊；exit 4 就再開 OCR 嗰條。
 
 ## 九、同用戶講嘢
 
