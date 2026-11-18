@@ -4,8 +4,8 @@
 
 - 新 script `scripts/ocr_batch.py`，三條 command 做晒一批書：`ocr_batch.py A.pdf B.pdf ...` 開批（每個 PDF 一個普通嘅 `BOOK`，render 喺背景做，即刻返回）；`--ocr BATCH` 一個 call 逐本讀晒所有書；`--round BATCH` 逐輪行每本書嘅 profile、校對、定稿同清走，直到全部交付。
 - 點解：逐本做嘅話，本機模型每本書（前景分輪就每一輪）都要停、開一次，agent 亦要等完一本書嘅 OCR 先可以答另一本嘅題。實測一本 639 頁嘅書 OCR 66 分鐘、校對連定稿 39 分鐘，後者唔使 GPU。而家 OCR 成批一個窗口；一本書讀完即刻校對，同下一本嘅 OCR 重疊；所有書嘅題目夾埋一輪派。
-- `--round` 一個 call 最多等 540 秒（shell call 嘅 600 秒上限之內），淨係印幾行；佢開嘅步驟喺背景行、唔跟 call 結束。exit 10 有題等答（`BATCH/plans/round-NN/worker-KK.txt`，每個答題者一個檔）、75 未有題、4 OCR 嗰個 call 完咗但仲有書未讀、0 全部交付、1 有書失敗。一輪最多 `--max-workers` 個答題者、每個大約 `--items-per-worker` 條題（預設 20 個、10 條），派唔晒嘅留畀下一輪：唔會因為書多而令一個答題者一次過攞幾百題。實測每個答題者大約 38 條題嗰陣每條題 8.5 萬 input token，10 條或以下係 6.4 萬。
-- 一本書失敗（render、OCR 或者任何一步）淨係嗰本標 `failed` 連原因，其他書照做；`--retry-failed` 再試。背景步驟俾人殺咗，下一輪自己再開。主 agent 未等齊答題者就再跑 `--round`：佢等嗰輪嘅答案檔（預設派出後 600 秒內），唔會將同一包派兩次。冇人答嘅 bundle 派 4 次就停。
+- `--round` 一個 call 最多等 540 秒（shell call 嘅 600 秒上限之內），淨係印幾行；佢開嘅步驟喺背景行、唔跟 call 結束。exit 10 有題等答（`BATCH/plans/round-NN/worker-KK.txt`，每個答題者一個檔）、75 未有題、4 OCR 嗰個 call 完咗但仲有書未讀、0 全部交付、1 有書失敗。同一時間最多 `--max-workers` 個答題者、每個大約 `--items-per-worker` 條題（預設 20 個、10 條），未派嘅等有位再派：唔會因為書多而令一個答題者一次過攞幾百題。實測每個答題者大約 38 條題嗰陣每條題 8.5 萬 input token，10 條或以下係 6.4 萬。
+- 一本書失敗（render、OCR 或者任何一步）淨係嗰本標 `failed` 連原因，其他書照做；`--retry-failed` 再試。背景步驟俾人殺咗，下一輪自己再開。答題者唔使等齊先派下一批：每一份派出去都記低，答案檔寫齊就當做完，有位就補派（主 agent 開晒答題者就即刻再跑 `--round`，冇位佢自己等）；同一包唔會派兩次。8 本書實測，等齊 20 個先派嗰陣每分鐘得 27 條題，慢過 OCR 出題。冇人答嘅 bundle 派 4 次就停。
 - `run_ocr_phase.py` 識得 `ocr_batch.py --ocr BATCH`：按批嘅路線估顯存同啟動時間，所以成批可以包喺一個交接窗口（`--background` 或者前景分輪）。
 - 冇改任何單本書嘅 script：每本書行嘅就係 `SKILL.md` 四嘅 command，`BOOK` 入面冇批嘅檔。`BATCH/timeline.jsonl` 記每步嘅開始、結束同秒數，`BATCH/batch-status.json` 記每本書去到邊。
 - `SKILL.md` 四加〈幾個 PDF 一齊做〉、八加一批書點續；`references/long-book-workflow.md` 加同名一節。

@@ -156,8 +156,10 @@ def share(bundles: Sequence[dict[str, Any]], items_per_worker: int, max_workers:
 
 
 def plan(packets_dirs: Sequence[Path], max_workers: int = DEFAULT_MAX_WORKERS,
-         items_per_worker: int = DEFAULT_ITEMS_PER_WORKER) -> dict[str, Any]:
-    """The plan for PACKETS_DIRS (the module's docstring)."""
+         items_per_worker: int = DEFAULT_ITEMS_PER_WORKER, skip: Sequence[str] = ()) -> dict[str, Any]:
+    """The plan for PACKETS_DIRS (the module's docstring).  SKIP: bundle files an answerer has
+    already been given and is still at work on (ocr_batch.py): they count as waiting, and no
+    assignment holds them."""
     waiting: list[dict[str, Any]] = []
     apply: list[dict[str, Any]] = []
     rerun: list[dict[str, Any]] = []
@@ -177,7 +179,9 @@ def plan(packets_dirs: Sequence[Path], max_workers: int = DEFAULT_MAX_WORKERS,
         elif not left:
             apply.append({"packets": str(packets_dir), "wave": wave_dir.name, "command": manifest["apply_command"]})
     assignments = []
-    for number, run in enumerate(share(waiting, items_per_worker, max_workers), start=1):
+    taken = set(skip)
+    for number, run in enumerate(share([row for row in waiting if row["bundle"] not in taken],
+                                       items_per_worker, max_workers), start=1):
         lines = "\n".join(f"- {bundle['bundle']} ({bundle['items']} question{'s' if bundle['items'] != 1 else ''})"
                           for bundle in run)
         assignments.append({"worker": number, "questions": sum(bundle["items"] for bundle in run),

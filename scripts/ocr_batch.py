@@ -22,8 +22,8 @@ second needs the GPU.  So here:
   one-book command, ocr_book.py, and a book that fails does not stop the next;
 - call 3 does not wait for call 2.  A book is proofread as soon as its own OCR is done, while the
   GPU reads the next one: start call 2 in the background, then run call 3 again and again;
-- with the packet backend (the agent answers) one round's questions come from every book that
-  has any, so one round of answerers serves all the books.
+- with the packet backend (the agent answers) the questions of every book that has any are
+  handed out together, so the same answerers serve all the books.
 
 Each book is an ordinary book folder (the one-book commands of SKILL.md work on it at any time);
 the batch only keeps a list of them, its own marks and logs.  A book that fails is marked failed
@@ -56,14 +56,18 @@ For every book whose OCR is done it hands in the answers of a wave that is answe
 (--answered-by MODEL, the answering model's exact id), starts the step the book is at, and once
 finish_book.py has delivered it removes the book folder (clean_book.py --all; --keep-work: not).
 
-- exit 10: questions wait.  BATCH/plans/round-NN/ holds one worker-KK.txt per answerer.  Start
-  them all at once, each told only to read its file and do what it says; when all are back, run
-  the round again.  A round hands out at most --max-workers files of about --items-per-worker
-  questions; what is left over is handed out by the next round;
-- exit 75: nothing to answer yet, books are still being read or worked on: run it again.  Also
-  when the round is called before every answerer of the last one has written its file: it waits
-  for them (for --answer-grace seconds after that round, default 600) instead of handing the same
-  bundles to a second answerer;
+- exit 10: questions to hand out.  BATCH/plans/round-NNNN/ holds one worker-KK.txt per new
+  answerer.  Start them all at once, each told only to read its file and do what it says, and
+  run the round again at once, without waiting for them.  At most --max-workers answerers are
+  at work at a time (default 20), each with about --items-per-worker questions: the call keeps
+  count of what it handed out, takes an answerer as done when its answers files are written (or
+  --answer-grace seconds have passed, default 600), and hands out more as places come free - a
+  quarter of them, or one that has stood free for 30 s.  While every place is taken it waits.
+  Measured on eight books (2026-11-18): waiting for all 20 answerers of a round before the next
+  round went out took over 7 minutes for 200 questions, 27 a minute, where the two engines'
+  reading made about 45 a minute to answer;
+- exit 75: nothing to hand out yet - books are still being read or worked on, or the answerers
+  are still at work: run it again;
 - exit 4: books wait for the OCR and call 2 is not running: the line says how it ended.  Start
   call 2 again (SKILL.md 五 for a hand-over's exit code);
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
@@ -122,11 +126,12 @@ DEFAULT_WAIT = 540
 DEFAULT_MAX_WORKERS = 20
 DEFAULT_ITEMS_PER_WORKER = 10       # see "How many questions an answerer is given" in the docstring
 DEFAULT_JOBS = 4                    # steps of different books that run at once (packet backend)
-GATHER_SECONDS = 90                 # with questions waiting: how long to wait for a step that is about to ask more
+GATHER_SECONDS = 90                 # nobody at work, questions waiting: how long to wait for a step about to ask more
+TOP_UP_SECONDS = 30                 # answerers at work: how long a free place waits for more places to come free
 STARTING_SECONDS = 20               # a detached step counts as running for this long before it holds its lock
 MAX_HANDOUTS = 4                    # a bundle handed out this often and never answered fails its book
 MAX_LOST = 3                        # a step killed this often before it ended fails its book
-DEFAULT_ANSWER_GRACE = 600          # how long a round's answerers are given before a bundle is handed out again
+DEFAULT_ANSWER_GRACE = 600          # how long an answerer is given before its unwritten bundles are handed out again
 PROFILE_MIN_PAGES = 5               # book_profile.py is left out for a file of four pages or fewer (SKILL.md, step 3)
 SINGLE_DRAFTS = {"apple-vision": "ocr-vision", "hunyuan": "ocr-hunyuan"}
 OVER = ("delivered", "failed")
@@ -727,56 +732,72 @@ def write_status(batch: Path, record: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def plan_round(batch: Path, record: dict[str, Any], arguments: argparse.Namespace) -> tuple[Path, int, int, int]:
-    """Write this round's worker files: (their folder, answerers, questions handed out, questions
-    left for a later round).  A bundle handed out MAX_HANDOUTS times and still unanswered fails
-    its book: (folder, 0, 0, 0) then, and the caller advances the books again."""
+def at_work(record: dict[str, Any], grace: float) -> list[dict[str, Any]]:
+    """The answerers still at work: every hand-out (one answerer's bundles) with a bundle that has
+    no answers file yet, while its time is not over.  One that has written every file is done; one
+    whose time is over has its unwritten bundles handed out again; a bundle that is gone (its book
+    was delivered and removed since) is not waited for.  The record keeps only those at work."""
+    if "flights" not in record and record.get("lastRound"):
+        # A batch a call before this one handed out as whole rounds: each bundle its own answerer.
+        last = record.pop("lastRound")
+        record["flights"] = [{"t": last.get("t"), "round": last.get("round"), "bundles": [pair]}
+                             for pair in last.get("bundles") or []]
+    now = time.time()
+    record["flights"] = [flight for flight in record.get("flights") or []
+                         if now - float(flight.get("t") or 0) < grace
+                         and any(Path(bundle).is_file() and not Path(answers).is_file()
+                                 for bundle, answers in flight["bundles"])]
+    return record["flights"]
+
+
+def to_hand_out(record: dict[str, Any], arguments: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """(the shares no answerer has yet, in the books' order; what waits in all, in numbers)."""
     waiting = [entry for entry in record["books"] if entry.get("state") == "waiting"]
+    busy = [bundle for flight in record.get("flights") or [] for bundle, _ in flight["bundles"]]
     found = packet_dispatch.plan([Path(entry["book"]) / "packets" for entry in waiting], 10 ** 6,
-                                 arguments.items_per_worker)
-    chosen = found["assignments"][:max(1, arguments.max_workers)]
+                                 arguments.items_per_worker, skip=busy)
+    return found["assignments"], found["waiting"]
+
+
+def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace, places: int) -> tuple[Path, int, int, int]:
+    """Write worker files for at most PLACES answerers: (their folder, answerers, questions handed
+    out, questions no answerer has yet).  A bundle handed out MAX_HANDOUTS times and still
+    unanswered fails its book: (folder, 0, 0, 0) then, and the caller advances the books again."""
+    shares, waiting = to_hand_out(record, arguments)
+    chosen = shares[:max(0, places)]
+    plans = batch / "plans"
     if not chosen:
-        return batch / "plans", 0, 0, 0
+        return plans, 0, 0, 0
     handouts = record.setdefault("handouts", {})
     stuck = {bundle["bundle"] for assignment in chosen for bundle in assignment["bundles"]
              if handouts.get(bundle["bundle"], 0) >= MAX_HANDOUTS}
-    plans = batch / "plans"
     if stuck:
-        for entry in waiting:
+        for entry in record["books"]:
             mine = sorted(path for path in stuck if Path(entry["book"]) in Path(path).parents)
-            if mine:
+            if mine and entry.get("state") == "waiting":
                 entry.update(state="failed", error=f"a bundle was handed out {MAX_HANDOUTS} times and never answered "
                                                    f"in full: {mine[0]}")
         write_json(batch / "batch.json", record)
         return plans, 0, 0, 0
-    out = plans / f"round-{len(list(plans.glob('round-*'))) + 1 if plans.is_dir() else 1:02d}"
+    out = plans / f"round-{len(list(plans.glob('round-*'))) + 1 if plans.is_dir() else 1:04d}"
     out.mkdir(parents=True)
+    now = time.time()
     for number, assignment in enumerate(chosen, start=1):
+        assignment["worker"] = number
         (out / f"worker-{number:02d}.txt").write_text(assignment["prompt"] + "\n", encoding="utf-8")
         for bundle in assignment["bundles"]:
             handouts[bundle["bundle"]] = handouts.get(bundle["bundle"], 0) + 1
+        record.setdefault("flights", []).append({
+            "t": now, "round": out.name, "worker": number,
+            "bundles": [[bundle["bundle"], bundle["answers"]] for bundle in assignment["bundles"]]})
     handed = sum(assignment["questions"] for assignment in chosen)
+    left = sum(assignment["questions"] for assignment in shares[len(chosen):])
     write_json(out / "plan.json", {"schema": SCHEMA, "answerers": len(chosen), "questions": handed,
-                                   "leftForLater": found["waiting"]["questions"] - handed, "assignments": chosen})
-    record["lastRound"] = {"round": out.name, "t": time.time(),
-                           "bundles": [[bundle["bundle"], bundle["answers"]] for assignment in chosen
-                                       for bundle in assignment["bundles"]]}
+                                   "leftForLater": left, "assignments": chosen})
     write_json(batch / "batch.json", record)
-    event(batch, event="round", round=out.name, answerers=len(chosen), questions=handed,
-          left=found["waiting"]["questions"] - handed, books=len(waiting))
-    return out, len(chosen), handed, found["waiting"]["questions"] - handed
-
-
-def still_out(record: dict[str, Any], grace: float) -> tuple[str, int]:
-    """(the last round's name, how many of its answers files are not written yet) while its
-    answerers still have time: a round called again too early waits for them instead of handing
-    the same bundles to a second answerer.  A file that is written but incomplete is not waited
-    for, nor is a bundle that is gone (its book was delivered and its folder removed since)."""
-    last = record.get("lastRound") or {}
-    if time.time() - float(last.get("t") or 0) >= grace:
-        return "", 0
-    return str(last.get("round")), sum(1 for bundle, answers in last.get("bundles") or []
-                                       if Path(bundle).is_file() and not Path(answers).is_file())
+    event(batch, event="round", round=out.name, answerers=len(chosen), questions=handed, left=left,
+          atWork=len(record["flights"]), waiting=waiting["questions"])
+    return out, len(chosen), handed, left
 
 
 def ocr_stopped(batch: Path) -> str | None:
@@ -808,7 +829,8 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
                 entry.pop("lost", None)
                 entry["state"] = "new"
     deadline = time.monotonic() + max(0, arguments.wait)
-    asked_since = None
+    free_since = None
+    places = max(1, arguments.max_workers)
     again = shlex.join(this(*(item for item in sys.argv[1:] if item != "--retry-failed")))
     with held(mark(batch, "round.lock")) as mine:
         if not mine:
@@ -821,51 +843,61 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
             if any(not rendered(Path(entry["book"])) and entry.get("state") in ("new", "render")
                    for entry in record["books"]) and not renderer_running(batch):
                 start_render(batch)
-            out_round, out_count = still_out(record, arguments.answer_grace) if "waiting" in states else ("", 0)
-            if out_count:
-                if time.monotonic() >= deadline:
-                    say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - {out_count} answers file(s) "
-                        f"of {out_round} are not written yet: wait for every answerer of that round, then run this "
-                        f"command again: {again}")
-                    return EXIT_INCOMPLETE
-            elif "waiting" in states:
-                asked_since = asked_since or time.monotonic()
-                about_to_ask = any(state in ("profile", "proofread") for state in states)
-                if not about_to_ask or time.monotonic() - asked_since >= GATHER_SECONDS or time.monotonic() >= deadline:
-                    out, answerers, handed, left = plan_round(batch, record, arguments)
+            working = len(at_work(record, arguments.answer_grace))
+            free = places - working
+            shares = to_hand_out(record, arguments)[0] if "waiting" in states and free > 0 else []
+            if shares:
+                free_since = free_since or time.monotonic()
+                held_for = time.monotonic() - free_since
+                if working:
+                    # Answerers are at work: top them up once a quarter of the places are free, or a
+                    # place has stood free for TOP_UP_SECONDS (an answerer writes its last file a
+                    # moment before it returns: the platform may still count it).
+                    hold = min(free, len(shares)) < max(1, places // 4) and held_for < TOP_UP_SECONDS
+                else:
+                    # Nobody is at work: a step that is about to ask more is waited for a little.
+                    hold = any(state in ("profile", "proofread") for state in states) and held_for < GATHER_SECONDS
+                if not hold or time.monotonic() >= deadline:
+                    out, answerers, handed, left = hand_out(batch, record, arguments, free)
                     if not answerers:
                         time.sleep(1)
                         continue
                     say(f"[batch] {status_line(rows)}")
-                    say(f"[batch] ANSWERERS {answerers}: start them all at once, one per file "
+                    say(f"[batch] ANSWERERS {answerers}: start them now, all at once, one per file "
                         f"{out}/worker-01.txt .. worker-{answerers:02d}.txt, each with only this prompt (its own "
                         "file's path in it): Read FILE and do exactly what it says.")
-                    say(f"[batch] when every answerer is back (not before, and without stopping any), run this "
-                        f"command again: {again}")
-                    say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} "
-                        f"answerer(s) in {out}" + (f"; {left} more wait for the next round" if left else ""))
+                    say(f"[batch] then run this command again AT ONCE, without waiting for the answerers: it waits by "
+                        f"itself while every place is taken, and names the next files as answers come in: {again}")
+                    say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} new "
+                        f"answerer(s) in {out}; {working + answerers} of {places} at work"
+                        + (f"; {left} more question(s) wait for a free place" if left else ""))
                     return EXIT_QUESTIONS
-            elif all(state in OVER for state in states):
-                failed = [row for row in rows if row["state"] == "failed"]
-                for row in rows:
-                    for line in row.get("delivered") or [f"{row['state']}: {row.get('error', '')}"]:
-                        say(f"[batch] {row['name']}: {line}")
-                    if row.get("cleaned"):
-                        say(f"[batch] {row['name']}: {row['cleaned']}")
-                code = 1 if failed else 0
-                say(f"[batch] RESULT exit={code} {'DONE' if not failed else 'DONE, ' + str(len(failed)) + ' FAILED'} - "
-                    f"{status_line(rows)}")
-                return code
-            elif "ocr" in states and not any(state in ("profile", "proofread", "finishing", "queued") for state in states):
-                why = ocr_stopped(batch)
-                if why:
-                    say(f"[batch] RESULT exit={EXIT_OCR_STOPPED} OCR STOPPED - {status_line(rows)} - call 2 is not "
-                        f"running and ended with: {why} - start it again: {shlex.join(this('--ocr', str(batch)))} "
-                        "(under run_ocr_phase.py as before)")
-                    return EXIT_OCR_STOPPED
+            else:
+                free_since = None
+                if all(state in OVER for state in states):
+                    failed = [row for row in rows if row["state"] == "failed"]
+                    for row in rows:
+                        for line in row.get("delivered") or [f"{row['state']}: {row.get('error', '')}"]:
+                            say(f"[batch] {row['name']}: {line}")
+                        if row.get("cleaned"):
+                            say(f"[batch] {row['name']}: {row['cleaned']}")
+                    code = 1 if failed else 0
+                    say(f"[batch] RESULT exit={code} {'DONE' if not failed else 'DONE, ' + str(len(failed)) + ' FAILED'} - "
+                        f"{status_line(rows)}")
+                    return code
+                if ("ocr" in states and not working
+                        and not any(state in ("waiting", "profile", "proofread", "finishing", "queued") for state in states)):
+                    why = ocr_stopped(batch)
+                    if why:
+                        say(f"[batch] RESULT exit={EXIT_OCR_STOPPED} OCR STOPPED - {status_line(rows)} - call 2 is not "
+                            f"running and ended with: {why} - start it again: {shlex.join(this('--ocr', str(batch)))} "
+                            "(under run_ocr_phase.py as before)")
+                        return EXIT_OCR_STOPPED
             if time.monotonic() >= deadline:
                 idle = "ocr" in states and not is_held(mark(batch, "ocr.lock"))
-                say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - nothing to answer yet"
+                say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - "
+                    + (f"{working} answerer(s) at work, no place free or nothing more to hand out"
+                       if working else "nothing to answer yet")
                     + ("; no --ocr call is reading right now (call 2)" if idle else "")
                     + f" - run this command again: {again}")
                 return EXIT_INCOMPLETE
@@ -904,8 +936,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answered-by", metavar="MODEL",
                         help="--round, packet backend: the exact id of the model that answers, recorded with the answers")
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
-                        help=f"--round: the answerers the platform runs at once; a round hands out that many "
-                             f"files at most (default {DEFAULT_MAX_WORKERS})")
+                        help=f"--round: the answerers the platform runs at once; no more than that many are at "
+                             f"work at a time (default {DEFAULT_MAX_WORKERS})")
     parser.add_argument("--items-per-worker", type=int, default=DEFAULT_ITEMS_PER_WORKER,
                         help=f"--round: about how many questions one answerer is given (default {DEFAULT_ITEMS_PER_WORKER})")
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS,
@@ -916,8 +948,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll", type=float, default=5.0, metavar="SECONDS",
                         help="--round: how often the call looks at the books again while it waits (default 5)")
     parser.add_argument("--answer-grace", type=float, default=DEFAULT_ANSWER_GRACE, metavar="SECONDS",
-                        help="--round: how long after a round was handed out its unwritten answers are waited for "
-                             f"before their bundles are handed out again (default {DEFAULT_ANSWER_GRACE})")
+                        help="--round: how long an answerer is taken to be at work on what it was handed, while its "
+                             f"answers files are not written; after that they are handed out again (default {DEFAULT_ANSWER_GRACE})")
     parser.add_argument("--keep-work", action="store_true",
                         help="--round: keep each book's folder after delivery (default: clean_book.py --all)")
     parser.add_argument("--retry-failed", action="store_true", help="--round: try the failed books again")

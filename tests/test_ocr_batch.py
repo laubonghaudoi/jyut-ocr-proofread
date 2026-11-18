@@ -540,18 +540,18 @@ class RoundSizeTests(BatchCase):
         self.assertEqual(b.ocr()[0], 0)
         code, out = b.round("--max-workers", "2", "--items-per-worker", "2")
         self.assertEqual(code, 10, out)
-        self.assertIn("ANSWERERS 2: start them all at once, one per file", out)
+        self.assertIn("ANSWERERS 2: start them now, all at once, one per file", out)
         self.assertIn("worker-01.txt .. worker-02.txt", out)
         self.assertIn("Read FILE and do exactly what it says.", out)
-        self.assertIn("RESULT exit=10 QUESTIONS - 4 question(s) for 2 answerer(s)", out)
-        self.assertIn("; 8 more wait for the next round", out)
+        self.assertIn("RESULT exit=10 QUESTIONS - 4 question(s) for 2 new answerer(s)", out)
+        self.assertIn("; 2 of 2 at work; 8 more question(s) wait for a free place", out)
         first = b.answer()
         # The first book's bundles come first, so it is answered in full the soonest.
         self.assertEqual({Path(bundle["bundle"]).parents[2].name for a in first["assignments"] for bundle in a["bundles"]},
                          {b.names[0]})
         code, out = b.round("--max-workers", "2", "--items-per-worker", "2")
         self.assertEqual(code, 10, out)
-        second = json.loads((b.batch / "plans" / "round-02" / "plan.json").read_text())
+        second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
         handed = [bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]]
         self.assertFalse(set(handed) & {bundle["bundle"] for a in first["assignments"] for bundle in a["bundles"]})
         self.assertEqual(second["questions"], 4)
@@ -566,42 +566,66 @@ class RoundSizeTests(BatchCase):
         left = [bundle["bundle"] for bundle in first["assignments"][-1]["bundles"]]
         code, out = b.round("--items-per-worker", "2")
         self.assertEqual(code, 10, out)
-        second = json.loads((b.batch / "plans" / "round-02" / "plan.json").read_text())
+        second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
         self.assertEqual([bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]][-len(left):], left)
 
-    def test_a_round_called_before_every_answerer_is_back_waits_for_them(self) -> None:
+    def test_a_place_that_comes_free_is_filled_while_the_other_answerers_are_still_at_work(self) -> None:
         b = self.b
         b.begin()
+        for name in b.names:
+            b.knob(name, "profile-questions", 6)             # three shares of two a book
         self.assertEqual(b.ocr()[0], 0)
-        self.assertEqual(b.round("--items-per-worker", "2")[0], 10)
-        first = b.answer(leave_out_workers=1)                 # one answerer is still at work
-        code, out = b.round("--items-per-worker", "2", "--answer-grace", "600", wait=2)
-        self.assertEqual(code, 75, out)
-        self.assertIn(f"{len(first['assignments'][-1]['bundles'])} answers file(s) of round-01 are not written yet: wait for "
-                      "every answerer of that round", out)
-        self.assertEqual(len(list((b.batch / "plans").glob("round-*"))), 1)     # nothing was handed out twice
-        b.answer()                                            # the last answerer is back
-        code, out = b.round("--items-per-worker", "2", "--answer-grace", "600")
+        sized = ("--max-workers", "2", "--items-per-worker", "2", "--answer-grace", "600")
+        code, out = b.round(*sized)
         self.assertEqual(code, 10, out)
-        second = json.loads((b.batch / "plans" / "round-02" / "plan.json").read_text())
-        old = {bundle["bundle"] for a in first["assignments"] for bundle in a["bundles"]}
-        self.assertFalse(old & {bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]})
+        self.assertIn("then run this command again AT ONCE, without waiting for the answerers", out)
+        first = b.answer(leave_out_workers=1)                 # one answerer is back, the other still at work
+        code, out = b.round(*sized)
+        self.assertEqual(code, 10, out)
+        self.assertIn("RESULT exit=10 QUESTIONS - 2 question(s) for 1 new answerer(s)", out)
+        self.assertIn("; 2 of 2 at work; 6 more question(s) wait for a free place", out)
+        second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
+        handed = {bundle["bundle"] for a in first["assignments"] for bundle in a["bundles"]}
+        self.assertFalse(handed & {bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]})
+        # Both places taken: the call waits and hands nothing out, least of all the same bundles again.
+        code, out = b.round(*sized, wait=2)
+        self.assertEqual(code, 75, out)
+        self.assertIn("2 answerer(s) at work, no place free or nothing more to hand out", out)
+        self.assertEqual(len(list((b.batch / "plans").glob("round-*"))), 2)
+        # Every answer written: the batch goes on to the end with the same commands.
+        for folder in sorted((b.batch / "plans").glob("round-*")):
+            plan = json.loads((folder / "plan.json").read_text())
+            for assignment in plan["assignments"]:
+                for bundle in assignment["bundles"]:
+                    items = json.loads(Path(bundle["bundle"]).read_text())["items"]
+                    rows = [{"request_id": item["request_id"], "answer": "構件：略\n定案：甲\nRESEARCH: no"} for item in items]
+                    Path(bundle["answers"]).write_text(json.dumps({"answers": rows}, ensure_ascii=False))
+        code, out, _ = b.until_done("--max-workers", "2", "--items-per-worker", "2")
+        self.assertEqual(code, 0, out)
 
-    def test_a_round_does_not_wait_for_the_answers_of_a_book_that_is_gone(self) -> None:
+    def test_an_answerer_is_at_work_until_its_files_are_written_or_its_time_is_over(self) -> None:
         import ocr_batch
         b = self.b
-        folder = b.root / "gone"
+        folder = b.root / "book"
         folder.mkdir()
-        (folder / "bundle-01.json").write_text("{}")
-        record = {"lastRound": {"round": "round-03", "t": time.time(), "bundles": [
-            [str(folder / "bundle-01.json"), str(folder / "answers-01.json")],
-            [str(folder / "bundle-02.json"), str(folder / "answers-02.json")]]}}     # the second book was cleaned away
-        self.assertEqual(ocr_batch.still_out(record, 600), ("round-03", 1))
+        for number in (1, 2, 3):
+            (folder / f"bundle-0{number}.json").write_text("{}")
+        pair = lambda number: [str(folder / f"bundle-0{number}.json"), str(folder / f"answers-0{number}.json")]
+        record = {"flights": [{"t": time.time(), "round": "round-0003", "worker": 1, "bundles": [pair(1), pair(2)]},
+                              {"t": time.time(), "round": "round-0003", "worker": 2, "bundles": [pair(3)]},
+                              {"t": time.time(), "round": "round-0003", "worker": 3, "bundles": [pair(4)]}]}
+        # The third answerer's bundle is gone - its book was delivered and removed: not waited for.
+        self.assertEqual([flight["worker"] for flight in ocr_batch.at_work(record, 600)], [1, 2])
         (folder / "answers-01.json").write_text("{}")
-        self.assertEqual(ocr_batch.still_out(record, 600), ("round-03", 0))
-        (folder / "answers-01.json").unlink()
-        record["lastRound"]["t"] -= 601                        # the answerers' time is over: handed out again
-        self.assertEqual(ocr_batch.still_out(record, 600), ("", 0))
+        self.assertEqual(len(ocr_batch.at_work(record, 600)), 2)      # one of its two files is not written yet
+        (folder / "answers-02.json").write_text("{}")
+        self.assertEqual([flight["worker"] for flight in ocr_batch.at_work(record, 600)], [2])
+        record["flights"][0]["t"] -= 601                               # its time is over: handed out again
+        self.assertEqual(ocr_batch.at_work(record, 600), [])
+        # A batch that an earlier version handed out as one whole round.
+        old = {"lastRound": {"round": "round-02", "t": time.time(), "bundles": [pair(3), pair(4)]}}
+        self.assertEqual(len(ocr_batch.at_work(old, 600)), 1)
+        self.assertNotIn("lastRound", old)
 
     def test_the_round_needs_the_answering_model(self) -> None:
         b = self.b
