@@ -126,6 +126,54 @@ check("a crop set from parts is said to be one (COLUMN_BREAK_NOTE)",
                                                    note=pp.COLUMN_BREAK_NOTE), True)
 
 
+# 睇唔到 on a crop cut where the spot was estimated to be: the question is asked once more
+# on the whole layout block (widened_answer), and the second answer is the answer.  Measured
+# (a small model on nine benchmark samples, 2026-11-17): 9 of 66 verdicts said 睇唔到, 8 of
+# them on crops whose estimate was off by more than the crop reaches.
+import tempfile  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+
+class Answers:
+    """Stands in for the model: its answers in order, and what it was asked."""
+
+    def __init__(self, *answers: str) -> None:
+        self.texts = [f"構件：略\n定案：{answer}\nRESEARCH: no" for answer in answers]
+        self.asked: list[tuple[str, bytes | None]] = []
+
+    def ask_answering(self, system, prompt, crop, max_tokens, kind=None):
+        self.asked.append((prompt, crop))
+        return self.texts[len(self.asked) - 1], {}
+
+
+RENDER = Path(tempfile.mkdtemp()) / "page.png"
+Image.new("L", (400, 600), 255).save(RENDER)
+SPOT_BLOCK = {"text": "往我等商人受此遭刧告訴無門聽天主意", "box": [0.1, 0.1, 0.5, 0.5], "label": "text"}
+SPOT = {"a": "刧", "b": "刼", "before": "往我等商人受此遭", "after": "告訴無門聽天主意"}
+
+
+def look_again(*answers: str, block=SPOT_BLOCK):
+    client = Answers(*answers)
+    first = pp.adjudicate_segment(client, b"the estimated crop", SPOT, 16000)
+    (piece, record, _), wider = pp.widened_answer(client, SPOT, first, RENDER, block, 16000)
+    return (piece, record["resolved_from"], record.get("unseen"), len(client.asked),
+            (record.get("widened") or {}).get("shown")), client, wider
+
+
+check("睇唔到, then the character read on the whole block: the second answer is written",
+      look_again("睇唔到", "刼")[0], ("刼", "adjudicator", None, 2, "block"))
+check("睇唔到 on the whole block too: no verdict, engine A's reading stands",
+      look_again("睇唔到", "睇唔到")[0], ("刧", "adjudicator-invalid", True, 2, "block"))
+check("an answer on the first crop is not asked again", look_again("刼")[0], ("刼", "adjudicator", None, 1, None))
+check("a crop that was not estimated (no block given) is not asked again",
+      look_again("睇唔到", block=None)[0], ("刧", "adjudicator-invalid", True, 1, None))
+_, asked, wider = look_again("睇唔到", "刼")
+check("the second question says its crop is the whole block, and shows it",
+      (pp.WIDER_CROP_NOTE in asked.asked[1][0], pp.WIDER_CROP_NOTE in asked.asked[0][0],
+       asked.asked[1][1] == wider, (wider or b"")[:4]), (True, False, True, b"\x89PNG"))
+
+
 # A book printed in simplified script (simplified=True): 裁決 often answers in
 # traditional script.  A character of its answer only traditional script has, which
 # engine B did not read there, is written in the simplified form an engine read there;

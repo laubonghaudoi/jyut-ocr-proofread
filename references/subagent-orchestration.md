@@ -34,7 +34,7 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
 
 1. **分工**：主 agent 最多開上面講嘅上限咁多個普通 packet worker，或者自己順序做。每個 assignment 擁有一個輸入 `bundle-XX.json`（連佢嘅 SHA-256）同一個輸出：bundle 嘅 `expected_answers_file`（`packets/wave-NN/answers-XX.json`）。`--max-bundles` 係題量容許時嘅分包目標（預設 8）。逐頁校對每包上限由 `--max-items-per-bundle` 設（預設 20，env `PROOFREAD_MAX_ITEMS_PER_BUNDLE`），profile 每包上限 20。題多過總容量就多開包。
 2. **答題**：每條題睇佢 `image_path` 指嘅 PNG（裁圖，或者整頁 render），照佢自己嘅 `system` 同 `user_text` 寫答案，`answer` 係原原本本嘅答案文字。每條題都要答：圖睇唔清、或者定唔到，都唔係留空一題或者成包唔交嘅理由——照嗰題自己講嘅做法答，冇講就寫最有根據嘅讀法；腳本會逐個答案檢查，有需要會再問。常見嘅題：
-   - `adjudicate`（裁決）：直接睇裁圖上標住嘅字位，照 prompt 嘅格式答（`字: ...`）；兩個候選都唔係就照實答。裁圖影唔到爭議嗰個位就寫 `定案：睇唔到`，唔好靠上下文估：腳本會保留引擎嘅讀法，記低呢個位未睇到。有啲裁圖由幾段拼成（欄尾接下一欄頭），題目會講明。
+   - `adjudicate`（裁決）：直接睇裁圖上標住嘅字位，照 prompt 嘅格式答（`字: ...`）；兩個候選都唔係就照實答。裁圖影唔到爭議嗰個位就寫 `定案：睇唔到`，唔好靠上下文估：估位裁出嚟嘅圖，腳本會喺下一個 wave 用成段字嘅大圖再問一次（題目會講明），仲係睇唔到先保留引擎嘅讀法、記低呢個位未睇到。有啲裁圖由幾段拼成（欄尾接下一欄頭），題目會講明。
    - `census+punctuate`（重試係 `punctuate-retry`、`punctuate-shape`）：喺放大嘅 block 圖數印咗嘅標點（census），再將嗰啲符號加入鎖定嘅字串（唔准加、刪、換任何字）。A 套預設一題做晒點算同加標點；分開問嘅 `census`、`punctuate` 係 B 套（http）嘅預設問法，見到就照各自嘅 prompt 答。
    - `table-rebuild`（及 `-retry`）：由裁圖重建表；用晒 `required` 嘅字，`allowed` 以外嘅字淨係真係印咗先寫。
    - `orient`、`record-order`、`cell-direction`、`notation`：照圖同現有格網答結構或者符號問題。讀向要有精確行／欄位置同圖像證據；讀得通嘅詞或者對得上嘅合計唔准作倒轉嘅理由。

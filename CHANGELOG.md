@@ -14,6 +14,15 @@
 - 下游封條記語義指紋，換引擎／後端或 block 文字／座標／label／次序會 stale；未變嘅 legacy native 封頁照收。macOS 可回收記憶體估計統一用 free + inactive + speculative，唔重複加 purgeable；順序引擎取峰值需求，保留手動預算同 Hunyuan slots。
 - CER 唔作啟用門檻，通用 Paddle 記憶體預算保持。評測成品統一存喺 benchmark repo，效能量度同驗收紀錄見 [issue #4 結案回覆](https://github.com/laubonghaudoi/jyut-ocr-proofread/issues/4#issuecomment-6952908371)。
 
+## Unreleased — `--unmarked-page-sample`：無標點嘅頁抽樣問；裁決答「睇唔到」就用成段大圖再問（issue #6）
+
+- **`--unmarked-page-sample`（預設關）**：成頁兩個引擎各自讀到嘅標點都唔多過兩個，而且引擎 A 讀成淨係得字嘅 block 多過三個，就先問最長三個 block 嘅標點題；三個都答冇標點，其餘 block 照原文寫、唔問（`censusNotAsked` 記 `page-unmarked-sample`），否則其餘 block 喺下一個 wave 照常問。Profile 見到雙圈或者旁點嘅書唔用。封條記 `unmarkedPageSample: "on"`，入 provenance。
+- 點解以頁為單位：有標點嘅頁上面，兩個引擎都冇讀到標點嘅 block 唔代表真係冇標點。Benchmark 28 案入面，唯一一本無標點古書以外有 62 個噉嘅 block，校對喺其中 15 個補咗標點。
+- 離線重播（benchmark 28 案，用三輪已封存嘅答案）：14 頁有抽樣，9 至 10 頁成頁放行，少問 174 至 177 條標點題，約佔全部題目四分一，幾乎全部嚟自嗰本無標點古書；4 至 5 頁嘅抽樣見到標點，其餘 block 遲一個 wave 先問。放行嘅 block 入面，一輪答案寫過 13 個標點，另外兩輪係 0 個；嗰本書 8,760 字嘅人工答案總共得 6 個標點。
+- **裁決答「睇唔到」就再問一次**（`widened_answer`）：估位裁出嚟嘅圖（glyph、band）答「睇唔到」，就用嗰個位所在成個 block 嘅圖再問一次，題目講明。第二次嘅答案作準；仲係睇唔到就保留引擎讀法，紀錄 `unseen`。紀錄多一個 `widened`（第一次嘅答案、大圖檔名 `page-NNNN-adjudication-wider-NN.png`）。成個 block、表格、整頁同跨 block 邊界嘅裁圖唔會再問。
+- 實測（一個細模型，九個 benchmark 案）：66 條裁決答案有 9 條答「睇唔到」，其中 6 條係估位裁圖，第二個 wave 出咗大圖重問；5 條有答，1 條仍然睇唔到。可以對人工答案嘅兩條都答錯，同引擎 A 嘅讀法一樣，即係細模型喺大圖上冇改善；大圖本身睇得清、搵到個位。
+- 新檢查喺 `tests/check_agreed_marks.py`（抽樣）同 `tests/check_adjudication.py`（再問一次）。
+
 ## Unreleased — 裁決題：裁圖跨欄、影唔到就答「睇唔到」、每題都要答（issue #6 實測帶出）
 
 - **裁圖跨欄**（`crop_glyph` 嘅 `across`，逐頁校對嘅裁決題用）：直排 block 入面，估計喺欄尾四個字以內嘅爭議位，裁圖而家連埋下一欄嘅頭；喺欄頭四個字以內就連埋上一欄嘅尾。幾段由右至左並排，中間隔一條紙色空白，題目會講明裁圖係拼出嚟（`COLUMN_BREAK_NOTE`）。原因：每欄字數係由墨跡長度估出嚟，喺欄尾差一兩個字就落咗隔籬欄，而裁圖以前唔跨欄，爭議字唔喺圖上，答題者只能估。實例：一個 548 字、15 欄嘅 block，爭議字印喺下一欄第二個字，裁圖喺上一欄尾就完咗。
@@ -22,7 +31,6 @@
 - **裁決答案最尾兩行**：system prompt 講明先 `定案：<字>`，最後一行 `RESEARCH: yes/no`；題目唔再話定案嗰行係「最後」。以前兩邊各自話自己嗰行係最後一行。
 - **每題都要答**：bundle 嘅 `answer_format_instructions`、`SKILL.md` 六、`references/subagent-orchestration.md` 同 Codex packet worker 講明，圖睇唔清或者定唔到，唔係留空一題或者成包唔交嘅理由：照嗰題自己講嘅做法答，冇講就寫最有根據嘅讀法。實測一個細模型答題，40 個案次有 5 個因為「唔肯估」成包唔答。
 - 已封嘅頁唔受影響。裁決題嘅 prompt 改咗，所以未封嘅頁入面，已答而未用到嘅裁決答案對唔返新題目 ID，會再問一次。
-- 未做：答「睇唔到」之後自動用大啲嘅裁圖再問一次；而家只係保留引擎讀法同記低。
 - 新檢查喺 `tests/check_crops.py`（跨欄）同 `tests/check_adjudication.py`（睇唔到、最尾兩行）。
 
 ## Unreleased — `--same-print-marks`：兩個引擎印刷字一致嘅 block 唔問標點（issue #6）

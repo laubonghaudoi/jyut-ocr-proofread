@@ -3953,6 +3953,46 @@ def confirm_nothing(client: "Client", crop: bytes | None, seg: Mapping[str, Any]
     return kept, record, metrics
 
 
+# What 裁決 is told when it is asked a second time, on the whole block
+# (widened_answer).
+WIDER_CROP_NOTE = ("頭先嗰張裁圖影唔到爭議嗰個位。呢張係嗰個位所在成段字嘅裁圖，個位應該喺入面："
+                   "先喺圖上搵返上文同下文，再答夾喺中間嗰個位。成段睇晒都搵唔到，先至寫 `定案：睇唔到`。")
+
+
+def widened_answer(client: "Client", seg: Mapping[str, Any], answer: tuple[str, dict[str, Any], dict[str, Any]],
+                   render: Path, block: Mapping[str, Any] | None, max_tokens: int, fallback_engine: str = "A",
+                   simplified: bool = False
+                   ) -> tuple[tuple[str, dict[str, Any], dict[str, Any]], bytes | None]:
+    """裁決's second look at a spot it said its crop does not show (睇唔到,
+    UNSEEN_VERDICTS): the question once more on the whole of BLOCK, the layout
+    block the spot is in, and the crop it was shown (None when it was not
+    asked again: another answer, or no block to show).
+
+    BLOCK is given for a crop cut where the spot was estimated to be (a glyph
+    or band crop).  The estimate comes from the columns' ink and the block's
+    character count, and on some pages it is off by more than the crop
+    reaches - type of two sizes, a form's blanks.  Measured (2026-11-17, a
+    small model answering the first wave of nine benchmark samples, 66
+    verdicts): 9 said 睇唔到, 8 of them on crops that were not at a column's
+    end; of three looked at, one showed the column from two characters below
+    the spot, one another part of the page.  The whole block holds the spot by
+    how it is cut, as a horizontal block's crop does (segment_crop_kind), so
+    a 無 there is not confirmed by a blind read (confirm_nothing).  The second
+    answer is the answer - 睇唔到 again is no verdict, and the fallback
+    engine's reading stands - and its record holds the first under "widened".
+    """
+    piece, record, metrics = answer
+    if not record.get("unseen") or block is None:
+        return answer, None
+    wider = upscale_crop(crop_block(render, block["box"], pad=0.01))
+    if not wider:
+        return answer, None
+    second, again, used = adjudicate_segment(client, wider, seg, max_tokens, fallback_engine=fallback_engine,
+                                             note=WIDER_CROP_NOTE, simplified=simplified)
+    again = dict(again, widened={"shown": "block", "firstVerdict": str(record.get("verdict") or "")[-300:]})
+    return (second, again, {**used, **aggregate_usage([metrics, used])}), wider
+
+
 # How many of the characters around a spot, in a row, a transcription must
 # have on each side for the spot to be on the crop (crop_shows_spot).
 SPOT_ANCHOR = 2
@@ -8938,6 +8978,7 @@ OPTIONAL_PROVENANCE += ("learnedHeads",)
 OPTIONAL_PROVENANCE += ("engineAConfirmsFirstAnswer", "censusSkipOverCeiling")
 # Switch --same-print-marks (agreed_marks, same_print).
 OPTIONAL_PROVENANCE += ("samePrintMarks",)
+OPTIONAL_PROVENANCE += ("unmarkedPageSample",)
 # The round-4 fixes, on by default since the user's decision of 2026-09-30
 # (after the round-4 benchmark), each with the provenance key it seals when
 # on.  --no-<switch> turns one off.  Provenance records each one's state
@@ -9054,6 +9095,10 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # Switch --same-print-marks: the engines' marks also for a block whose
         # print both engines read alike (agreed_marks, same_print).  Only when on.
         **({"samePrintMarks": "on"} if getattr(arguments, "same_print_marks", False) else {}),
+        # Switch --unmarked-page-sample: on a page neither engine read marks
+        # on, a sample of the blocks is asked and the rest are taken as
+        # unmarked when the sample is (unmarked_candidates).  Only when on.
+        **({"unmarkedPageSample": "on"} if getattr(arguments, "unmarked_page_sample", False) else {}),
         # Engine A's figures written where they are the only reading of their
         # print (--keep-arabic-numerals): the book's figures and the glyphs
         # engine B writes for them, from the drafts (figure_evidence), so a
@@ -9762,6 +9807,45 @@ def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None
         return None
     text = "".join(gap + char for gap, char in zip(gaps[0], span)) + gaps[0][-1]
     return text if mark_places(text) >= AGREED_MARKS_MINIMUM else None
+
+
+# Switch --unmarked-page-sample: a page neither engine read more than
+# UNMARKED_PAGE_MARKS marks on is asked about UNMARKED_SAMPLE of its blocks
+# first, the longest, and the others are taken as printed without marks when
+# every one of those is answered so (unmarked_candidates).
+UNMARKED_PAGE_MARKS = 2
+UNMARKED_SAMPLE = 3
+
+
+def unmarked_candidates(blocks: Sequence[Mapping[str, Any]], spans: Sequence[str], indices: Sequence[int],
+                        draft2: str | None) -> list[int]:
+    """The blocks of INDICES (the page's blocks to punctuate) that may be
+    taken as printed without marks on the word of a sample, switch
+    --unmarked-page-sample: none unless the page is one neither engine read
+    marks on - at most UNMARKED_PAGE_MARKS in all of engine A's BLOCKS, and
+    as few in engine B's reading DRAFT2 - and then each block engine A read
+    as characters alone: no mark, and no other print (a figure, Latin text, a
+    note marker), which the punctuator writes off the crop and a block not
+    asked would lose.
+
+    The page is the unit, not the block: engine B's reading is not tied to
+    blocks where the engines read different characters, and a block both
+    engines read without marks on a page they read marks on is no evidence -
+    measured on the benchmark's 28 samples (2026-11-17, a small model
+    answering): of 62 such blocks outside the one unpunctuated book the
+    proofreader wrote marks in 15, 80 marks in all.  On that book's 11 pages
+    neither engine read more than two marks a page, 244 blocks were asked, and
+    241 were answered as printed without marks: a third of the benchmark's
+    questions.
+    """
+    if draft2 is None:
+        return []
+    read = lambda text: sum(punctuation_counts(text).values())
+    if read("\n".join(str(block.get("text") or "") for block in blocks)) > UNMARKED_PAGE_MARKS \
+            or read(draft2) > UNMARKED_PAGE_MARKS:
+        return []
+    return [index for index in indices
+            if CJK(spans[index]) and all(c.isspace() or CJK(c) for c in str(blocks[index].get("text") or ""))]
 
 
 def engine_b_places(chars: str, segments: Sequence[Mapping[str, Any]],
@@ -13868,6 +13952,10 @@ def _proofread_page_inner(
         # depends only on how many were sent to 裁決 before, never on what they
         # answered - and the calls themselves then run together.
         planned: list[tuple[int, dict[str, Any], bytes | None, Path, str]] = []
+        # The layout block of each question whose crop was cut where the spot
+        # was estimated to be, by slot: shown whole when 裁決 says the crop
+        # does not show the spot (widened_answer).
+        estimated: dict[int, Mapping[str, Any]] = {}
         # (slot in pieces, decisionChanges entry) for each text change a
         # decision-dependent rule makes; its outcome is filled in once known.
         changes: list[tuple[int, dict[str, Any]]] = []
@@ -14194,6 +14282,8 @@ def _proofread_page_inner(
                        # and where each engine read it (explain).
                        answerSite=site(seg, a_start), streamAt=(a_start, b_starts[index]))
             pieces.append("")          # filled in below, in this order
+            if crop_kind in ("glyph", "band") and block is not None:
+                estimated[len(pieces) - 1] = block
             planned.append((len(pieces) - 1, seg, crop, crop_path, prefer if prefer in ("A", "B") else fallback))
 
         # Each question's place (call_site: its spot, its crop, and where it
@@ -14202,12 +14292,23 @@ def _proofread_page_inner(
         spot_sites: dict[int, dict[str, Any]] = {slot: {} for slot, *_ in planned}
 
         def adjudicate(item: tuple[int, dict[str, Any], bytes | None, Path, str]):
-            slot, seg, crop, _, engine = item
+            slot, seg, crop, crop_path, engine = item
             with call_site(spot_sites[slot]):
+                simplified = getattr(arguments, "simplified_script", False)
                 answer = adjudicate_segment(client, crop, seg, arguments.max_tokens, fallback_engine=engine,
                                             note=(BOUNDARY_NOTES.get((seg.get("boundaryCrop") or {}).get("set"), "")
                                                   or (COLUMN_BREAK_NOTE if seg.get("columnBreakCrop") else "")),
-                                            simplified=getattr(arguments, "simplified_script", False))
+                                            simplified=simplified)
+                # 睇唔到 on a crop cut where the spot was estimated: once more,
+                # on the whole block, which needs no blind read to hold it.
+                answer, wider = widened_answer(client, seg, answer, job.render, estimated.get(slot),
+                                               arguments.max_tokens, engine, simplified)
+                if wider:
+                    # The pixels of the second look, beside the first's.
+                    wider_path = crop_path.with_name(crop_path.name.replace("-adjudication-", "-adjudication-wider-"))
+                    wider_path.write_bytes(wider)
+                    answer[1]["widened"]["crop"] = wider_path.name
+                    return answer
                 return confirm_nothing(client, crop, seg, answer, arguments.max_tokens, engine)
 
         # D3 questions whose answer wrote less than the engine read (insertion-partial),
@@ -15272,6 +15373,23 @@ def _proofread_page_inner(
                             agreed_print.add(index)
                     if text is not None:
                         agreed[index] = text
+            # Switch --unmarked-page-sample: on a page neither engine read
+            # marks on, the longest UNMARKED_SAMPLE of the blocks engine A read
+            # as characters alone are asked with the page's other blocks, and
+            # the rest wait for their answers (unmarked_candidates).  Not on a
+            # book whose profile saw doubled circles or emphasis marks, which
+            # no engine reads: the sample would find them, a wave later.
+            waiting: list[int] = []
+            sampled: set[int] = set()
+            unmarked: set[int] = set()
+            if getattr(arguments, "unmarked_page_sample", False) and not (
+                    notation.get("doubled") or notation.get("emphasis")):
+                candidates = unmarked_candidates(blocks, spans, [index for index in to_punctuate
+                                                                 if index not in agreed], draft2)
+                if len(candidates) > UNMARKED_SAMPLE:
+                    sampled = set(sorted(candidates, key=lambda index: (-len(CJK(spans[index])), index))
+                                  [:UNMARKED_SAMPLE])
+                    waiting = [index for index in candidates if index not in sampled]
 
             def cut(index: int) -> tuple[bool, list[tuple[bytes | None, int, int]], int]:
                 """Whether block INDEX is cut in column groups, its (crop, start,
@@ -15296,6 +15414,7 @@ def _proofread_page_inner(
                     out = agreed[index]
                     return out, {"ok": True, "census": None, "reason": "",
                                  "censusNotAsked": {"rule": "engines-agree-print" if index in agreed_print
+                                                    else "page-unmarked-sample" if index in unmarked
                                                     else "engines-agree"},
                                  "marks": sum(punctuation_counts(out).values()), "doubled": out.count("。。"),
                                  "places": mark_places(out), "leaders": punctuation_counts(out)[LEADER],
@@ -15310,12 +15429,34 @@ def _proofread_page_inner(
                     return punctuate_part(client, arguments, crop, spans[index][lo:hi], hint, limit,
                                           printed=printed, block=(spans[index], lo, hi, reach))
 
+            def asked(indices: Sequence[int]) -> tuple[list[tuple[int, int, bytes | None, int, int, bool, int]], list]:
+                """The passes of the blocks INDICES and their answers."""
+                cuts = in_context(pool, cut, indices)
+                some = [(index, tile_number, crop, lo, hi, tiled, reach)
+                        for index, (tiled, parts, reach) in zip(indices, cuts)
+                        for tile_number, (crop, lo, hi) in enumerate(parts)]
+                return some, in_context(pool, punctuate, some)
+
             with cf.ThreadPoolExecutor(page_concurrency) as pool:
-                cuts = in_context(pool, cut, to_punctuate)
-                passes = [(index, tile_number, crop, lo, hi, tiled, reach)
-                          for index, (tiled, parts, reach) in zip(to_punctuate, cuts)
-                          for tile_number, (crop, lo, hi) in enumerate(parts)]
-                answers = in_context(pool, punctuate, passes)
+                passes, answers = asked([index for index in to_punctuate if index not in waiting])
+                if waiting:
+                    # The sample is in.  Every pass of it answered and without
+                    # a mark: the blocks that waited are written as they are
+                    # (agreed, rule page-unmarked-sample).  A mark in one, or
+                    # an answer refused: they are asked as any block is.
+                    if all(record.get("ok") and not sum(punctuation_counts(out).values())
+                           for (index, *_), (out, record, _) in zip(passes, answers) if index in sampled):
+                        unmarked = set(waiting)
+                        agreed.update((index, spans[index]) for index in waiting)
+                    more, more_answers = asked(waiting)
+                    for (index, *_), (_, record, _) in zip(passes, answers):
+                        if index in sampled:
+                            record["unmarkedSample"] = {"waiting": len(waiting), "taken": bool(unmarked)}
+                    # In the page's block order, as with no sample.
+                    place = {index: number for number, index in enumerate(to_punctuate)}
+                    both = sorted(zip(passes + more, answers + more_answers),
+                                  key=lambda pair: (place[pair[0][0]], pair[0][1]))
+                    passes, answers = [pair[0] for pair in both], [pair[1] for pair in both]
             # Each pass's text with the stretch of its block it read: its own
             # [lo, hi), or where its answer was realigned (realign_answer).
             pieces_out: dict[int, list[tuple[str, int, int, int, int]]] = {index: [] for index in to_punctuate}
@@ -16756,6 +16897,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also take the engines' marks, with no punctuation question, for a block whose "
                              "gaps hold print (figures, Latin text, note markers) that both engines read alike; "
                              "off by default")
+    parser.add_argument("--unmarked-page-sample", action="store_true", dest="unmarked_page_sample", default=False,
+                        help=f"on a page neither engine read more than {UNMARKED_PAGE_MARKS} punctuation marks on, "
+                             f"ask the punctuation question for the {UNMARKED_SAMPLE} longest blocks first and, "
+                             "when every one is answered as printed without marks, take the page's other "
+                             "blocks without marks, unasked; off by default")
     parser.add_argument("--no-unread-table-characters", action="store_true",
                         help="the user's headerCharacters ruling (2026-09-27) off: a rebuilt table that "
                              "writes a character no engine read in its region is refused, as before, "

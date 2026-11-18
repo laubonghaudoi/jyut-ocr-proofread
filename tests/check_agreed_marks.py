@@ -273,5 +273,64 @@ check("long-book-workflow.md: a legacy seal may lack the rule's key, counted, a 
       ("`agreedMarks`" in legacy, "`legacy`" in legacy, "`counts.legacy`" in legacy, "仲係 blocked" in legacy),
       (True, True, True, True))
 
+
+# --- --unmarked-page-sample: a page neither engine read marks on -------------------------------
+# Measured (the benchmark's 28 samples, 2026-11-17): one unpunctuated book's 11 pages asked
+# 244 punctuation questions, a third of all the questions, and 241 were answered "no marks".
+# With the switch the three longest blocks are asked first; answered without a mark, the
+# page's other blocks are written as they are, unasked; a mark in one, and all are asked.
+LINES = ["天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往", "秋收冬藏閏餘成歲律呂調陽", "雲騰致雨露結爲霜",
+         "金生麗水玉出崑岡", "劍號巨闕珠稱夜光", "果珍李柰"]
+
+
+def unmarked_page(model, extra=("--unmarked-page-sample",), profile=None, lines=LINES, text_b=None):
+    blocks = [stand_in.block(line, [0.1, 0.05 + 0.12 * k, 0.8, 0.1]) for k, line in enumerate(lines)]
+    return page(blocks, "\n".join(lines) if text_b is None else text_b, model, profile=profile, extra=list(extra))
+
+
+record, markdown, kinds, report = unmarked_page(stand_in.StandIn(census=0))
+check("unmarked page: the three longest blocks are asked, the other three are not",
+      (kinds.count("census"), rules(record)),
+      (3, [(0, None), (1, None), (2, None), (3, "page-unmarked-sample"), (4, "page-unmarked-sample"),
+           (5, "page-unmarked-sample")]))
+check("unmarked page: every block's text is written, without marks",
+      [line for line in markdown.splitlines() if line.strip()], LINES)
+check("unmarked page: sealed with the switch, counted in the run report, the sample's passes say so",
+      (record["provenance"].get("unmarkedPageSample"), report["censusNotAsked"],
+       [p.get("unmarkedSample") for p in record["punctuationPasses"][:4]]),
+      ("on", {"page-unmarked-sample": 3}, [{"waiting": 3, "taken": True}] * 3 + [None]))
+record, markdown, kinds, _ = unmarked_page(stand_in.StandIn(census=0), extra=())
+check("unmarked page, switch off: every block is asked, as before",
+      (kinds.count("census"), rules(record), "unmarkedPageSample" in record["provenance"]),
+      (6, [(k, None) for k in range(6)], False))
+record, markdown, kinds, _ = unmarked_page(stand_in.StandIn(census=1, punctuate=lambda span: span + "。"))
+check("a mark in the sample: the other blocks are asked too, and every block has its mark",
+      (kinds.count("census"), rules(record), [line for line in markdown.splitlines() if line.strip()],
+       record["punctuationPasses"][0].get("unmarkedSample")),
+      (6, [(k, None) for k in range(6)], [line + "。" for line in LINES], {"waiting": 3, "taken": False}))
+record, _, kinds, _ = unmarked_page(stand_in.StandIn(census=0), lines=LINES[:3])
+check("three blocks or fewer: all asked, no sample", (kinds.count("census"), rules(record)), (3, [(k, None) for k in range(3)]))
+record, _, kinds, _ = unmarked_page(stand_in.StandIn(census=0),
+                                    profile={"preferEngine": "A", "notation": {"doubled": True, "blocksSurveyed": 3}})
+check("doubled circles in the profile: no sample, every block asked", kinds.count("census"), 6)
+# The candidates (unmarked_candidates): the page, then the block.
+BLOCKS = [{"text": line} for line in LINES]
+check("candidates: every block engine A read as characters alone, on a page with no marks",
+      pp.unmarked_candidates(BLOCKS, LINES, range(6), "".join(LINES)), [0, 1, 2, 3, 4, 5])
+check("candidates: not a block with a figure or Latin text, which the punctuator writes",
+      pp.unmarked_candidates([{"text": "秋收冬藏 1990"}, {"text": "天地 A 玄黃"}] + BLOCKS[2:], LINES, range(6),
+                             "".join(LINES)), [2, 3, 4, 5])
+check("candidates: two marks on the page are an engine's noise, three are a page with marks",
+      [len(pp.unmarked_candidates([{"text": LINES[0] + marks}] + BLOCKS[1:], LINES, range(6), "".join(LINES)))
+       for marks in ("。、", "。、，")], [5, 0])
+check("candidates: none where engine B read marks, or there is no second engine",
+      (pp.unmarked_candidates(BLOCKS, LINES, range(6), "，。、".join(LINES)),
+       pp.unmarked_candidates(BLOCKS, LINES, range(6), None)), ([], []))
+check("the switch is sealed only when on, and a page sealed before it is current",
+      ("unmarkedPageSample" in decided,
+       pp.decision_provenance(SimpleNamespace(prefer_engine="A", fallback_engine="A",
+                                              unmarked_page_sample=True)).get("unmarkedPageSample"),
+       "unmarkedPageSample" in pp.OPTIONAL_PROVENANCE), (False, "on", True))
+
 print(f"\n{'FAIL' if failures else 'ok'}: {failures} failure(s)")
 sys.exit(1 if failures else 0)
