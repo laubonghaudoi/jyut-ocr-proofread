@@ -11655,7 +11655,8 @@ def furniture_band(blocks: Sequence[Mapping[str, Any]], heads: Sequence[str], ar
 # odd and on even pages (regions).  What it assumes, each gated on the book's
 # own evidence: the running head is printed in one band with the stem the
 # profile measured (a book whose title never stands verbatim on half its
-# pages learns nothing: no stem, no band); a label is a label when the book
+# pages has no such stem: its heads are learned by place, placed_heads below,
+# or not at all); a label is a label when the book
 # prints it beside the stem on several pages; the band's place on a page is
 # its anchors' column or row, and a learned region stands in for a page whose
 # anchor engine A misread only for text holding a stem or a label.
@@ -11687,6 +11688,51 @@ NUMERAL_UNITS = {"十": 10, "百": 100, "千": 1000, "萬": 10000}
 NUMERAL_TENS = {"廿": 20, "卅": 30, "卌": 40}
 FOLIO_CHARS = NUMERAL_CHARS | frozenset(NUMERAL_TENS)
 NUMERAL_RUN = "[" + "".join(sorted(FOLIO_CHARS)) + "]"
+
+# The running head of a book set in lines, learned by its place alone
+# (placed_heads): a stem needs no recurrence on half the pages.
+#
+# A book set in lines prints its head as the top line of the page, and not one
+# head: the book's title on one side of the opening and the chapter's on the
+# other, each chapter's for as long as the chapter runs.  None stands verbatim
+# on half the pages, so the profile measured none, nothing was a stem, and the
+# merge asked 裁決 about the head on every page one engine read it.  Measured
+# on a 639-page book (2026-11-17): the book's title heads 304 of its 638 pages
+# with text, one short of half, and each of its chapters' titles 6 to 28; of
+# the 830 questions 裁決 was asked in the book's first wave, 606 - one on each
+# of 606 pages - were that line, read by engine A and not by engine B.
+#
+# What is learned, from engine A's blocks alone: the top line of each page
+# (top_line) where the layout labelled it header; the band - the place where
+# such lines stand, their centres within LEARNED_REGION_GAP of each other, on
+# PLACED_BAND_PAGE_SHARE of the pages of a parity or more; and the stems - each
+# text standing in the band, one line thick, on LEARNED_LABEL_MINIMUM_PAGES
+# pages or more.  Three things are asked together because none is evidence
+# alone: the layout labels a chapter's number header on the chapter's first
+# page (three of that book's chapter openings), a title or a table's label
+# may repeat at the top of several pages, and a short line stands at the top
+# of a page wherever a section begins there.
+#
+# A stem learned so is the head only where it was learned, whatever the
+# block's label: a block holding it is an anchor only with half its height in
+# the band of its page's parity (head_band_blocks, in_placed_band), and a
+# reading of it one engine alone made is left out only where engine A read it
+# in a block of that band (the merge's learned_insertion).  A chapter's title
+# printed as the heading of its first page stands under the band and is
+# neither, at whatever type size; the same words only engine B read have no
+# place on the page and are asked of 裁決 as before.
+#
+# Replayed on that book's drafts with a stand-in for the model (no answer
+# real): 22 stems, a band on 603 pages; 600 of the 606 readings are left out
+# and the first wave asks 230 questions for 830.  Every page that changed -
+# 605 - lost its top line in the band and nothing else; the 17 pages that open
+# a chapter or the afterword kept their titles.  The six still asked: four
+# heads standing on one or two pages, and two readings that run on into a
+# character only engine A read at the start of the body (the head is then
+# left out as a block, the character is 裁決's to decide).
+PLACED_HEAD_CHARACTERS = (2, 30)
+PLACED_BAND_PAGE_SHARE = 0.5
+PLACED_HEAD_LABEL = "header"
 
 
 def numeral_value(text: str) -> int | None:
@@ -11774,6 +11820,102 @@ def short_thin(block: Mapping[str, Any]) -> bool:
             and abs(box[2]) * abs(box[3]) <= MARGIN_FURNITURE_AREA)
 
 
+def top_line(blocks: Sequence[Mapping[str, Any]]) -> list[int]:
+    """The positions of engine A's blocks in a page's top line: the block that
+    starts highest on the page and every block starting above its middle,
+    when each is short, thin (short_thin) and wider than tall - a line set
+    across the page above everything else on it.  None where the highest
+    block is the body's: a paragraph, a column of a page set in columns, a
+    table.  A block reading numerals alone or no character (the folio, in
+    figures or in numerals) is neither the line nor in its way."""
+    texts = [k for k, block in enumerate(blocks)
+             if isinstance(block.get("box"), list) and len(block["box"]) == 4
+             and any(c not in FOLIO_CHARS for c in CJK(str(block.get("text") or "")))]
+    if not texts:
+        return []
+    first = min(texts, key=lambda k: float(blocks[k]["box"][1]))
+    middle = float(blocks[first]["box"][1]) + abs(float(blocks[first]["box"][3])) / 2
+    row = [k for k in texts if float(blocks[k]["box"][1]) < middle]
+    if all(short_thin(blocks[k]) and abs(blocks[k]["box"][2]) >= abs(blocks[k]["box"][3]) for k in row):
+        return row
+    return []
+
+
+def placed_heads(page_blocks: Mapping[int, Sequence[Mapping[str, Any]]]) -> dict[str, Any]:
+    """The running heads of a book set in lines, learned by place (see
+    PLACED_BAND_PAGE_SHARE), from PAGE_BLOCKS (scan page -> engine A's
+    blocks): "stems", each text with the pages it heads, and "bands", where
+    they stand on odd and on even pages (the span of the page's height their
+    lines take).  Both empty for a book that prints no such line."""
+    lines: dict[int, list[tuple[float, float, float, int, str]]] = {}
+    for page, blocks in page_blocks.items():
+        for k in top_line(blocks):
+            raw = str(blocks[k].get("text") or "")
+            chars = CJK(raw)
+            if (blocks[k].get("label") == PLACED_HEAD_LABEL and "。" not in raw
+                    and PLACED_HEAD_CHARACTERS[0] <= len(chars) <= PLACED_HEAD_CHARACTERS[1]):
+                y, h = float(blocks[k]["box"][1]), abs(float(blocks[k]["box"][3]))
+                lines.setdefault(page % 2, []).append((y + h / 2, y, y + h, page, chars))
+    bands: list[tuple[int, list[tuple[float, float, float, int, str]]]] = []
+    pages_of: dict[str, set[int]] = {}
+    for parity, items in sorted(lines.items()):
+        items.sort()
+        clusters = [[items[0]]]
+        for item in items[1:]:
+            if item[0] - clusters[-1][-1][0] > LEARNED_REGION_GAP:
+                clusters.append([])
+            clusters[-1].append(item)
+        of_parity = sum(1 for page in page_blocks if page % 2 == parity)
+        for cluster in clusters:
+            # One line thick: a chapter's number set large at the top of its
+            # first page, labelled header, starts within the gap of the band.
+            thick = sorted(hi - lo for _, lo, hi, _, _ in cluster)[len(cluster) // 2]
+            cluster = [item for item in cluster
+                       if HEAD_THICKNESS_RATIO[0] * thick <= item[2] - item[1] <= HEAD_THICKNESS_RATIO[1] * thick]
+            if len({item[3] for item in cluster}) < max(LEARNED_REGION_MINIMUM_PAGES,
+                                                         PLACED_BAND_PAGE_SHARE * of_parity):
+                continue
+            bands.append((parity, cluster))
+            for item in cluster:
+                pages_of.setdefault(item[4], set()).add(item[3])
+    stems = {text: len(pages) for text, pages in pages_of.items() if len(pages) >= LEARNED_LABEL_MINIMUM_PAGES}
+    found: dict[str, Any] = {"stems": dict(sorted(stems.items(), key=lambda kv: (-kv[1], kv[0]))), "bands": []}
+    for parity, cluster in bands:
+        own = [item for item in cluster if item[4] in stems]
+        if own:
+            found["bands"].append({"parity": "odd" if parity else "even",
+                                   "span": [round(min(item[1] for item in own), 4),
+                                            round(max(item[2] for item in own), 4)],
+                                   "pages": len({item[3] for item in own})})
+    return found
+
+
+def in_placed_band(block: Mapping[str, Any], placed: Mapping[str, Any] | None, page: int | None) -> bool:
+    """Whether BLOCK stands where the heads learned by place (PLACED, the
+    learned record's "placed") stand on pages of scan PAGE's parity: half its
+    height or more inside that band."""
+    box = block.get("box")
+    if not (placed and page is not None and isinstance(box, list) and len(box) == 4):
+        return False
+    y, h = float(box[1]), abs(float(box[3]))
+    parity = "odd" if page % 2 else "even"
+    return h > 0 and any(band["parity"] == parity
+                         and (min(y + h, band["span"][1]) - max(y, band["span"][0])) / h >= 0.5
+                         for band in placed.get("bands") or [])
+
+
+def needs_placed_stem(text: str, learned: Mapping[str, Any], page: int | None = None) -> bool:
+    """Whether the learned head explains TEXT only by a stem learned by place
+    alone (the learned record's "placed"): without those stems some of it is
+    left unexplained (learned_leftover), or no stem is in it."""
+    placed = (learned.get("placed") or {}).get("stems") or {}
+    if not placed:
+        return False
+    measured = dict(learned, stems=[stem for stem in learned.get("stems") or [] if stem not in placed])
+    left, found = learned_leftover(text, measured, page)
+    return bool(left) or not found["stems"]
+
+
 def stem_windows(chars: str, stem: str) -> list[tuple[float, int, int]]:
     """Every stretch of CHARS is_running_head takes for STEM, as (how like it,
     start, length): the stem's own length with characters misread in place
@@ -11798,7 +11940,8 @@ def stem_windows(chars: str, stem: str) -> list[tuple[float, int, int]]:
 
 def head_band_blocks(blocks: Sequence[Mapping[str, Any]], stems: Sequence[str], glyph: Mapping[str, float],
                      thickness: Mapping[str, float],
-                     is_head: Callable[[str], bool] | None = None) -> dict[int, dict[str, Any]]:
+                     is_head: Callable[[str], bool] | None = None,
+                     placed: Mapping[str, Any] | None = None, page: int | None = None) -> dict[int, dict[str, Any]]:
     """Engine A's blocks in a page's running-head band, by position: the
     anchors - short thin blocks holding one of STEMS (stem_windows) set in its
     type size (head_size_fits, GLYPH and THICKNESS) - and the short thin
@@ -11808,7 +11951,11 @@ def head_band_blocks(blocks: Sequence[Mapping[str, Any]], stems: Sequence[str], 
     large, the body, a table are not.
     IS_HEAD, when given, must also take an anchor's own text for the running
     head: a body line the layout read in one block with the head beside it
-    holds the stem too, and its column is the body's."""
+    holds the stem too, and its column is the body's.
+    A stem learned by place alone (PLACED, the learned record's "placed")
+    makes an anchor only of a block in its band on scan PAGE
+    (in_placed_band): the same words lower on the page are a heading."""
+    by_place = (placed or {}).get("stems") or {}
     anchors: dict[int, dict[str, Any]] = {}
     for k, block in enumerate(blocks):
         if not short_thin(block):
@@ -11817,7 +11964,8 @@ def head_band_blocks(blocks: Sequence[Mapping[str, Any]], stems: Sequence[str], 
         for stem in stems:
             windows = stem_windows(chars, stem)
             if (windows and head_size_fits(block, len(chars), glyph.get(stem), thickness.get(stem))
-                    and (is_head is None or is_head(chars))):
+                    and (is_head is None or is_head(chars))
+                    and (stem not in by_place or in_placed_band(block, placed, page))):
                 anchors[k] = {"role": "anchor", "stem": stem, "at": windows[0][1], "length": windows[0][2]}
                 break
     band = dict(anchors)
@@ -11904,11 +12052,19 @@ def learn_heads(page_blocks: Mapping[int, Sequence[Mapping[str, Any]]], heads: S
     """Switch --learned-heads: the book's running head learned by where it is
     printed (see LEARNED_LABEL_MINIMUM_PAGES), from PAGE_BLOCKS (scan page ->
     engine A's blocks) and HEADS, the running heads the profile measured by
-    recurrence (the stems).  No model call."""
-    stems = sorted({CJK(h) for h in heads if len(CJK(h)) >= 2}, key=lambda h: (-len(h), h))
+    recurrence.  The stems are those heads and the heads of a book set in
+    lines learned by place (placed_heads; see PLACED_BAND_PAGE_SHARE): the
+    ones the profile did not measure are recorded under "placed" with their
+    bands, a key a book with none does not have.  No model call."""
+    measured = {CJK(h) for h in heads if len(CJK(h)) >= 2}
+    by_place = placed_heads(page_blocks)
+    placed = {"stems": {stem: pages for stem, pages in by_place["stems"].items() if stem not in measured},
+              "bands": by_place["bands"]}
+    stems = sorted(measured | set(placed["stems"]), key=lambda h: (-len(h), h))
     record: dict[str, Any] = {"stems": stems, "glyph": {}, "thickness": {}, "labels": {}, "families": [],
                               "folio": {"observed": 0, "runs": []}, "regions": [],
-                              "pagesExamined": len(page_blocks), "pagesWithBand": 0}
+                              "pagesExamined": len(page_blocks), "pagesWithBand": 0,
+                              **({"placed": placed} if placed["stems"] else {})}
     # The stems' type size, from the blocks reading one alone: the length of a
     # character along the band, and the band's thickness across it.
     sizes: dict[str, list[tuple[float, float]]] = {stem: [] for stem in stems}
@@ -11926,7 +12082,7 @@ def learn_heads(page_blocks: Mapping[int, Sequence[Mapping[str, Any]]], heads: S
     anchored: list[tuple[int, str, float, float]] = []
     for page in sorted(page_blocks):
         blocks = page_blocks[page]
-        band = head_band_blocks(blocks, stems, glyph, thickness)
+        band = head_band_blocks(blocks, stems, glyph, thickness, placed=record.get("placed"), page=page)
         if not band:
             continue
         record["pagesWithBand"] += 1
@@ -12012,7 +12168,8 @@ def learned_band(blocks: Sequence[Mapping[str, Any]], learned: Mapping[str, Any]
         return max(0.0, min(hi, rhi) - max(lo, rlo)) / (hi - lo) if hi > lo else 0.0
 
     anchors = []
-    for k, role in head_band_blocks(blocks, learned["stems"], glyph, thickness, is_head).items():
+    for k, role in head_band_blocks(blocks, learned["stems"], glyph, thickness, is_head,
+                                    learned.get("placed"), page).items():
         if role["role"] == "anchor":
             band[k] = f"anchor ({role['stem']})"
             anchors.append(k)
@@ -13840,6 +13997,14 @@ def _proofread_page_inner(
 
         # Switch --learned-heads: the learned running head, in the merge.
         learned_merge = learned_record(arguments) if mode == "merge" else None
+        learned_merge_bands: list[dict[int, str]] = []
+
+        def learned_merge_band() -> dict[int, str]:
+            """Engine A's blocks in this page's learned band (learned_band),
+            worked out once, when a reading needs it."""
+            if not learned_merge_bands:
+                learned_merge_bands.append(learned_band(blocks, learned_merge, job.scan_page))
+            return learned_merge_bands[0]
 
         def learned_insertion(seg: Mapping[str, Any], a_start: int) -> dict[str, Any] | None:
             """Switch --learned-heads: text one engine read and the other did
@@ -13887,6 +14052,15 @@ def _proofread_page_inner(
             # The blocks it is (engine A's) or stands between (engine B's).
             where = [k for k, (lo, hi) in enumerate(zip(block_starts, block_ends))
                      if lo < hi and (lo < a_end and a_start < hi if seg["a"] else a_start in (lo, hi))]
+            # A head learned by place alone (placed_heads) is the head only
+            # in its band: engine A's reading, every block of it in the
+            # page's learned band (learned_band, an anchor there only in the
+            # band).  Engine B's reading has no place on the page, and a
+            # chapter's title only engine B read on the chapter's first page
+            # is those words too: asked of 裁決, as before.
+            if needs_placed_stem(own, learned_merge, job.scan_page) and not (
+                    seg["a"] and where and all(k in learned_merge_band() for k in where)):
+                return None
             return {"readBy": "A" if seg["a"] else "B", "characters": len(own),
                     "blocks": [layout_index(blocks, k) for k in where],
                     **{key: value for key, value in found.items() if value}}
@@ -17638,8 +17812,10 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"{len(arguments.furniture)} recurring furniture n-gram(s)", flush=True)
         if arguments.learned is not None:
             learned = arguments.learned
+            by_place = len((learned.get("placed") or {}).get("stems") or {})
             print(f"  learned running head (--learned-heads, from the {arguments.learned_from}): stems "
-                  f"{'、'.join(learned.get('stems') or []) or '-'}; labels "
+                  f"{'、'.join((learned.get('stems') or [])[:12]) or '-'}"
+                  f"{' (%d in all, %d learned by place)' % (len(learned['stems']), by_place) if by_place else ''}; labels "
                   f"{'、'.join(list(learned.get('labels') or {})[:12]) or '-'}; families "
                   f"{'、'.join(learned.get('families') or []) or '-'}; "
                   f"{len((learned.get('folio') or {}).get('runs') or [])} folio run(s); "

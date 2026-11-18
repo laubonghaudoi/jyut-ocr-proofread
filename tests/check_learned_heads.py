@@ -52,6 +52,25 @@ the run report); resume; the default, the switch on in both scripts.  And
 the running heads the profile measures by recurrence: notes and source
 lines that recur on a page (天地会 5's) are none, a head on both leaves is.
 
+And the running head of a book set in lines, learned by place (placed_heads):
+a made-up book of 26 pages whose top line is the book's title on even pages
+and the chapter's on odd ones, none on half the pages, so the profile
+measures none by recurrence.  The shapes:
+
+- the head only engine A read: left out with no question; asked of 裁決, and
+  in the text, without the switch;
+- the head both engines read (a block of the band), and engine A's misreading
+  of one character of it: left out;
+- the title on the title page, and a chapter's title as the heading of its
+  first page - set large, or at the head's own type size and labelled header
+  - under the band: kept, asked where one engine alone read it;
+- the head only engine B read: no place on the page, asked as before;
+- a table's label repeating in the body: no head.
+
+And two books that learn none: one printing no running head (a table's label
+at the top of fewer than half the pages of a parity, a refrain in the body),
+one whose top line never repeats.
+
 Usage:
     python3 tests/check_learned_heads.py
 """
@@ -166,6 +185,74 @@ PROFILE = {"preferEngine": "adjudicate", "layout": {"runningHeads": [HEAD], "run
 
 
 OFF = ["--no-learned-heads"]
+
+
+# A made-up book set in lines, 26 pages: the head is the top line of the page,
+# the book's title on even pages and the chapter's on odd ones, the folio in
+# figures beside it.  No head stands on half the pages, so the profile measures
+# none by recurrence; it is learned by place (placed_heads).  Engine B reads
+# no head.
+TITLE = "某丙商行史略"
+CHAPTERS = {1: "第一章緣起", 2: "第二章各埠分號"}
+TABLE_LABEL = "各號收支表"
+PROSE = BODY[0] + BODY[1]
+LINE_GLYPH, LINE_HEIGHT = 0.02, 0.018
+LINE_PROFILE = {"preferEngine": "adjudicate"}
+
+
+def line_top(page: int) -> float:
+    """Where the head starts on PAGE: it drifts from scan to scan."""
+    return 0.08 + 0.004 * (page % 5)
+
+
+def line_head(page: int, text: str | None = None, label: str = "header"):
+    """Engine A's top line of PAGE: the folio at the outer edge and the head
+    beside it, TEXT or the head the book prints there."""
+    text = text or (TITLE if page % 2 == 0 else CHAPTERS[1 if page < 13 else 2])
+    width = LINE_GLYPH * len(text)
+    return [Block(str(page), [0.86 if page % 2 else 0.10, line_top(page), 0.03, 0.015], "number"),
+            Block(text, [0.83 - width if page % 2 else 0.15, line_top(page), width, LINE_HEIGHT], label)]
+
+
+def line_body(page: int, top: float | None = None, label: str | None = None):
+    """The body under the head: one block, or two with a table's label
+    (LABEL, at the head's type size) between them."""
+    top = line_top(page) + 0.05 if top is None else top
+    if label is None:
+        return [Block(PROSE, [0.12, top, 0.76, 0.86 - top])]
+    return [Block(BODY[0], [0.12, top, 0.76, 0.30]),
+            Block(label, [0.40, 0.50, LINE_GLYPH * len(label), LINE_HEIGHT], "figure_title"),
+            Block(BODY[1], [0.12, 0.55, 0.76, 0.30])]
+
+
+def line_book() -> dict:
+    pages = {page: (line_head(page) + line_body(page), PROSE) for page in range(1, 27)}
+    # The title page: the book's title set large in the middle of the page.
+    pages[1] = ([Block(TITLE, [0.30, 0.40, 0.40, 0.06], "doc_title")], TITLE)
+    pages[2] = (line_body(2), PROSE)
+    # A chapter's first page prints no head: its title as a heading under the
+    # top margin, set large (chapter one), or at the head's own type size and
+    # labelled header by the layout, read by engine A alone (chapter two).
+    pages[3] = ([Block(CHAPTERS[1], [0.20, 0.20, 0.60, 0.04], "doc_title")] + line_body(3, 0.28),
+                CHAPTERS[1] + PROSE)
+    pages[13] = ([Block(CHAPTERS[2], [0.20, 0.20, LINE_GLYPH * len(CHAPTERS[2]), LINE_HEIGHT], "header")]
+                 + line_body(13, 0.28), PROSE)
+    # Both engines read the head; engine A read none and engine B did; engine
+    # A misread one character of it.
+    pages[8] = (pages[8][0], TITLE + PROSE)
+    pages[10] = (line_head(10)[:1] + line_body(10), TITLE + PROSE)
+    pages[16] = (line_head(16, TITLE[:-1] + "畧") + line_body(16), PROSE)
+    # A table's label in the body of four pages, at the head's type size;
+    # on page 18 engine B did not read it.
+    for page in (9, 18, 20, 22):
+        pages[page] = (line_head(page) + line_body(page, label=TABLE_LABEL),
+                       BODY[0] + ("" if page == 18 else TABLE_LABEL) + BODY[1])
+    return pages
+
+
+def blocks_of(pages) -> dict:
+    """Engine A's blocks of PAGES as pp.load_blocks returns them."""
+    return {page: [dict(b, box=b["boundingBox"], label=b["blockLabel"]) for b in pages[page][0]] for page in pages}
 
 
 def run(only=None, extra=(), profile=PROFILE, formatter=None, pages=None):
@@ -416,6 +503,96 @@ def main() -> int:
         heads = bp.survey_layout(sorted(notes), root / "a")["runningHeads"]
     check("book_profile: notes and source lines that recur on a page are no running head (they hold a full stop); "
           "a head printed on both leaves of a page is", heads, [HEAD])
+
+    # The running head of a book set in lines, learned by place (placed_heads).
+    check("the book whose head is a column in the margin learns none by place: its record has no such key",
+          ("placed" in learned, pp.placed_heads(blocks)), (False, {"stems": {}, "bands": []}))
+    lines = line_book()
+    line_blocks = blocks_of(lines)
+    check("top line: the head beside its folio; none where a paragraph starts above the head's middle, where the "
+          "highest block is a column, or where the page prints numerals alone",
+          [pp.top_line(page) for page in (
+              line_blocks[4], line_blocks[4] + [dict(line_blocks[4][2], box=[0.12, 0.085, 0.76, 0.7])],
+              [dict(line_blocks[4][1], box=[0.80, 0.05, 0.03, 0.30])] + line_blocks[4][2:],
+              [dict(line_blocks[4][1], text="一二三")])],
+          [[1], [], [], []])
+    with stand_in.book(lines) as root:
+        surveyed = bp.survey_layout(sorted(lines), root / "a", True)
+    placed = surveyed["learnedHeads"].get("placed") or {}
+    check("lines: no head stands on half the pages, so none is measured by recurrence",
+          surveyed["runningHeads"], [])
+    check("lines: learned by place - the book's title on ten even pages, each chapter's on the odd pages it runs "
+          "over; not the title misread once, nor the table's label in the body of four pages",
+          placed.get("stems"), {TITLE: 10, CHAPTERS[2]: 6, CHAPTERS[1]: 4})
+    check("lines: the band on even and on odd pages, over the head's drift",
+          [(band["parity"], band["span"], band["pages"]) for band in placed.get("bands") or []],
+          [("even", [0.08, 0.114], 10), ("odd", [0.08, 0.114], 10)])
+    check("lines: phase 3 learns the same from the drafts, and the stems are the heads learned by place",
+          (surveyed["learnedHeads"] == pp.learn_heads(line_blocks, []), surveyed["learnedHeads"]["stems"]),
+          (True, [CHAPTERS[2], TITLE, CHAPTERS[1]]))
+    line_off, _ = run(extra=OFF, profile=LINE_PROFILE, pages=lines)
+    line_on, line_report = run(profile=LINE_PROFILE, pages=lines)
+    asked = lambda result, page: [(a["draft_reading"], a["writer_reading"]) for a in result[page][0]["adjudications"]]
+    usual = (4, 5, 6, 7, 11, 12, 14, 15, 17, 19, 21, 23, 24, 25, 26)
+    check("lines, off: the head only engine A read is asked of 裁決 on every page, and stands in the text",
+          ([asked(line_off, page) for page in (4, 5, 15)], [text(line_off, page) for page in (4, 5, 15)]),
+          ([[(TITLE, "")], [(CHAPTERS[1], "")], [(CHAPTERS[2], "")]],
+           [TITLE + PROSE, CHAPTERS[1] + PROSE, CHAPTERS[2] + PROSE]))
+    check("lines, on: left out with no question - the title on even pages, the chapter's on odd ones",
+          ([text(line_on, page) for page in usual], sum(len(asked(line_on, page)) for page in usual),
+           [learned_changes(line_on[page][0], "learned-head-reading") for page in (4, 5, 15)]),
+          ([PROSE] * len(usual), 0, [[(TITLE, "", "A")], [(CHAPTERS[1], "", "A")], [(CHAPTERS[2], "", "A")]]))
+    check("lines, on: the head both engines read is left out as a block of the band; engine A's misreading of one "
+          "character of it is left out too",
+          (learned_changes(line_on[8][0], "learned-head-block"), text(line_on, 8), asked(line_on, 16),
+           text(line_on, 16)),
+          ([(TITLE, f"anchor ({TITLE})")], PROSE, [], PROSE))
+    check("lines: the title on the title page, and a chapter's title set large as the heading of its first page, "
+          "stay, with the switch as without",
+          [(text(result, 1), text(result, 3)) for result in (line_off, line_on)],
+          [(TITLE, CHAPTERS[1] + PROSE)] * 2)
+    check("lines: a chapter's title as a heading at the head's own type size, labelled header and read by engine A "
+          "alone, stands under the band: asked of 裁決 and kept, with the switch as without",
+          [(asked(result, 13), text(result, 13), learned_changes(result[13][0], "learned-head-reading"))
+           for result in (line_off, line_on)],
+          [([(CHAPTERS[2], "")], CHAPTERS[2] + PROSE, [])] * 2)
+    read_by_both = dict(lines)
+    read_by_both[13] = (lines[13][0], CHAPTERS[2] + PROSE)
+    heading, _ = run([13], profile=LINE_PROFILE, pages=read_by_both)
+    check("... and read by both engines it is no block of the band: kept, nothing asked",
+          (text(heading, 13), asked(heading, 13), learned_changes(heading[13][0], "learned-head-block")),
+          (CHAPTERS[2] + PROSE, [], []))
+    check("lines: the head only engine B read has no place on the page: asked of 裁決, with the switch as without",
+          [(asked(result, 10), text(result, 10)) for result in (line_off, line_on)],
+          [([("", TITLE)], TITLE + PROSE)] * 2)
+    check("lines: a table's label repeating in the body is no head - kept where both engines read it, asked where "
+          "one did",
+          [(TABLE_LABEL in text(line_on, page), asked(line_on, page)) for page in (9, 18, 20)],
+          [(True, []), (True, [(TABLE_LABEL, "")]), (True, [])])
+    check("lines: the run report counts the readings and the blocks left out",
+          (line_report["learnedHeads"]["readingsLeftOut"], line_report["learnedHeads"]["blocksLeftOut"]),
+          (20, 1))
+
+    # A book that prints no running head: a paragraph starts every page; a
+    # table's label stands as the top line of three of its eight even pages,
+    # labelled header by the layout, and a refrain in the body of four.
+    plain = {page: [Block(PROSE, [0.12, 0.10, 0.76, 0.76])] for page in range(1, 17)}
+    for page in (4, 6, 8):
+        plain[page] = [Block(TABLE_LABEL, [0.40, 0.08, LINE_GLYPH * 5, LINE_HEIGHT], "header"),
+                       Block(PROSE, [0.12, 0.13, 0.76, 0.73])]
+    for page in (3, 7, 11, 13):
+        plain[page] = plain[page] + [Block("其辭曰", [0.40, 0.50, LINE_GLYPH * 3, LINE_HEIGHT])]
+    plain_blocks = blocks_of({page: (found, "") for page, found in plain.items()})
+    check("a book with no running head learns none: a label at the top of fewer than half the pages of a parity "
+          "and a line repeating in the body are no band",
+          (pp.placed_heads(plain_blocks), pp.learn_heads(plain_blocks, [])["stems"],
+           "placed" in pp.learn_heads(plain_blocks, [])), ({"stems": {}, "bands": []}, [], False))
+    # A top line on every page that never repeats (a dictionary's guide
+    # words): the place alone is no head.
+    guide = {page: [dict(block, text=f"某部第{'一二三四五六七八'[page - 1]}") if block["label"] == "header" else block
+                    for block in line_blocks[4]] for page in range(1, 9)}
+    check("a top line that repeats on no three pages is no stem, and its place no band",
+          pp.placed_heads(guide), {"stems": {}, "bands": []})
     print(f"{'FAIL' if failures else 'ok  '} {failures} failure(s)")
     return 1 if failures else 0
 

@@ -569,7 +569,15 @@ def _two_page_margin_heads(
 
 
 def survey_layout(pool: Sequence[int], drafts: Path, learned_heads: bool = False) -> dict[str, Any]:
-    """Running heads and leaves per page, from engine A's blocks alone."""
+    """Running heads and leaves per page, from engine A's blocks alone.
+
+    "runningHeads" are the heads measured by recurrence: a short line on half
+    the pages examined, or three times on a page.  A book set in lines prints
+    several heads (the book's title, each chapter's), none on half the pages:
+    those are learned by place and recorded under "learnedHeads" alone
+    (pp.learn_heads, its "placed"), where each is the head only in its band.
+    They are not added to "runningHeads", which is matched by text wherever
+    it stands: a chapter's title is also the heading of its first page."""
     within: Counter = Counter()
     across: Counter = Counter()
     sizes: dict[str, list[float]] = defaultdict(list)
@@ -826,8 +834,10 @@ def profile_book(arguments: argparse.Namespace) -> int:
     )
     if "learnedHeads" in layout:
         learned = layout["learnedHeads"]
+        by_place = (learned.get("placed") or {}).get("stems") or {}
         print(
-            f"  learned running head: labels {list(learned['labels'])[:12]}, families {learned['families']}, "
+            f"  learned running head: {len(learned['stems'])} stem(s), {len(by_place)} of them learned by place "
+            f"{list(by_place)[:4]}, labels {list(learned['labels'])[:12]}, families {learned['families']}, "
             f"{len(learned['folio']['runs'])} folio run(s), {len(learned['regions'])} region(s), a band on "
             f"{learned['pagesWithBand']} of {learned['pagesExamined']} pages",
             flush=True,
