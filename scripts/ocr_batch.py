@@ -70,10 +70,12 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
   are still at work: run it again.  When the answerers failed (the platform says so) or were
   started by a session that is gone, say so once with --answerers-gone: their unanswered shares
   are handed out again at once, not only when their time is over;
+  Several sessions may answer one batch at the same time, each running the round with its own
+  --caller NAME: each has its own --max-workers places, and no bundle goes to two of them;
 - exit 4: books wait for the OCR and call 2 is not running: the line says how it ended.  Start
   call 2 again (SKILL.md 五 for a hand-over's exit code);
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
-  (--retry-failed tries those again); 2: wrong arguments, or another round is running.
+  (--retry-failed tries those again); 2: wrong arguments.
 
 With --backend http (the local model proofreads) there are no questions: the round starts each
 book's steps one book at a time on the model, once every book's OCR is over (the OCR window has
@@ -199,6 +201,28 @@ def held(path: Path) -> Iterator[bool]:
         except OSError:
             yield False
             return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def locked(path: Path, wait: float = 60.0) -> Iterator[bool]:
+    """Hold the lock file PATH for the block, waiting up to WAIT seconds for another process to
+    let go of it; yields False when it did not."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as handle:
+        end = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= end:
+                    yield False
+                    return
+                time.sleep(0.05)
         try:
             yield True
         finally:
@@ -786,7 +810,8 @@ def to_hand_out(record: dict[str, Any], arguments: argparse.Namespace) -> tuple[
     return found["assignments"], found["waiting"]
 
 
-def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace, places: int) -> tuple[Path, int, int, int]:
+def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace, places: int,
+             caller: str = "") -> tuple[Path, int, int, int]:
     """Write worker files for at most PLACES answerers: (their folder, answerers, questions handed
     out, questions no answerer has yet).  A bundle handed out MAX_HANDOUTS times and still
     unanswered fails its book: (folder, 0, 0, 0) then, and the caller advances the books again."""
@@ -815,7 +840,7 @@ def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace,
         for bundle in assignment["bundles"]:
             handouts[bundle["bundle"]] = handouts.get(bundle["bundle"], 0) + 1
         record.setdefault("flights", []).append({
-            "t": now, "round": out.name, "worker": number,
+            "t": now, "round": out.name, "worker": number, "caller": caller,
             "bundles": [[bundle["bundle"], bundle["answers"]] for bundle in assignment["bundles"]]})
     handed = sum(assignment["questions"] for assignment in chosen)
     left = sum(assignment["questions"] for assignment in shares[len(chosen):])
@@ -823,7 +848,7 @@ def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace,
                                    "leftForLater": left, "assignments": chosen})
     write_json(batch / "batch.json", record)
     event(batch, event="round", round=out.name, answerers=len(chosen), questions=handed, left=left,
-          atWork=len(record["flights"]), waiting=waiting["questions"])
+          atWork=len(record["flights"]), waiting=waiting["questions"], caller=caller)
     return out, len(chosen), handed, left
 
 
@@ -840,99 +865,118 @@ def ocr_stopped(batch: Path) -> str | None:
     return ended[1] if ended and idle > 5 else None
 
 
-def round_(batch: Path, arguments: argparse.Namespace) -> int:
+def retry_failed(batch: Path, record: dict[str, Any]) -> None:
+    for entry in record["books"]:
+        if entry.get("state") == "failed":
+            name = entry["name"]
+            for stale in (f"{name}.ocr.failed", f"{name}.render.exit", f"{name}.{entry.get('step')}.exit"):
+                mark(batch, stale).unlink(missing_ok=True)
+            entry.pop("error", None)
+            entry.pop("lost", None)
+            entry["state"] = "new"
+
+
+def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again: str, memo: dict[str, Any]) -> int | None:
+    """Advance every book once and hand out what there is room for: the call's exit code, or None
+    to look again in a moment.  Run under the batch's round lock, on the record as it is on disk
+    now: several --round calls (one per --caller) take their passes in turn."""
     record = load(batch)
+    if arguments.retry_failed:
+        retry_failed(batch, record)
+        arguments.retry_failed = False
+    caller, places = arguments.caller or "", max(1, arguments.max_workers)
+    rows = Round(batch, record, arguments).once()
+    states = [row["state"] for row in rows]
+    if any(not rendered(Path(entry["book"])) and entry.get("state") in ("new", "render")
+           for entry in record["books"]) and not renderer_running(batch):
+        start_render(batch)
+    if arguments.answerers_gone:
+        # The agent says none of its answerers is running any more: their shares go out again.
+        record["flights"] = [flight for flight in record.get("flights") or [] if (flight.get("caller") or "") != caller]
+        arguments.answerers_gone = False
+    flights = at_work(record, arguments.answer_grace, arguments.settle)
+    write_json(batch / "batch.json", record)
+    working = sum(1 for flight in flights if (flight.get("caller") or "") == caller)
+    others = len(flights) - working
+    free = places - working
+    shares = to_hand_out(record, arguments)[0] if "waiting" in states and free > 0 else []
+    if shares:
+        memo["free_since"] = memo.get("free_since") or time.monotonic()
+        held_for = time.monotonic() - memo["free_since"]
+        if working:
+            # Answerers are at work: top them up once a quarter of the places are free, or a
+            # place has stood free for TOP_UP_SECONDS.
+            hold = min(free, len(shares)) < max(1, places // 4) and held_for < TOP_UP_SECONDS
+        else:
+            # None of this caller's is at work: a step that is about to ask more is waited for a little.
+            hold = any(state in ("profile", "proofread") for state in states) and held_for < GATHER_SECONDS
+        if not hold or time.monotonic() >= deadline:
+            out, answerers, handed, left = hand_out(batch, record, arguments, free, caller)
+            if not answerers:
+                return None
+            say(f"[batch] {status_line(rows)}")
+            say(f"[batch] ANSWERERS {answerers}: start them now, all at once, one per file "
+                f"{out}/worker-01.txt .. worker-{answerers:02d}.txt, each with only this prompt (its own "
+                "file's path in it): Read FILE and do exactly what it says.")
+            say(f"[batch] then run this command again AT ONCE, without waiting for the answerers: it waits by "
+                f"itself while every place is taken, and names the next files as answers come in: {again}")
+            say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} new "
+                f"answerer(s) in {out}; {working + answerers} of {places} at work"
+                + (f"; {left} more question(s) wait for a free place" if left else ""))
+            return EXIT_QUESTIONS
+    else:
+        memo["free_since"] = None
+        if all(state in OVER for state in states):
+            failed = [row for row in rows if row["state"] == "failed"]
+            for row in rows:
+                for line in row.get("delivered") or [f"{row['state']}: {row.get('error', '')}"]:
+                    say(f"[batch] {row['name']}: {line}")
+                if row.get("cleaned"):
+                    say(f"[batch] {row['name']}: {row['cleaned']}")
+            code = 1 if failed else 0
+            say(f"[batch] RESULT exit={code} {'DONE' if not failed else 'DONE, ' + str(len(failed)) + ' FAILED'} - "
+                f"{status_line(rows)}")
+            return code
+        if ("ocr" in states and not flights
+                and not any(state in ("waiting", "profile", "proofread", "finishing", "queued") for state in states)):
+            why = ocr_stopped(batch)
+            if why:
+                say(f"[batch] RESULT exit={EXIT_OCR_STOPPED} OCR STOPPED - {status_line(rows)} - call 2 is not "
+                    f"running and ended with: {why} - start it again: {shlex.join(this('--ocr', str(batch)))} "
+                    "(under run_ocr_phase.py as before)")
+                return EXIT_OCR_STOPPED
+    if time.monotonic() >= deadline:
+        idle = "ocr" in states and not is_held(mark(batch, "ocr.lock"))
+        at = (f"{working} answerer(s) at work" + (f" (and {others} of another caller)" if others else "")
+              + ", no place free or nothing more to hand out") if working or others else "nothing to answer yet"
+        say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - {at}"
+            + ("; no --ocr call is reading right now (call 2)" if idle else "")
+            + f" - run this command again: {again}")
+        return EXIT_INCOMPLETE
+    return None
+
+
+def round_(batch: Path, arguments: argparse.Namespace) -> int:
+    load(batch)
     if arguments.backend == "packet" and not arguments.answered_by:
         say("[batch] RESULT exit=2 --round needs --answered-by MODEL: the exact id of the model that answers "
             "(what the platform shows when it does not tell you the id)")
         return 2
-    if arguments.retry_failed:
-        for entry in record["books"]:
-            if entry.get("state") == "failed":
-                name = entry["name"]
-                for stale in (f"{name}.ocr.failed", f"{name}.render.exit", f"{name}.{entry.get('step')}.exit"):
-                    mark(batch, stale).unlink(missing_ok=True)
-                entry.pop("error", None)
-                entry.pop("lost", None)
-                entry["state"] = "new"
     deadline = time.monotonic() + max(0, arguments.wait)
-    free_since = None
-    places = max(1, arguments.max_workers)
     again = shlex.join(this(*(item for item in sys.argv[1:] if item not in ("--retry-failed", "--answerers-gone"))))
-    with held(mark(batch, "round.lock")) as mine:
-        if not mine:
-            say("[batch] RESULT exit=2 another --round call is running for this batch: wait for it")
-            return 2
-        turn = Round(batch, record, arguments)
-        while True:
-            rows = turn.once()
-            states = [row["state"] for row in rows]
-            if any(not rendered(Path(entry["book"])) and entry.get("state") in ("new", "render")
-                   for entry in record["books"]) and not renderer_running(batch):
-                start_render(batch)
-            if arguments.answerers_gone:
-                # The agent says none of its answerers is running any more: their shares go out again.
-                record["flights"] = []
-                arguments.answerers_gone = False
-            working = len(at_work(record, arguments.answer_grace, arguments.settle))
-            free = places - working
-            shares = to_hand_out(record, arguments)[0] if "waiting" in states and free > 0 else []
-            if shares:
-                free_since = free_since or time.monotonic()
-                held_for = time.monotonic() - free_since
-                if working:
-                    # Answerers are at work: top them up once a quarter of the places are free, or a
-                    # place has stood free for TOP_UP_SECONDS (an answerer writes its last file a
-                    # moment before it returns: the platform may still count it).
-                    hold = min(free, len(shares)) < max(1, places // 4) and held_for < TOP_UP_SECONDS
-                else:
-                    # Nobody is at work: a step that is about to ask more is waited for a little.
-                    hold = any(state in ("profile", "proofread") for state in states) and held_for < GATHER_SECONDS
-                if not hold or time.monotonic() >= deadline:
-                    out, answerers, handed, left = hand_out(batch, record, arguments, free)
-                    if not answerers:
-                        time.sleep(1)
-                        continue
-                    say(f"[batch] {status_line(rows)}")
-                    say(f"[batch] ANSWERERS {answerers}: start them now, all at once, one per file "
-                        f"{out}/worker-01.txt .. worker-{answerers:02d}.txt, each with only this prompt (its own "
-                        "file's path in it): Read FILE and do exactly what it says.")
-                    say(f"[batch] then run this command again AT ONCE, without waiting for the answerers: it waits by "
-                        f"itself while every place is taken, and names the next files as answers come in: {again}")
-                    say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} new "
-                        f"answerer(s) in {out}; {working + answerers} of {places} at work"
-                        + (f"; {left} more question(s) wait for a free place" if left else ""))
-                    return EXIT_QUESTIONS
-            else:
-                free_since = None
-                if all(state in OVER for state in states):
-                    failed = [row for row in rows if row["state"] == "failed"]
-                    for row in rows:
-                        for line in row.get("delivered") or [f"{row['state']}: {row.get('error', '')}"]:
-                            say(f"[batch] {row['name']}: {line}")
-                        if row.get("cleaned"):
-                            say(f"[batch] {row['name']}: {row['cleaned']}")
-                    code = 1 if failed else 0
-                    say(f"[batch] RESULT exit={code} {'DONE' if not failed else 'DONE, ' + str(len(failed)) + ' FAILED'} - "
-                        f"{status_line(rows)}")
-                    return code
-                if ("ocr" in states and not working
-                        and not any(state in ("waiting", "profile", "proofread", "finishing", "queued") for state in states)):
-                    why = ocr_stopped(batch)
-                    if why:
-                        say(f"[batch] RESULT exit={EXIT_OCR_STOPPED} OCR STOPPED - {status_line(rows)} - call 2 is not "
-                            f"running and ended with: {why} - start it again: {shlex.join(this('--ocr', str(batch)))} "
-                            "(under run_ocr_phase.py as before)")
-                        return EXIT_OCR_STOPPED
-            if time.monotonic() >= deadline:
-                idle = "ocr" in states and not is_held(mark(batch, "ocr.lock"))
-                say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - "
-                    + (f"{working} answerer(s) at work, no place free or nothing more to hand out"
-                       if working else "nothing to answer yet")
-                    + ("; no --ocr call is reading right now (call 2)" if idle else "")
-                    + f" - run this command again: {again}")
-                return EXIT_INCOMPLETE
-            time.sleep(max(0.05, min(arguments.poll, deadline - time.monotonic())))
+    memo: dict[str, Any] = {}
+    while True:
+        # The lock is held for one pass, not for the wait: another caller's round takes its
+        # passes in between.
+        with locked(mark(batch, "round.lock")) as mine:
+            code = one_pass(batch, arguments, deadline, again, memo) if mine else None
+        if code is not None:
+            return code
+        if not mine and time.monotonic() >= deadline:
+            say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - another round call holds the batch - run this "
+                f"command again: {again}")
+            return EXIT_INCOMPLETE
+        time.sleep(max(0.05, min(arguments.poll, deadline - time.monotonic())))
 
 
 def status(batch: Path) -> int:
@@ -984,6 +1028,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--settle", type=float, default=SETTLE_SECONDS, metavar="SECONDS",
                         help="--round: how long an answerer keeps its place after its last answers file is written, "
                              f"the time it takes to return (default {SETTLE_SECONDS})")
+    parser.add_argument("--caller", default="", metavar="NAME",
+                        help="--round: a name for this session when several sessions answer one batch at the same "
+                             "time, each with its own --max-workers places (default: the one session)")
     parser.add_argument("--answerers-gone", action="store_true",
                         help="--round: none of the answerers started earlier is running any more (they failed, or the "
                              "session that started them ended): hand their unanswered shares out again now")

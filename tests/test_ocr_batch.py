@@ -661,6 +661,47 @@ class RoundSizeTests(BatchCase):
         self.assertEqual(len(ocr_batch.at_work(old, 600)), 1)
         self.assertNotIn("lastRound", old)
 
+    def test_two_sessions_answer_one_batch_each_with_its_own_places(self) -> None:
+        b = self.b
+        b.begin()
+        for name in b.names:
+            b.knob(name, "profile-questions", 6)             # three shares of two a book
+        self.assertEqual(b.ocr()[0], 0)
+        sized = ("--max-workers", "2", "--items-per-worker", "2", "--answer-grace", "600")
+        code, out = b.round(*sized)
+        self.assertEqual(code, 10, out)
+        code, out = b.round(*sized, "--caller", "second")
+        self.assertEqual(code, 10, out)
+        self.assertIn("for 2 new answerer(s)", out)
+        self.assertIn("; 2 of 2 at work; 4 more question(s) wait for a free place", out)
+        plans = [json.loads((b.batch / "plans" / f"round-000{n}" / "plan.json").read_text()) for n in (1, 2)]
+        held = [{bundle["bundle"] for a in plan["assignments"] for bundle in a["bundles"]} for plan in plans]
+        self.assertFalse(held[0] & held[1])                   # no bundle goes to both
+        self.assertIn("--caller second", out.split("run this command again AT ONCE")[1])
+        # The first session's places are all taken, whatever the second one does.
+        code, out = b.round(*sized, wait=2)
+        self.assertEqual(code, 75, out)
+        self.assertIn("2 answerer(s) at work (and 2 of another caller)", out)
+        # The second session lost its answerers: its shares go out again, the first one's stay out.
+        code, out = b.round(*sized, "--caller", "second", "--answerers-gone")
+        self.assertEqual(code, 10, out)
+        third = json.loads((b.batch / "plans" / "round-0003" / "plan.json").read_text())
+        self.assertEqual({bundle["bundle"] for a in third["assignments"] for bundle in a["bundles"]}, held[1])
+        self.assertEqual({flight["caller"] for flight in b.record()["flights"]}, {"", "second"})
+
+    def test_two_round_calls_take_their_passes_in_turn(self) -> None:
+        b = self.b
+        b.begin()
+        b.knob(b.names[0], "page-seconds", 0.5)               # nothing to answer for a few seconds
+        b.ocr_in_background()
+        first = subprocess.Popen([PY, str(b.scripts / "ocr_batch.py"), "--round", str(b.batch), "--answered-by", MODEL,
+                                  "--wait", "3", "--poll", "0.1"], stdout=subprocess.PIPE, text=True, env=b.env)
+        code, out = b.round("--caller", "second", wait=1)     # is not shut out while the first call waits
+        self.assertEqual(code, 75, out)
+        self.assertIn("RESULT exit=75 RUNNING", out)
+        self.assertEqual(first.wait(timeout=30), 75)
+        first.stdout.close()
+
     def test_the_round_needs_the_answering_model(self) -> None:
         b = self.b
         b.begin()

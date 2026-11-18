@@ -59,8 +59,9 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
   - **4** 仲有書未讀，但 OCR 嗰個 call 已經完咗：嗰行抄咗佢最尾嘅 RESULT，照五嘅 exit 碼處理，再開 OCR 嗰條；
   - **0** 全部書交付晒：每本嘅 `[finish] RESULT` 行、交付檔同 `[clean] RESULT` 行都印咗，照九逐本講；
   - **1** 做完但有書失敗：`failed:` 行講邊本、點解，其餘嘅書照樣交付咗。照實話畀用戶知；原因改好先加 `--retry-failed` 再跑（OCR 失敗嘅仲要再開 OCR 嗰條）；
-  - **2** 參數錯，或者另一個 `--round` 仲跑緊。
+  - **2** 參數錯。
 - 一批書嘅題可以過萬條，照做：題多、要幾個鐘都唔係停低問用戶嘅理由。你個 session 嘅 token 預算唔夠做晒，就做到差唔多用完先停，講明停喺邊：之後任何 session 跑返逐輪嗰條就接得返，乜都唔使重做；唔好因此自己改用本機模型或者淨係交草稿。
+- 用戶想快啲、叫你搵多個 session 幫手：另一個 session 跑同一條逐輪 command，加 `--caller 名`（每個 session 自己一個名，原本嗰個唔使加），兩邊各自有 `--max-workers` 個位，同一包唔會派畀兩邊。冇人叫就唔好自己開。
 - 邊本書去到邊：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --status BATCH`。交付咗嘅書佢自己清走 `BOOK`（即第 6 步；加 `--keep-work` 就留），失敗嘅書留低。單引擎路線：開批嗰條加 `--engine apple-vision` 或者 `--engine hunyuan`，佢自己用上面兩段嘅單引擎 command。細節見 `references/long-book-workflow.md`〈幾個 PDF 一齊做（ocr_batch.py）〉。
 
 ## 五、長步驟同 GPU 交接
