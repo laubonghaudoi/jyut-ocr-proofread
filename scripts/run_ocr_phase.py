@@ -121,6 +121,17 @@ an error naming the fix rather than to a call the harness kills at its cap
 40 s each for engine A alone, 7.5 min for the two engines, each boundary a
 full re-prefill of the agent's 100K-token context).
 
+An agent that does not run on the local model needs neither the budget nor the
+foreground: the model it thinks with is elsewhere, so nothing of its own dies while
+the server is down.  --background says so: the call has no time budget, the agent
+starts it detached and waits for it with wait_for_run.py, and a whole book (or
+several) is one window - the server stopped once and started once, where budgeted
+calls stop and start it at every chunk boundary.  The watchdog is the same: a call
+that is killed has its server restored.  It is refused (exit 2, nothing stopped)
+when the agent does run on the local model, by any of three signs (agent_on_model):
+JYUT_OCR_AGENT_IS_LOCAL_MODEL=1; Qwen Code on the proofreading model; or a process
+that runs this call - the shell, the agent - holding a connection to the server.
+
 The state folder (${XDG_STATE_HOME:-~/.local/state}/jyut-ocr/handover, or
 OCR_PHASE_STATE_DIR; private, 0700) holds the window lock, status.json, the
 watchdog log and timings.json.  A call that finds status.json saying an
@@ -1336,6 +1347,43 @@ def tenant_clients():
     return _tenant_clients
 
 
+# What says the calling agent is the local model (scripts/proofread_pages.py's agent_is_local_model
+# reads the same two; that module is too large to load here).
+LOCAL_AGENT_ENV = "JYUT_OCR_AGENT_IS_LOCAL_MODEL"
+QWEN_MODEL_ENV = "QWEN_CODE_MODEL"
+SERVED_MODEL_ENV = "PROOFREAD_MODEL"
+
+
+def agent_on_model(health_url: str | None, environ: dict[str, str] | None = None) -> str | None:
+    """Why the agent that runs this call cannot be without the local model, or None when
+    nothing says so (--background).
+
+    Three signs, any one enough: the agent said it is the local model (LOCAL_AGENT_ENV=1,
+    which SKILL.md has such an agent export in every call); it is Qwen Code running the
+    model proofreading is served by; or one of this call's ancestors - its shell, the agent
+    - holds a connection to the server at HEALTH_URL.  LOCAL_AGENT_ENV=0 answers the second
+    sign only: a connection is evidence, whatever was said."""
+    env = os.environ if environ is None else environ
+    said = (env.get(LOCAL_AGENT_ENV) or "").strip()
+    if said == "1":
+        return f"{LOCAL_AGENT_ENV}=1 says the agent is the local model"
+    qwen, served = (env.get(QWEN_MODEL_ENV) or "").strip(), (env.get(SERVED_MODEL_ENV) or "").strip()
+    if said != "0" and qwen and qwen == served:
+        return f"the agent is Qwen Code on the model that proofreads ({QWEN_MODEL_ENV} is {SERVED_MODEL_ENV})"
+    module = tenant_clients() if health_url else None
+    if module is not None:
+        try:
+            ours = ancestor_pids() - {os.getpid()}
+            holding = [client for client in module.find_other_clients(health_url, exclude_pids=set(), match=[])
+                       if client["reason"] == "socket" and client["pid"] in ours]
+        except Exception:  # noqa: BLE001 - the sockets cannot be read here: the other two signs stand
+            holding = []
+        if holding:
+            return (f"a process that runs this call (pid {holding[0]['pid']}: {holding[0]['cmd']}) "
+                    f"holds a connection to the model server")
+    return None
+
+
 def client_match(value: str | None) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
 
@@ -1905,6 +1953,14 @@ def build_parser() -> argparse.ArgumentParser:
              "server for a whole book in one call (env: OCR_PHASE_UNLIMITED_SHELL=1)",
     )
     parser.add_argument(
+        "--background",
+        action="store_true",
+        help="for an agent that does NOT run on the local model: this call has no time budget "
+             "(whatever --max-seconds or OCR_PHASE_MAX_SECONDS say) and is started detached, the "
+             "agent waiting with wait_for_run.py, so the server is stopped and started once for the "
+             "whole run. Refused, with nothing stopped, when the agent does run on the local model",
+    )
+    parser.add_argument(
         "--round",
         type=int,
         default=1,
@@ -2020,6 +2076,18 @@ def run_phase(arguments: argparse.Namespace, started: float | None = None) -> in
         return 2
     swap_mode = "always" if arguments.force_swap else arguments.swap
     tenant = bool(arguments.release_cmd or arguments.restore_cmd)
+    if getattr(arguments, "background", False):
+        why = agent_on_model(arguments.health_url)
+        if why:
+            # The measured failure of 2026-09-23: the agent's next turn finds its own server
+            # down, gives up, and its exit kills the hand-over.
+            say(f"ERROR --background is for an agent that does not run on the local model, and {why}. "
+                "Run this call in the FOREGROUND with its time budget instead (leave --background out).",
+                error=True)
+            return 2
+        # No budget, and no cap to run into: the call is not a tool call.
+        arguments.max_seconds = 0.0
+        arguments.unlimited_shell = True
     budgeted = bool(arguments.max_seconds)
     clock = Clock(started + arguments.max_seconds if budgeted else None)
     env = dict(os.environ)

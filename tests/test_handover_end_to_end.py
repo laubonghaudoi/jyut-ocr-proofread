@@ -251,6 +251,40 @@ class OcrPhaseEndToEndTests(HandoverBase):
         self.assertEqual(wait.returncode, 0, wait.stdout + wait.stderr)
         self.assertIn('DONE ocr_book.py', wait.stdout)
 
+    def test_a_background_call_runs_the_book_in_one_window_while_the_agent_waits(self):
+        """--background, as an agent that does not run on the local model uses it: the call is
+        started detached with the machine's budget far too small for the book, the agent waits
+        with wait_for_run.py, and the model is stopped once and started once."""
+        book = self.book_with_the_model_as_tenant(pages=2)
+        log = self.base / 'ocr-phase.log'
+        command = [PY, str(SCRIPTS / 'run_ocr_phase.py'), '--kill-grace', '2', '--window-grace', '3',
+                   '--release-settle', '1', '--background', '--', PY, str(SCRIPTS / 'ocr_book.py'), str(book)]
+        env = dict(self.env, OCR_PHASE_MAX_SECONDS='1')
+        with log.open('w') as handle:
+            process = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+        try:
+            deadline = time.monotonic() + 150
+            while True:
+                wait = subprocess.run([PY, str(SCRIPTS / 'wait_for_run.py'), str(book), str(log), '--timeout', '5'],
+                                      env=env, capture_output=True, text=True, timeout=60)
+                if wait.returncode != 75:
+                    break
+                self.assertIn('RUNNING', wait.stdout)
+                self.assertLess(time.monotonic(), deadline, wait.stdout)
+            self.assertEqual(process.wait(timeout=30), 0, log.read_text())
+        finally:
+            if process.poll() is None:
+                process.kill()
+        output = log.read_text()
+        self.assertEqual(wait.returncode, 0, wait.stdout + wait.stderr + output)
+        self.assertIn('DONE ocr_book.py', wait.stdout)
+        self.assertIn('[ocr-phase] RESULT exit=0', output)
+        self.assertNotIn('exit=75', output)
+        self.assertEqual(len(list((book / 'ocr-paddle').glob('page-*.json'))), 2)
+        self.assertEqual(len(list((book / 'ocr-hunyuan').glob('page-*.json'))), 2)
+        self.assert_window()
+
     def test_a_pooled_connection_blocks_until_it_is_named_in_the_ignore_list(self):
         """CD-R1: a reverse proxy, gateway or web UI keeps a pooled keep-alive
         connection to the model's port open for good.  Each call waited for it

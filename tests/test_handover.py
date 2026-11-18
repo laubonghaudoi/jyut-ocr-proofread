@@ -828,6 +828,74 @@ class SwapPolicyTests(HandoverBase):
         self.assertEqual(self.lines(), [])
 
 
+class BackgroundTests(HandoverBase):
+    """--background: one call with no budget for an agent that does not run on the local model."""
+
+    def test_a_background_call_has_no_budget_and_stops_the_model_once(self):
+        # The machine's budget would end a foreground call after 6 s (exit 75, the model started
+        # again, and stopped again by the next call).  The runner needs longer than that.
+        env = dict(self.env, OCR_PHASE_MAX_SECONDS='6')
+        runner = [PY, '-c', 'import time; time.sleep(8)']
+        started = time.monotonic()
+        result = self.phase(runner, '--background', '--restore-reserve', '3', env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertGreaterEqual(time.monotonic() - started, 8)
+        self.assertEqual(self.lines(), ['release', 'restore alive=0'])
+        self.assertEqual(self.status()['state'], 'restored')
+        self.assertIn('RESULT exit=0', result.stdout)
+        # The same call in the foreground is cut at its budget.
+        self.events.unlink()
+        budgeted = self.phase(runner, '--restore-reserve', '3', env=env)
+        self.assertNotEqual(budgeted.returncode, 0, budgeted.stdout + budgeted.stderr)
+        self.assertIn('the runner is past the time budget; stopping it', budgeted.stdout + budgeted.stderr)
+        self.assertEqual(self.lines(), ['release', 'restore alive=0'])
+
+    def test_background_is_refused_and_nothing_is_stopped_for_an_agent_on_the_local_model(self):
+        runner = [PY, '-c', 'pass']
+        for name, extra in (('said so', {'JYUT_OCR_AGENT_IS_LOCAL_MODEL': '1'}),
+                            ('qwen on the proofreading model', {'QWEN_CODE_MODEL': 'local-27b', 'PROOFREAD_MODEL': 'local-27b'})):
+            with self.subTest(name=name):
+                result = self.phase(runner, '--background', env=dict(self.env, **extra))
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn('--background is for an agent that does not run on the local model', result.stderr)
+                self.assertIn('FOREGROUND', result.stderr)
+                self.assertEqual(self.lines(), [])
+        # Qwen Code on another model than the one that proofreads, or told it is not the local model.
+        for extra in ({'QWEN_CODE_MODEL': 'a-cloud-model', 'PROOFREAD_MODEL': 'local-27b'},
+                      {'QWEN_CODE_MODEL': 'local-27b', 'PROOFREAD_MODEL': 'local-27b', 'JYUT_OCR_AGENT_IS_LOCAL_MODEL': '0'}):
+            with self.subTest(extra=extra):
+                self.events.unlink(missing_ok=True)
+                result = self.phase(runner, '--background', env=dict(self.env, **extra))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.lines(), ['release', 'restore alive=0'])
+
+    def test_an_ancestor_holding_a_connection_to_the_server_is_the_agent_on_the_model(self):
+        url = 'http://127.0.0.1:8123/v1/models'
+        mine = sorted(phase.ancestor_pids() - {os.getpid()})
+        self.assertTrue(mine, 'this test has a parent process')
+
+        def clients(found):
+            return type('Clients', (), {'find_other_clients': staticmethod(lambda *a, **k: found)})
+        with mock.patch.object(phase, 'tenant_clients',
+                               return_value=clients([{'pid': mine[0], 'cmd': 'agent', 'reason': 'socket'}])):
+            self.assertIn('holds a connection to the model server', phase.agent_on_model(url, {}))
+        # Another process's connection, or one of ours that is not a socket: not the agent.
+        for found in ([{'pid': 1, 'cmd': 'web ui', 'reason': 'socket'}],
+                      [{'pid': mine[0], 'cmd': 'agent', 'reason': 'process'}], []):
+            with self.subTest(found=found), mock.patch.object(phase, 'tenant_clients', return_value=clients(found)):
+                self.assertIsNone(phase.agent_on_model(url, {}))
+        # Where the sockets cannot be read, the other two signs still decide.
+        broken = type('Clients', (), {'find_other_clients': staticmethod(lambda *a, **k: 1 / 0)})
+        with mock.patch.object(phase, 'tenant_clients', return_value=broken):
+            self.assertIsNone(phase.agent_on_model(url, {}))
+            self.assertIn('says the agent is the local model',
+                          phase.agent_on_model(url, {'JYUT_OCR_AGENT_IS_LOCAL_MODEL': '1'}))
+        # A connection is evidence whatever was said.
+        with mock.patch.object(phase, 'tenant_clients',
+                               return_value=clients([{'pid': mine[0], 'cmd': 'agent', 'reason': 'socket'}])):
+            self.assertIsNotNone(phase.agent_on_model(url, {'JYUT_OCR_AGENT_IS_LOCAL_MODEL': '0'}))
+
+
 class BudgetTests(HandoverBase):
     def test_the_call_never_outlives_its_budget(self):
         marker = self.base / 'runner'

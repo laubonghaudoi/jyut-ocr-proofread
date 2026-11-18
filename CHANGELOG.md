@@ -1,5 +1,13 @@
 # 更新摘要
 
+## Unreleased — GPU 交接：唔係本機模型嘅 agent 可以一個窗口做晒成個 OCR（issue #3）
+
+- `run_ocr_phase.py --background`：畀「唔係用嗰部本機模型諗嘢」嘅 agent（雲端 agent）用。呢個 call 冇時間預算，agent 將佢放背景、用 `wait_for_run.py` 等；成本書一個窗口，本機模型淨係停一次、開一次。以前一律要前景分輪（`OCR_PHASE_MAX_SECONDS`，通常 540 秒），每一輪結束都開返模型、下一輪再停：script 自己記低嘅實測係一本 609 頁嘅書，兩個引擎合共 7.5 分鐘用喺分段度；一本 639 頁嘅書今次分咗 9 輪。
+- 點解前景分輪仍然係預設：agent 本身用緊嗰部本機模型嘅話，指令一返回佢就要個模型諗下一步，所以每輪都要開返；放背景會令 agent 自己斷線（2026-09-23 實測）。所以 `--background` 喺呢種 agent 會被拒絕（exit 2，乜都冇停），三個訊號任何一個中都算：`JYUT_OCR_AGENT_IS_LOCAL_MODEL=1`；Qwen Code 行緊校對用嗰個模型；行呢個 call 嘅 process（shell、agent）有連線去模型 server。
+- 安全網冇變：看門程序照樣喺 release 之前啟動，個 call 俾人殺咗就開返模型。`SKILL.md` 四.2、五同 `references/local-ocr.md`〈GPU 交接〉加咗呢條路同邊個唔准用；背景嗰個 call 俾 harness 殺咗就改返前景分輪。
+- 測試（假嘅停、開模型指令同假引擎）：背景 call 喺預算遠細過所需嗰陣一次做晒、模型只停開一次；本機模型 agent 被拒絕而且乜都冇停；祖先 process 有連線就當係本機模型 agent；一本細書經背景交接由頭行到尾，`wait_for_run.py` 由 RUNNING 等到 DONE。
+- 實機驗證（2026-11-18，本機模型開住，雲端 agent 行）：一本 50 頁嘅書，機器設定嘅預算係 540 秒，背景交接 511 秒一個窗口做晒；模型服務自己嘅紀錄顯示佢只停咗一次（00:09:48）、開返一次（00:18:14），期間 stand-in 喺佢個 port 答 503；兩個引擎 50 頁都封好，完咗健康檢查通過。同一個工作量用前景分輪要兩輪。
+
 ## Unreleased — HunyuanOCR：server 唔再佔住系統內存；首次安裝按張卡定 slot 數（issue #3）
 
 - `run_hunyuanocr.py` 啟動 llama-server 嗰陣加 `--cache-ram 0 --ctx-checkpoints 0`。Server 預設會留 8 GiB prompt 緩存同每個 slot 32 個 context checkpoint，OCR 每頁都係獨立請求，完全用唔著，但照樣佔系統內存：一個 32 slot 嘅 server 去到 13.6 GB，令部機內存用盡。實測（同一本書，顯存同時間不變）：4 個 slot 讀 40 頁，server 常駐內存峰值由 10.7 GB 跌到 2.6 GB，40 頁底稿文字一樣；16 個 slot 讀 96 頁係 4.4 GB。兩個選項各自要 server 嘅 `--help` 有列先會加，舊版 llama-server 照樣起到。
