@@ -152,7 +152,7 @@ class PacketDispatchTests(unittest.TestCase):
     def test_the_answerers_page_says_what_an_answerer_needs(self) -> None:
         page = dispatch.BRIEF.read_text(encoding="utf-8")
         for needed in ("expected_answers_file", "request_id", "image_path", "Answer every item",
-                       "定案：睇唔到", "run no script", "load no other part of the skill"):
+                       "定案：睇唔到", "run none of its scripts", "load no other part of the skill", "settled or locked"):
             with self.subTest(needed=needed):
                 self.assertIn(needed, page)
         self.assertLess(len(page.splitlines()), 40)          # one page: it is read by every answerer

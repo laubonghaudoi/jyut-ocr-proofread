@@ -63,7 +63,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 題目等緊答（exit `10` 或者 `11`）就行呢個循環，直到嗰步 exit `0`：
 
 1. **攞派工單**：`"$JYUT_OCR_PYTHON" scripts/packet_dispatch.py PACKETS_DIR`，stdout 最尾嗰行 `[packets]` 有寫成條 command（PACKETS_DIR 係 `[packets] PENDING` 行嗰個 wave 目錄嘅上一層）。幾本書同時停咗，就將佢哋嘅 packets 目錄一次過列晒，一輪答題者服務晒所有書。佢印出 JSON：`assignments` 每份係一個答題者嘅工作，連一段現成嘅 `prompt`。
-2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
+2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles` 決定（預設 8）：想開多過 8 個答題者，行 `book_profile.py`、`proofread_pages.py` 嗰陣加 `--max-bundles N`，N 係你平台同時開到嘅 subagent 數。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
 3. **冇 subagent**：自己照 `references/packet-worker.md` 逐包答：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
 4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。
 5. **重跑同一條步驟 command**。又 exit `10` 就返去第 1 步；一本書通常三四輪。

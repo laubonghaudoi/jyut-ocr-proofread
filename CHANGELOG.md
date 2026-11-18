@@ -22,6 +22,8 @@
 - **`SKILL.md` 六改寫成一個循環**：攞派工單 → 一次過開晒 subagent → 再跑派工單交答案 → 重跑步驟。冇 subagent 嘅平台自己照同一頁逐包答。答 packet bundle 嘅並行上限由「預設最多 8 個、由 2 個開始」改成「有幾多份 assignment 就開幾多個，唔超過平台嘅 slot」；分段 writer 同 auditor 嘅上限照舊。
 - `proofread_pages.py` 同 `book_profile.py` 停低等答案嗰陣，`[packets]` 多一行寫成條派工 command。
 - 點解：之前每包開一個會載入成個技能嘅 worker，一個大模型每題要約 245 秒，長 session 係約 35 秒；而一個細模型嘅答題者淨係攞自己嗰幾包同一頁指示，127 條題每題 6.4 秒、6.2 萬輸入 token，一案一個長 session 係 7.6 秒、9 萬。
+- 成本書實測（一本 26 頁嘅直排舊書，現成 OCR 底稿，`--max-bundles 20`，主 agent 照 `SKILL.md` 六派工，答題者係一個細模型）：7 個 wave 共 564 題，由第一步到全部頁封好 22 分鐘；69 個答題者嘅工作時間加埋 103 分鐘。頭三個 wave（511 題）用咗 9 分鐘，尾四個 wave 得 53 條重試同排版題，但每個 wave 都要等齊先行下一個，所以仲用咗 9 分鐘。
+- 實測帶出嘅兩點已寫入：一個 wave 分幾多包係行步驟嗰陣定（`--max-bundles`，預設 8），想開多過 8 個答題者要嗰陣加；答題者見到「已定」嘅文字（排版題、標點題）係照抄再加結構，唔係逐字重讀成頁，`references/packet-worker.md` 講明。未講明之前，一個答題者成批排版題唔肯答。
 - 新測試 `tests/test_packet_dispatch.py`。
 
 ## Unreleased — `--unmarked-page-sample`：無標點嘅頁抽樣問；裁決答「睇唔到」就用成段大圖再問（issue #6）

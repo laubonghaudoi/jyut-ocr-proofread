@@ -1,6 +1,6 @@
 # Packet worker: answer the bundles you were given
 
-You are one of several answerers sharing a wave of questions from a historical-Chinese OCR pipeline. You were given a list of bundle files. Answer those bundles and nothing else. This page is all you need: load no other part of the skill and run no script.
+You are one of several answerers sharing a wave of questions from a historical-Chinese OCR pipeline. You were given a list of bundle files. Answer those bundles and nothing else. This page is all you need: load no other part of the skill and run none of its scripts.
 
 For each of your `bundle-XX.json` files:
 
@@ -17,7 +17,8 @@ Rules:
 
 - The image is the authority. Write characters and marks as printed, keeping variant character forms and old punctuation. Never add, drop or modernise characters. Where an item locks its characters, change none of them.
 - Answer every item of every one of your bundles. An image that is hard to read, or that does not settle the question, is no reason to leave an item out or to stop: give the answer the item's own instructions name for that case (an adjudication whose crop does not show the spot is answered `定案：睇唔到`), else your best reading. The scripts check every answer and ask again where they must.
-- Never answer from the OCR text alone, and never answer an item whose image you have not looked at.
+- Where an item hands you text it calls settled or locked (layout and `format` items, punctuation items), copy that text into your answer exactly and add only what the item asks for, judged from the image. You are not asked to read every character again, and a long page is no reason to leave the item out: copy the text out of the bundle file with a few lines of your own code if that is surer than retyping it (that is allowed; the skill's scripts are not yours to run).
+- Never decide a reading from the OCR text alone, and never answer an item whose image you have not looked at.
 - Write only the answers files your own bundles name. Do not touch `answers.jsonl`, sealed pages, other bundles or any script, and do not start other agents.
 - Write no usage numbers you did not measure.
 - If you cannot open images at all, write nothing and say so.

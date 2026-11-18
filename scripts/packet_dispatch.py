@@ -54,8 +54,8 @@ BRIEF = Path(__file__).resolve().parent.parent / "references" / "packet-worker.m
 DEFAULT_MAX_WORKERS = 24
 DEFAULT_ITEMS_PER_WORKER = 10
 
-PROMPT = ("Read {brief} and follow it exactly. It is all you need: load no other instructions and run no "
-          "scripts. Answer these packet bundles and nothing else:\n{bundles}\n"
+PROMPT = ("Read {brief} and follow it exactly. It is all you need: load no other instructions and run none "
+          "of the skill's scripts. Answer these packet bundles and nothing else:\n{bundles}\n"
           "Write each bundle's answers into the answers file that bundle names, never into your reply. "
           "When every bundle is written, reply with one line: how many questions you answered, and any "
           "you were unsure of.")
