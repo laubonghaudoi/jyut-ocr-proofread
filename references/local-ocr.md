@@ -26,7 +26,7 @@ macOS 只支援原生 Apple Silicon；Intel Mac 唔支援。純 Vision 跑 `ocr_
 - `hunyuan-paddle` 兩個引擎讀全書：`ocr_book.py BOOK --engine hunyuan-paddle` 依次跑引擎 B、草稿、引擎 A 同引擎 B 補讀（見 `long-book-workflow.md`〈OCR 階段（ocr_book.py）〉）；沿用已選路線，唔使每本重新問。
 - `apple-vision` 只執行 Vision，跳過 profile 同補讀；`hunyuan` 只限 Linux／WSL2，用戶明確要求。之後 `proofread_pages.py --single-engine`、`finish_book.py --single-engine --ocr-a` 一路用；唔將同一份底稿複製成假第二引擎。
 - 兩引擎分歧只係問題嘅位；一致亦可能一齊錯。唔自動投票、唔按多數字形全域替換。
-- 安裝／初始化負責下載及核驗模型；跑書期間引擎缺失、裝置暫時用唔到或者單頁失敗，runner 出 ERROR 講原因：照講畀用戶知，唔無限重試，唔自行換模型，亦唔 fallback 去 Tesseract。
+- 安裝／初始化負責下載及核驗模型；跑書期間引擎缺失、裝置暫時用唔到或者單頁失敗，runner 出 ERROR 講原因：照講畀用戶知，唔無限重試，唔自行換模型，亦唔改用其他 OCR 工具。
 
 ## 模型同裝置
 

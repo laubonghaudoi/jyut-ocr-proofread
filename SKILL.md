@@ -11,7 +11,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 兩套規矩，開工嗰陣揀一套，成本書用到尾：
 
-- **A. 當前 agent 校對（預設）**：`--backend packet`。要睇圖嘅題目寫成 bundle，腳本 exit `10`；你睇圖作答，照六交答案。
+- **A. 當前 agent 校對（預設）**：`--backend packet`。要睇圖嘅題目寫成 bundle，腳本 exit `10`；你睇圖作答，照六交答案。平台開到 subagent 就開工嗰陣定 `N`（你同時開到幾多個答題者），第 3、4 步加 `--max-bundles N`：題目分夠 `N` 份，一次過派晒；冇 subagent 就唔使加。
 - **B. 本機模型校對**：`--backend http`（`book_profile.py`、`proofread_pages.py` 每次都加），腳本經 `PROOFREAD_ENDPOINT`、`PROOFREAD_MODEL` 直接問模型，圖唔入你嘅 context；env.sh 冇 `PROOFREAD_ENDPOINT` 就話畀用戶知，唔好自己估；冇 `PROOFREAD_MAX_INFLIGHT`（server 一次跑幾多個請求）就開工前問用戶，唔好估。用戶要求就用；**你本身就係嗰個本機模型就一定要用**：`JYUT_OCR_AGENT_IS_LOCAL_MODEL=1`（每個 call 照三加），或者 Qwen Code 嘅 `QWEN_CODE_MODEL` 等於 `PROOFREAD_MODEL` 而 endpoint 喺本機，腳本會自己認出，預設 http、拒絕 packet。
 - **B 套唔准自己覆核**：由開工到交付之後，你**唔准**開頁圖或者裁圖、用 `zoom_image` 放大、用 `read_file` 讀圖，唔准讀 sealed `.md`／`.json`、run report 或者成段 log 嚟搵錯，唔准自己裁定字或者手改書，亦唔准叫 subagent 代你做。淨係跑 script、讀佢哋最尾嘅 RESULT 行。每幅讀入對話嘅圖都留喺 context：實測 Qwen Code 咁做撞 `hard limit: 177000` 退出，冇 `final.md`。
 
@@ -21,7 +21,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - 輸出：只刪書眉、頁碼、版心／書口、印章、索書號、條碼同館藏印；正文數字、註號、圖表入面嘅字同表外說明照轉。印出嘅 `*` 寫 `\*`，雙圈句號寫 `。。`。註：引用 `[^n]` 留喺原位，定義預設留喺頁底，同一原印號再用就寫 `[^n-2]`，得一半就留一半。表：橫排表照原行列；直排表將由右至左嘅直欄變成由上至下嘅行，唔按內容重排；冇表頭或者有合併格用 HTML `<table>`；跨頁續表合併。交付稿冇頁碼分隔。
 - **唔可以話「已逐頁視覺校對」「已逐頁同 PDF 對照」**：流程淨係喺佢問嘅位睇圖。定唔到嘅位喺 `doubts.md`，冇列出嚟嘅字唔代表一定啱。
 - 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。
-- Tesseract／Tessdata 硬性禁用。引擎冇裝好，runner 出 ERROR 講缺乜：照講畀用戶知，唔好改用其他引擎。
+- 引擎冇裝好，runner 出 ERROR 講缺乜：照講畀用戶知，唔好改用其他引擎或者其他 OCR 工具。
 - 唔好成份讀 `references/` 入面嘅檔：照十淨係讀嗰一節。
 
 ## 三、本書目錄同交付檔
@@ -35,8 +35,8 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 1. **Render**（前景，純 CPU）：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py PDF BOOK`（第二個參數係 `BOOK`，唔好畀佢 `BOOK/renders`；現成掃描圖：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py BOOK --images-dir DIR`）。A 套可以逐個睇 `BOOK/survey-report.json` 嘅 `blank_pages` 全頁一眼，真係空白先喺 `page-manifest.json` 嗰頁加 `"marker_expected": false`；B 套唔睇，照正常頁跑。
 2. **OCR**：`env.sh` 有 `OCR_PHASE_RELEASE_CMD`（本機模型佔住 GPU）就照五嘅交接前景跑 `"$JYUT_OCR_PYTHON" scripts/run_ocr_phase.py -- "$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1; echo "exit=$?"; grep -F '[ocr-book] DRAFT' BOOK/ocr.log; tail -3 BOOK/ocr.log`；冇就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1`，用 `wait_for_run.py BOOK BOOK/ocr.log` 等。佢依次做引擎 B（HunyuanOCR）、草稿 `BOOK/draft.md`、引擎 A（PaddleOCR-VL）同引擎 B 補讀。草稿一出（唔等引擎 A），log 有 `[ocr-book] DRAFT 路徑` 行，`wait_for_run.py` 嗰行尾亦有 `; DRAFT 路徑`：第一次見到就用一行話畀用戶知草稿喺邊，唔使等佢回覆；冇呢行（寫唔到）亦唔阻流程。exit 0 之後再跑 `"$JYUT_OCR_PYTHON" scripts/build_draft.py BOOK`（補讀改咗引擎 B 嘅頁）。
-3. **Book profile**（長步驟；`<=4` 頁嘅短檔唔使；B 套加 `--backend http`，冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--workers N`）：`"$JYUT_OCR_PYTHON" scripts/book_profile.py BOOK/renders BOOK/ocr-paddle BOOK/ocr-hunyuan BOOK/book-profile.json > BOOK/profile.log 2>&1`，用 `wait_for_run.py BOOK/book-profile.json BOOK/profile.log` 等。
-4. **逐頁校對**（長步驟）：`"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-paddle BOOK/proofread --draft2-directory BOOK/ocr-hunyuan > BOOK/proofread.log 2>&1`，用 `wait_for_run.py BOOK/proofread BOOK/proofread.log --progress BOOK` 等。B 套加 `--backend http`（冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--max-inflight N`）。用戶要求先加 `--content-fidelity on`（每頁多三條整頁睇圖題，見 `references/content-fidelity.md`）。全部頁封好，佢自己接跨頁表格。缺引擎 B 底稿嘅頁唔封（exit 1，WARNING 列出頁碼）：等第 2 步做完再跑同一條。
+3. **Book profile**（長步驟；`<=4` 頁嘅短檔唔使；B 套加 `--backend http`，冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--workers N`；A 套有 subagent 就加 `--max-bundles N`）：`"$JYUT_OCR_PYTHON" scripts/book_profile.py BOOK/renders BOOK/ocr-paddle BOOK/ocr-hunyuan BOOK/book-profile.json > BOOK/profile.log 2>&1`，用 `wait_for_run.py BOOK/book-profile.json BOOK/profile.log` 等。
+4. **逐頁校對**（長步驟）：`"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-paddle BOOK/proofread --draft2-directory BOOK/ocr-hunyuan > BOOK/proofread.log 2>&1`，用 `wait_for_run.py BOOK/proofread BOOK/proofread.log --progress BOOK` 等。B 套加 `--backend http`（冇 `PROOFREAD_MAX_INFLIGHT` 先再加 `--max-inflight N`）。A 套：有 subagent 就加 `--max-bundles N`；呢本書未有封好嘅頁（`BOOK/proofread` 入面冇 `page-*.json`）就再加 `--same-print-marks --unmarked-page-sample`（兩個引擎一致嘅位同無標點嘅頁少問啲標點題，見 `references/long-book-workflow.md`〈開關〉），已經有封好嘅頁就照返之前嗰條 command，唔好中途加減。用戶要求先加 `--content-fidelity on`（每頁多三條整頁睇圖題，見 `references/content-fidelity.md`）。全部頁封好，佢自己接跨頁表格。缺引擎 B 底稿嘅頁唔封（exit 1，WARNING 列出頁碼）：等第 2 步做完再跑同一條。
 5. **定稿**（一律放背景，唔好前景跑）：`"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK > BOOK/finish.log 2>&1`，用 `wait_for_run.py BOOK BOOK/finish.log` 等；exit 碼照七。
 6. **交付同清走**：exit 0 之後，有 `WARNING` 先 `grep -n WARNING BOOK/finish/finish-book.log`；跟住 `"$JYUT_OCR_PYTHON" scripts/clean_book.py BOOK --all`（成個 `BOOK` 刪走，淨係留 PDF 隔籬嘅交付檔），再照九交付。掃描圖資料夾開嘅書唔跑佢（冇 PDF，佢 exit 3：交付檔淨係喺 `BOOK`）。
 
@@ -63,11 +63,12 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 題目等緊答（exit `10` 或者 `11`）就行呢個循環，直到嗰步 exit `0`：
 
 1. **攞派工單**：`"$JYUT_OCR_PYTHON" scripts/packet_dispatch.py PACKETS_DIR`，stdout 最尾嗰行 `[packets]` 有寫成條 command（PACKETS_DIR 係 `[packets] PENDING` 行嗰個 wave 目錄嘅上一層）。幾本書同時停咗，就將佢哋嘅 packets 目錄一次過列晒，一輪答題者服務晒所有書。佢印出 JSON：`assignments` 每份係一個答題者嘅工作，連一段現成嘅 `prompt`。
-2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles` 決定（預設 8）：想開多過 8 個答題者，行 `book_profile.py`、`proofread_pages.py` 嗰陣加 `--max-bundles N`，N 係你平台同時開到嘅 subagent 數。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
+2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles N` 決定（四；冇加就係 8）。開咗就等齊佢哋返嚟：未返晒唔好行第 4 步，亦唔好中途停佢哋（早咗行只會多一輪）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
 3. **冇 subagent**：自己照 `references/packet-worker.md` 逐包答：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
 4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。
 5. **重跑同一條步驟 command**。又 exit `10` 就返去第 1 步；一本書通常三四輪。
 
+- 平台唔畀你睇到自己嘅 model ID：`--answered-by` 寫平台顯示嗰個模型名，唔好估。
 - 答錯咗：`apply_packet_answers.py` 嗰條 command（派工單 `apply` 有寫）加 `--amend --reason "..."`；已封嘅頁要 `--overwrite --pages N` 重做先用新答案。
 - 唔准手改 `answers.jsonl` 或者封存頁；bundle 冇問嘅頁唔使自己覆核。每種題點答、限流點處理見 `references/subagent-orchestration.md`。
 

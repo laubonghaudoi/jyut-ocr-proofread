@@ -7,6 +7,13 @@
 - 純 Vision 唔下載 HF 模型，唔啟動其他 OCR 模型或做 GPU 交接；保留座標修正、單引擎校對、續跑及封條。雙引擎保留 MLX 加速。
 - 以下舊版本紀錄及已封存評測保持原樣，唔代表退役路線仍然可用。
 
+## Unreleased — 新書預設用兩個慳題開關；答題者數目寫入步驟；刪走舊禁令（issue #6）
+
+- `SKILL.md` 一、四：A 套平台開到 subagent，就開工嗰陣定 `N`，第 3、4 步加 `--max-bundles N`；未有封好頁嘅書，第 4 步再加 `--same-print-marks --unmarked-page-sample`。已經有封好頁嘅書照返之前嗰條 command，唔中途加減（開咗同關咗嘅封頁互相唔算 current）。B 套未量度過，唔加。
+- 根據（28 案 50 頁，現成 OCR 底稿，只做校對）：一個強模型做主 agent，照派工單每輪開最多 24 個同模型嘅答題者，兩個開關全開：520 題、11 輪、由頭到尾 33.6 分鐘（腳本自己 168 秒），CER 寬容 14.13%、表格結構 90.2、表格內容 85.6。同配置嘅細模型係 14.88%、89.7、82.9；冇開關嘅細模型基線 14.79%。即係開關冇令強模型或者細模型跌準確度。
+- 同一次實測帶出、已經寫入六：主 agent 幾次未等齊答題者就行下一輪，多咗兩輪空轉，所以講明等齊先行、唔好中途停答題者；平台唔畀 agent 睇到 API model ID，`--answered-by` 就寫平台顯示嗰個名。尾三輪得 9 條重試同排版題，用咗 8.3 分鐘（全程四分一）：尾巴仍然係最大嘅剩餘時間。
+- 刪走「Tesseract／Tessdata 硬性禁用」（`SKILL.md` 二、`references/local-ocr.md`）：流程已經寫死，agent 冇機會揀 OCR 工具。留返「引擎冇裝好就照 ERROR 講畀用戶知，唔好換引擎或者其他 OCR 工具」。
+
 ## Unreleased — macOS MLX 同 Vision 雙引擎優化（issue #4）
 
 - Apple Silicon macOS 14+ 嘅 Paddle 預設用獨立、hash-locked `mlx-vlm==0.8.0` 做 Metal 識別，CPU 保留版面分析；沿用原裝未量化權重。明確 native／CPU 設定保留，舊 auto-CPU 可遷移。正式 runner 管服務啟動、模型 readiness、GPU 隊列、限時同父程序死亡清理，失敗唔會靜默 fallback。
