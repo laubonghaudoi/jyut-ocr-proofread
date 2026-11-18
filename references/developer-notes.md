@@ -6,7 +6,7 @@
 
 ## Check
 
-- 全套測試用 `python3 tests/run_all.py`（`--only unit`、`--only checks`、檔名過濾同 `--log-dir`，見 README〈維護〉）：每個 `tests/test_*.py` 同 `tests/check_*.py` 喺自己嘅 subprocess 跑，全部 exit 0 先算過；唔使 GPU、唔使模型。
+- 全套測試用 `python3 tests/run_all.py`（`--only unit`、`--only checks`、檔名過濾同 `--log-dir`，見 README〈維護〉）：每個 `tests/test_*.py` 同 `tests/check_*.py` 喺自己嘅 subprocess 跑，幾個檔一齊跑（`--jobs N`，預設最多 8 個；`--jobs 1` 逐個跑），全部 exit 0 先算過；唔使 GPU、唔使模型，喺 source 咗 `env.sh` 嘅 shell 跑結果都一樣。成套約一分鐘；一個檔慢到拖住成套，就將佢加入 `run_all.py` 嘅 `SPLIT_BY_CLASS`，等佢嘅 test class 分開跑。
 - 有啲 check 釘住 `SKILL.md` 同 `references/` 嘅 command、開關同規矩（`check_documented.py` 核 `SKILL.md` 引用嘅每個開關真係存在，同埋每類疑點、決定編號、開關同修書計數都喺 `references/` 有寫）：改文就喺同一個改動改埋 check；唔好為咗過 check 刪咗仍然有效嘅規矩。
 - `tests/check_generic_text.py`：`SKILL.md`、`references/`、`scripts/` 唔准寫 case id 或者 golden 嘅原文（見下面〈經驗泛化同技能更新門檻〉）。
 - `SKILL.md` 係流程表，agent 每本書都成份讀入（本機模型做 agent 嗰陣 context 尤其緊）：保持短（上限 11,000 個字元，Python `len`），設計、實測同細節放 `references/`，`SKILL.md` 淨係講幾時讀邊一節。疑點、決定編號、開關同修書計數嘅意思寫喺 `long-book-workflow.md`。

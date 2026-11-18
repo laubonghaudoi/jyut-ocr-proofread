@@ -1,5 +1,13 @@
 # 更新摘要
 
+## Unreleased — 成套測試由六分幾鐘減到一分鐘內
+
+- `tests/run_all.py` 幾個檔一齊跑：`--jobs N`，預設係部機嘅核心數、最多 8 個；`--jobs 1` 同以前一樣逐個跑。實測（16 核心）成套由 380 秒減到 52 秒，`--jobs 16` 係 42 秒，連跑三次結果一樣；測試數目冇變（755 個 unit test、54 個 check）。
+- 時間本來集中喺幾個檔，唔係因為檔多：96 個檔入面 72 個加埋得 42 秒，`test_handover.py` 一個就佔 130 秒（佢好多測試要等真實嘅秒數）。呢個檔而家逐個 test class 分開跑（`SPLIT_BY_CLASS`），class 清單由 unittest 自己嘅 loader 攞，唔會漏咗淨係繼承測試嘅 class。
+- 兩個一向唔過嘅測試修好：`test_setup_dual_engine.py` 有一個測試會去睇部機 home 目錄有冇 Hunyuan 權重，裝咗權重嘅機先會唔過；`check_wait_for_run.py` 用 `--effort` 做「錯嘅選項」，但有咗 `--effort-policy` 之後 argparse 當佢係縮寫。
+- 部機 `env.sh` 嘅設定唔再漏入測試：`env.sh.example` 列嘅名同 `PROOFREAD_*` 一律唔帶入去。之前喺 source 咗 `env.sh` 嘅 shell 跑，會因為引擎名同裝置設定有五個檔唔過。
+- 刪走 `tests/check_review_launcher.py`：佢 13 個測試全部喺 `tests/test_review_launcher.py` 入面有（後者仲多兩個）。
+
 ## Unreleased — 通用標點融合：packet／HTTP 共用拆分及融合開關
 
 - `proofread_pages.py` 加 `--punctuation-mode auto|split|fused`；`auto` 保留 packet 融合、HTTP 拆分嘅原本預設，兩條路線都可以明確選擇。共用融合 prompt、解析及格式檢查，唔綁定模型或者 agent 平台；舊 packet prompt、request ID 同答案格式保持可重播。

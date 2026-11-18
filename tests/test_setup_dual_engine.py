@@ -1457,7 +1457,9 @@ class SetupFlowTests(Case):
         usage = type("Usage", (), {"free": 3 * 10**9})()
         plan, _ = setup.paddle_plan(LOCK, system="Linux", machine="x86_64", request="auto", gpus=[gpu()])
         release = setup.release_binary(LOCK, system="Linux", machine="x86_64", device="cuda", gpu=gpu())
-        needs = setup.disk_needs(self.options, {}, LOCK, ("hunyuan", "paddle"), release, plan)
+        # disk_needs() also looks for the weights under the home folder: not this machine's.
+        with patch.object(Path, "home", return_value=self.base / "home"):
+            needs = setup.disk_needs(self.options, {}, LOCK, ("hunyuan", "paddle"), release, plan)
         labels = [label for label, _ in needs]
         self.assertEqual(labels[:3], ["core Python environment", "HunyuanOCR weights",
                                       "llama.cpp llama-b10969-bin-ubuntu-cuda-13.3-x64.tar.gz"])

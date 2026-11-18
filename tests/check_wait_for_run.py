@@ -474,9 +474,9 @@ def run_cases(book: Book, problems: list[str]) -> None:
     scripts = ROOT / "scripts"
     for name, command, output, patterns in (
             ("proofread with a wrong option", f"{sys.executable} {scripts}/proofread_pages.py renders ocr-a "
-             "proofread --draft2-directory ocr-b --effort xhigh", "proofread",
+             "proofread --draft2-directory ocr-b --no-such-switch 1", "proofread",
              (r"FAILED proofread_pages\.py: it did not start: it refused its arguments: "
-              r"unrecognized arguments: --effort xhigh",)),
+              r"unrecognized arguments: --no-such-switch 1",)),
             ("profile with a wrong option", f"{sys.executable} {scripts}/book_profile.py renders ocr-a ocr-b "
              "book-profile.json --max-inflight 8", "book-profile.json",
              (r"FAILED book_profile\.py: it did not start: it refused its arguments: "

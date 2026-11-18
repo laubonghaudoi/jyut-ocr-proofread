@@ -356,9 +356,10 @@ python3 tests/run_all.py                    # 全套：unittest 加回歸 check
 python3 tests/run_all.py --only unit        # 淨係 tests/test_*.py
 python3 tests/run_all.py --only checks      # 淨係 tests/check_*.py
 python3 tests/run_all.py stitch --log-dir /tmp/jyut-ocr-tests   # 揀名有 stitch 嘅檔，留低每個檔嘅輸出
+python3 tests/run_all.py --jobs 1           # 逐個檔跑（預設幾個檔一齊跑）
 ```
 
-`tests/run_all.py` 係唯一測試入口：每個檔喺自己嘅 subprocess 跑，限時 900 秒，`PROOFREAD_ENDPOINT` 指去冇人聽嘅 port，唔使 GPU、唔使模型；逐個檔印 PASS／FAIL 同總結，有一個失敗就 exit 1。`tests/check_*.py`、`tests/cases/` 同 `tests/golden/` 係回歸 check 同人手核過嘅 golden；評已校對輸出目錄嘅 `tests/run_regression.py` 同 benchmark 快照同步，見 [開發筆記](references/developer-notes.md)。
+`tests/run_all.py` 係唯一測試入口：每個檔喺自己嘅 subprocess 跑，幾個檔一齊跑（`--jobs`，預設係部機嘅核心數、最多 8 個；成套約一分鐘），限時 900 秒，`PROOFREAD_ENDPOINT` 指去冇人聽嘅 port，部機 `env.sh` 嘅設定一律唔帶入去，唔使 GPU、唔使模型；逐個檔印 PASS／FAIL 同總結，有一個失敗就 exit 1。`tests/check_*.py`、`tests/cases/` 同 `tests/golden/` 係回歸 check 同人手核過嘅 golden；評已校對輸出目錄嘅 `tests/run_regression.py` 同 benchmark 快照同步，見 [開發筆記](references/developer-notes.md)。
 
 測試以合成資料及 fake runtimes 驗證契約；實際 OCR 引擎 smoke、平台原生技能發現，以及當前模型讀技能／核原圖嘅操作驗證分開記錄。成功列出技能唔等於模型已核圖；未實機驗證嘅平台唔標成已通過。版本歷史只維護喺 [CHANGELOG.md](CHANGELOG.md)。
 
