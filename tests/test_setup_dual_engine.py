@@ -1366,6 +1366,79 @@ class SmokeTests(Case):
 
 
 class SetupFlowTests(Case):
+    def first_setup(self, card, smokes):
+        """A setup with no saved slot count on a Linux machine with CARD; returns (result or the
+        error raised, the settings written, what was printed)."""
+        with patch.object(setup, "platform_name", return_value="Linux"), \
+                patch.object(setup, "machine_name", return_value="x86_64"), \
+                patch.object(setup, "nvidia_gpus", return_value=[card]), \
+                patch.object(setup, "check_free_disk"), patch.object(setup, "ensure_dependencies"), \
+                patch.object(setup, "ensure_python", return_value=Path("/data/python/bin/python")), \
+                patch.object(setup, "ensure_models", return_value={"HUNYUAN_MODEL": "/m", "HUNYUAN_MMPROJ": "/p"}), \
+                patch.object(setup, "ensure_runtime", return_value=(Path("/data/runtime/llama-server"), {})), \
+                patch.object(setup, "environment_identity",
+                             side_effect=lambda options, config, *rest: {"slots": config["OCR_HUNYUAN_SLOTS"]}), \
+                patch.object(setup, "run_smokes", side_effect=smokes), contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                result = setup.setup(replace(self.options, engine="hunyuan"))
+            except setup.SetupError as error:
+                result = error
+        return result, setup.read_environment(self.options.config_dir / "env.sh"), out.getvalue()
+
+    def test_a_first_setup_gives_hunyuan_the_slots_the_card_holds(self):
+        for mib, expected in ((8 * 1024, 1), (12 * 1024, 4), (16 * 1024, 7), (24 * 1024, 12),
+                              (32607, 16), (48 * 1024, 16), (80 * 1024, 16)):
+            with self.subTest(mib=mib):
+                self.assertEqual(setup.hunyuan_slots_for(gpu(total_mib=mib), "cuda"), expected)
+                # What is chosen fits beside the reserve.
+                self.assertLessEqual(setup.hunyuan_need_mib(expected) + setup.HUNYUAN_CARD_RESERVE_MIB,
+                                     max(mib, setup.hunyuan_need_mib(1) + setup.HUNYUAN_CARD_RESERVE_MIB))
+        self.assertEqual(setup.hunyuan_slots_for(gpu(total_mib=None), "cuda"), 1)
+        self.assertEqual(setup.hunyuan_slots_for(None, "cuda"), 1)
+        self.assertEqual(setup.hunyuan_slots_for(gpu(), "cpu"), 1)
+        self.assertEqual(setup.hunyuan_slots_for(gpu(), "metal"), 1)
+        seen = []
+
+        def smokes(options, config, engines, devices, fingerprint, paddle_need):
+            seen.append(config["OCR_HUNYUAN_SLOTS"])
+            return {engine: {"json_output": engine + ".json"} for engine in engines}
+        result, written, printed = self.first_setup(gpu(total_mib=24 * 1024), smokes)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual((written["OCR_HUNYUAN_SLOTS"], seen), ("12", ["12"]))
+        self.assertIn("HunyuanOCR reads 12 pages at once on this card", printed)
+
+    def test_slots_the_setup_test_does_not_pass_with_fall_back_to_one(self):
+        seen = []
+
+        def smokes(options, config, engines, devices, fingerprint, paddle_need):
+            seen.append((config["OCR_HUNYUAN_SLOTS"], fingerprint))
+            if config["OCR_HUNYUAN_SLOTS"] != "1":
+                raise setup.SetupError("the test page was not read")
+            return {engine: {"json_output": engine + ".json"} for engine in engines}
+        result, written, printed = self.first_setup(gpu(), smokes)
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual([slots for slots, _ in seen], ["16", "1"])
+        # The second test is of the settings as they now are, not of the first try's.
+        self.assertNotEqual(seen[0][1], seen[1][1])
+        self.assertEqual(written["OCR_HUNYUAN_SLOTS"], "1")
+        self.assertIn("did not pass with 16 HunyuanOCR slots (the test page was not read); trying one slot", printed)
+        state = json.loads((self.options.config_dir / "setup-state.json").read_text())
+        self.assertEqual((state["status"], state["identity"]), ("ready", {"slots": "1"}))
+
+    def test_a_saved_slot_count_is_never_changed_or_tried_again_with_one(self):
+        self.options.config_dir.mkdir()
+        (self.options.config_dir / "env.sh").write_text("export OCR_HUNYUAN_SLOTS=4\n")
+        seen = []
+
+        def smokes(options, config, engines, devices, fingerprint, paddle_need):
+            seen.append(config["OCR_HUNYUAN_SLOTS"])
+            raise setup.SetupError("the test page was not read")
+        result, written, _ = self.first_setup(gpu(), smokes)
+        self.assertIsInstance(result, setup.SetupError)
+        self.assertEqual((seen, written["OCR_HUNYUAN_SLOTS"]), (["4"], "4"))
+        state = json.loads((self.options.config_dir / "setup-state.json").read_text())
+        self.assertEqual(state["status"], "action-required")
+
     def test_linux_gpu_installs_both_engines_and_keeps_the_old_skill_lines(self):
         self.options.config_dir.mkdir()
         env = self.options.config_dir / "env.sh"

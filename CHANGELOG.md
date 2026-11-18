@@ -1,5 +1,11 @@
 # 更新摘要
 
+## Unreleased — HunyuanOCR：server 唔再佔住系統內存；首次安裝按張卡定 slot 數（issue #3）
+
+- `run_hunyuanocr.py` 啟動 llama-server 嗰陣加 `--cache-ram 0 --ctx-checkpoints 0`。Server 預設會留 8 GiB prompt 緩存同每個 slot 32 個 context checkpoint，OCR 每頁都係獨立請求，完全用唔著，但照樣佔系統內存：一個 32 slot 嘅 server 去到 13.6 GB，令部機內存用盡。實測（同一本書，顯存同時間不變）：4 個 slot 讀 40 頁，server 常駐內存峰值由 10.7 GB 跌到 2.6 GB，40 頁底稿文字一樣；16 個 slot 讀 96 頁係 4.4 GB。兩個選項各自要 server 嘅 `--help` 有列先會加，舊版 llama-server 照樣起到。
+- 安裝器：`env.sh` 未有 `OCR_HUNYUAN_SLOTS` 嗰陣，唔再一律寫 1，改為按張卡嘅總顯存定：每個 slot 約 1.5 GiB、另留 2 GiB、最多 16 個（8 GiB 卡 1 個、12 GiB 4 個、16 GiB 7 個、24 GiB 12 個、32 GiB 或以上 16 個）；CPU、Metal 或者讀唔到顯存仍然係 1 個。用呢個數試跑過唔到，就改返 1 個再試一次。已經寫咗數嘅機器唔郁，試跑失敗亦唔會自動改佢。
+- 點解最多 16 個：32 GiB 卡實測 16 個 slot 幾乎全程都滿、GPU 使用率中位數 100%，一本 639 頁嘅書 17 分鐘；32 個 slot 冇快到。
+
 ## Unreleased — 橫排書嘅書眉按位置學，唔使逐頁問
 
 - 問題：book profile 以前淨係識「同一行字喺一半嘅頁出現」嘅書眉，啱舊書每葉版心都印同一個書名。橫排嘅現代書一邊頁印書名、另一邊印章名，冇一行過半，所以乜都學唔到，逐頁校對就每頁問一題書眉。實測一本 639 頁嘅橫排書：第一輪 830 條裁決題，606 條（606 頁每頁一條）係淨係引擎 A 讀到嘅頁頂書眉；書名喺 638 頁入面嘅 304 頁，差少少先夠一半。

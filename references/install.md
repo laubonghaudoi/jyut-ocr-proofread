@@ -203,7 +203,7 @@ PaddleOCR-VL 嘅 GPU wheel 喺 Paddle 自己嘅 index，按 NVIDIA driver 同 co
 
 **試跑**：初始化會檢查 Python、Pillow、PDF 渲染工具及所選引擎依賴，然後每個引擎用一張合成頁跑實際 OCR。只有全部引擎都輸出非空轉錄同合格逐頁 JSON，先將環境 fingerprint 及試跑證據寫入 `setup-state.json` 並標記就緒；`--check` 要每個引擎嘅證據都喺度兼冇改過。
 
-- Hunyuan 試跑用已設定嘅 `OCR_HUNYUAN_SLOTS`，每個 slot 用 runner 預設嘅 16384 context：約 3,500 MiB 加每 slot 1,536 MiB（1 slot 約 5,036 MiB，16 slots 約 28,076 MiB），唔因為呢次優化改 slot 數。Paddle 約要 12,288 MiB；MLX 暫用同一個保守值，計埋同時存在嘅 MLX server 同 Paddle layout worker。
+- Hunyuan 試跑用已設定嘅 `OCR_HUNYUAN_SLOTS`，每個 slot 用 runner 預設嘅 16384 context：約 3,500 MiB 加每 slot 1,536 MiB（1 slot 約 5,036 MiB，16 slots 約 28,076 MiB）。`env.sh` 未有 `OCR_HUNYUAN_SLOTS` 嗰陣，安裝器按張卡嘅總顯存寫一個數（另留 2 GiB，最多 16），試跑過唔到就改返 1 再試；已有嘅數唔郁。Paddle 約要 12,288 MiB；MLX 暫用同一個保守值，計埋同時存在嘅 MLX server 同 Paddle layout worker。
 - macOS 試跑同 `run_ocr_phase.py` 共用 `vm_stat` 探測：只計 free、inactive、speculative，按實際 page size 換算；purgeable 同其他分類重疊，唔會再加。讀唔到就當未知，已有交接設定時交畀交接處理；冇交接就停低講明。Metal、MLX 同 Darwin native CPU 都共享呢個記憶體池。
 - 等 GPU 隊列（另一本書嘅 OCR 用緊）最多 300 秒；等唔到就報 action-required，乜都冇停，佢做完再重跑。
 - GPU 唔夠空位而又冇聲明本機模型：報 action-required，講要幾多、得幾多；唔會叫你改用 CPU，亦唔會記低 CPU。

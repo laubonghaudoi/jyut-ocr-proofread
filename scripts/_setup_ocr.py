@@ -1930,6 +1930,27 @@ def hunyuan_need_mib(slots: int, context: int = HUNYUAN_CONTEXT_PER_SLOT) -> int
     return HUNYUAN_BASE_MIB + math.ceil(slots * context * HUNYUAN_KV_KIB_PER_TOKEN / 1024)
 
 
+# The slots a first setup gives HunyuanOCR (hunyuan_slots_for).  One slot reads one page at a
+# time; measured on a 32 GB card, 16 slots keep the card fully used (a book of 639 pages in 17
+# minutes, 15.7 of 16 slots busy), and 32 were no faster.
+HUNYUAN_AUTO_SLOTS_MAX = 16
+HUNYUAN_CARD_RESERVE_MIB = 2048
+
+
+def hunyuan_slots_for(gpu: GPU | None, device: str) -> int:
+    """The slots a setup that finds none saved gives HunyuanOCR: as many as the card holds at
+    the runner's context for each (hunyuan_need_mib) beside HUNYUAN_CARD_RESERVE_MIB, at most
+    HUNYUAN_AUTO_SLOTS_MAX; one on the CPU, on Metal, or where the card's size is not known.
+    By the card's whole memory, not what is free now: a local model that holds it makes room
+    for the OCR phase."""
+    if device != "cuda" or gpu is None or not gpu.total_mib:
+        return 1
+    one = hunyuan_need_mib(1)
+    each = hunyuan_need_mib(2) - one
+    room = gpu.total_mib - HUNYUAN_CARD_RESERVE_MIB - (one - each)
+    return max(1, min(HUNYUAN_AUTO_SLOTS_MAX, room // each))
+
+
 def engine_devices(engines: Sequence[str], devices: str | Mapping[str, str]) -> dict[str, str]:
     if isinstance(devices, str):
         return {engine: devices for engine in engines}
@@ -2644,6 +2665,7 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
     if not gpus and devices.get("hunyuan") == "cuda":
         gpus = nvidia_gpus()
     gpu = primary_gpu(gpus)
+    slots_chosen_here = False
     release = (release_binary(lock, system=system, machine=machine, device=devices["hunyuan"], gpu=gpu)
                if "hunyuan" in engines else None)
     check_free_disk(options, disk_needs(options, existing, lock, engines, release, plan,
@@ -2669,7 +2691,14 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
                                        release=release_binary(lock, system=system, machine=machine, device="cpu", gpu=None))
         config.update({"HUNYUAN_LLAMA_SERVER": str(binary), "OCR_HUNYUAN_DEVICE": device})
         config.setdefault("OCR_HUNYUAN_MODE", "shared")
-        config.setdefault("OCR_HUNYUAN_SLOTS", "1")
+        # A saved count is kept as it is.  None saved: what the card holds (one where that is
+        # not known), and one again should the setup test not pass with it.
+        slots_chosen_here = not config.get("OCR_HUNYUAN_SLOTS")
+        if slots_chosen_here:
+            config["OCR_HUNYUAN_SLOTS"] = str(hunyuan_slots_for(gpu, device))
+            if config["OCR_HUNYUAN_SLOTS"] != "1":
+                print(f"HunyuanOCR reads {config['OCR_HUNYUAN_SLOTS']} pages at once on this card "
+                      "(OCR_HUNYUAN_SLOTS in env.sh; change it there).")
         validate_hunyuan_config(config)
     if plan is not None and "paddle" in engines:
         config.update(ensure_paddle_weights(options, existing, lock))
@@ -2701,9 +2730,24 @@ def _setup_locked(options: SetupOptions) -> dict[str, Any]:
         return dict(summary(engines, devices, environment_path, **({"notes": notes} if notes else {})),
                     status="pending-smoke",
                     reason="Prepared; the setup test has not run. Rerun without --prepare-only, in the foreground, to run it.")
+    paddle_need = plan.need_mib if plan is not None and plan.gpu else PADDLE_NEED_MIB
     try:
-        state["smoke"] = run_smokes(options, config, engines, devices, fingerprint,
-                                    plan.need_mib if plan is not None and plan.gpu else PADDLE_NEED_MIB)
+        try:
+            state["smoke"] = run_smokes(options, config, engines, devices, fingerprint, paddle_need)
+        except (SetupError, OSError, ValueError) as first:
+            if not (slots_chosen_here and config.get("OCR_HUNYUAN_SLOTS") != "1"):
+                raise
+            # The count worked out for the card did not pass: one slot, which every setup
+            # before 2026-11-17 used, and the test again.
+            print(f"The setup test did not pass with {config['OCR_HUNYUAN_SLOTS']} HunyuanOCR slots "
+                  f"({str(first).splitlines()[0]}); trying one slot.")
+            config["OCR_HUNYUAN_SLOTS"] = "1"
+            write_environment(environment_path, {"OCR_HUNYUAN_SLOTS": "1"})
+            identity = environment_identity(options, config, engines, devices, lock)
+            fingerprint = setup_fingerprint(identity)
+            state.update({"identity": identity, "fingerprint": fingerprint, "updated_at": now()})
+            atomic_json(state_path, state)
+            state["smoke"] = run_smokes(options, config, engines, devices, fingerprint, paddle_need)
     except (SetupError, OSError, ValueError) as exc:
         state.update({"status": "action-required", "error": str(exc), "updated_at": now()})
         atomic_json(state_path, state)
