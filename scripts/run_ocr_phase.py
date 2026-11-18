@@ -252,6 +252,7 @@ LOG_LIMIT = 1024 * 1024
 HUNYUAN_SCRIPTS = ("run_hunyuanocr.py", "run_hunyuanocr_second_look.py")
 PADDLE_SCRIPTS = ("run_paddleocr_vl.py",)
 BOOK_SCRIPTS = ("ocr_book.py",)
+BATCH_SCRIPTS = ("ocr_batch.py",)       # --ocr BATCH: ocr_book.py for every book of the batch, in one window
 
 
 class PhaseError(RuntimeError):
@@ -672,6 +673,20 @@ def _paddle_need(options: argparse.Namespace) -> tuple[int, str]:
     return need, "Paddle" if need == PADDLE_MIB else f"Paddle, {need // _paddle_pool.WORKER_SHARE_MIB} workers"
 
 
+def batch_engines(arguments: list[str]) -> tuple[str, ...]:
+    """The engines of the batch that `ocr_batch.py --ocr BATCH` reads: its batch.json names the
+    route every book of it was started with."""
+    from _ocr_engines import ROUTES
+    folders = [item for item in arguments if not item.startswith("-")]
+    if "--ocr" not in arguments or len(folders) != 1:
+        raise PhaseError("Of ocr_batch.py only `--ocr BATCH` runs in a hand-over window: its other calls need no GPU")
+    record = Path(folders[0]).expanduser() / "batch.json"
+    try:
+        return ROUTES[json.loads(record.read_text(encoding="utf-8"))["route"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise PhaseError(f"Cannot read the batch's OCR route from {record}: {exc}") from exc
+
+
 def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
     """The GPU memory (MiB) the engines of RUNNER need: the largest of them,
     since one call runs its engines one after another, and what it is."""
@@ -700,14 +715,17 @@ def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
             return _paddle_need(options)
         if name == "run_apple_vision_ocr.py":
             return 0, "Apple Vision (system-managed memory)"
-        if name in BOOK_SCRIPTS:
+        if name in BOOK_SCRIPTS or name in BATCH_SCRIPTS:
             import ocr_book
             from _ocr_engines import resolve_engines
             engine_options = argparse.Namespace(**dict(vars(options), device=None))
             try:
-                book_options, _ = ocr_book.build_parser().parse_known_args(runner[index + 1:])
-                engines = resolve_engines(options.engine, single_engine=options.single_engine,
-                                           book=book_options.book.expanduser())
+                if name in BATCH_SCRIPTS:
+                    engines = batch_engines(runner[index + 1:])
+                else:
+                    book_options, _ = ocr_book.build_parser().parse_known_args(runner[index + 1:])
+                    engines = resolve_engines(options.engine, single_engine=options.single_engine,
+                                               book=book_options.book.expanduser())
             except SystemExit as exc:
                 raise PhaseError("Cannot read ocr_book.py arguments for its memory estimate") from exc
             except ValueError as exc:
@@ -1272,6 +1290,13 @@ def startup_need(runner: list[str]) -> tuple[float, str]:
                                              book=Path(options.book).expanduser()))
             except ValueError as exc:
                 raise PhaseError(str(exc)) from exc
+            if len(names) > 1:
+                names.append("second-look")
+        elif name in BATCH_SCRIPTS:
+            # Each book keeps its own measurement, and any of them may be the first of a call:
+            # the default, which a book's own call then corrects for itself.
+            times = {}
+            names = list(batch_engines(rest))
             if len(names) > 1:
                 names.append("second-look")
         elif name in engines:

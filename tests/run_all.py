@@ -60,7 +60,7 @@ DEFAULT_TIMEOUT = 900
 DEFAULT_JOBS = min(8, os.cpu_count() or 1)
 # Unit files whose test classes each run as a job of their own (the file's name, as in tests/).
 # test_handover.py waits real seconds in many tests: 130 s as one job, 40 s as its classes.
-SPLIT_BY_CLASS = ("test_handover.py",)
+SPLIT_BY_CLASS = ("test_handover.py", "test_ocr_batch.py")
 # Left out of each file's environment: the suite runs the same under any agent.
 AGENT_MODEL_VARIABLES = ("QWEN_CODE_MODEL", "QWEN_CODE_MODEL_IDENTITY", "JYUT_OCR_AGENT_IS_LOCAL_MODEL",
                          "PROOFREAD_MODEL")

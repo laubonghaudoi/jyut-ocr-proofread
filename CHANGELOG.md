@@ -1,5 +1,17 @@
 # 更新摘要
 
+## Unreleased — 幾個 PDF 一齊做：`ocr_batch.py`（issue #5）
+
+- 新 script `scripts/ocr_batch.py`，三條 command 做晒一批書：`ocr_batch.py A.pdf B.pdf ...` 開批（每個 PDF 一個普通嘅 `BOOK`，render 喺背景做，即刻返回）；`--ocr BATCH` 一個 call 逐本讀晒所有書；`--round BATCH` 逐輪行每本書嘅 profile、校對、定稿同清走，直到全部交付。
+- 點解：逐本做嘅話，本機模型每本書（前景分輪就每一輪）都要停、開一次，agent 亦要等完一本書嘅 OCR 先可以答另一本嘅題。實測一本 639 頁嘅書 OCR 66 分鐘、校對連定稿 39 分鐘，後者唔使 GPU。而家 OCR 成批一個窗口；一本書讀完即刻校對，同下一本嘅 OCR 重疊；所有書嘅題目夾埋一輪派。
+- `--round` 一個 call 最多等 540 秒（shell call 嘅 600 秒上限之內），淨係印幾行；佢開嘅步驟喺背景行、唔跟 call 結束。exit 10 有題等答（`BATCH/plans/round-NN/worker-KK.txt`，每個答題者一個檔）、75 未有題、4 OCR 嗰個 call 完咗但仲有書未讀、0 全部交付、1 有書失敗。一輪最多 `--max-workers` 個答題者、每個大約 `--items-per-worker` 條題（預設 20 個、10 條），派唔晒嘅留畀下一輪：唔會因為書多而令一個答題者一次過攞幾百題。實測每個答題者大約 38 條題嗰陣每條題 8.5 萬 input token，10 條或以下係 6.4 萬。
+- 一本書失敗（render、OCR 或者任何一步）淨係嗰本標 `failed` 連原因，其他書照做；`--retry-failed` 再試。背景步驟俾人殺咗，下一輪自己再開。主 agent 未等齊答題者就再跑 `--round`：佢等嗰輪嘅答案檔（預設派出後 600 秒內），唔會將同一包派兩次。冇人答嘅 bundle 派 4 次就停。
+- `run_ocr_phase.py` 識得 `ocr_batch.py --ocr BATCH`：按批嘅路線估顯存同啟動時間，所以成批可以包喺一個交接窗口（`--background` 或者前景分輪）。
+- 冇改任何單本書嘅 script：每本書行嘅就係 `SKILL.md` 四嘅 command，`BOOK` 入面冇批嘅檔。`BATCH/timeline.jsonl` 記每步嘅開始、結束同秒數，`BATCH/batch-status.json` 記每本書去到邊。
+- `SKILL.md` 四加〈幾個 PDF 一齊做〉、八加一批書點續；`references/long-book-workflow.md` 加同名一節。
+- 測試 `tests/test_ocr_batch.py`（33 個，離線）：真嘅 `ocr_batch.py`、`packet_dispatch.py`、PacketClient 同 `apply_packet_answers.py`，每本書嘅步驟用守住同一個契約嘅替身。涵蓋：兩本書由 PDF 到交付而且同一輪答題者服務兩本書；第一本校對嗰陣第二本仲讀緊；OCR、render、校對失敗各自唔影響另一本；時間預算用完喺兩本書之間停；一輪唔超過平台嘅答題者數；冇寫答案嘅答題者嗰幾包下一輪再派；http 後端等 OCR 完、一次一本、唔問人；單引擎路線；交接識得批嘅 command。
+- 實機驗證（2026-11-18，真引擎，細嘅睇圖模型做答題者）：由真書切出嚟嘅兩個 PDF（8 頁同 6 頁）。開批之後 render 各 2 秒；一個交接 call 逐本讀晒（68 秒同 70 秒；本機模型當時冇開，所以冇嘢要停）；第一本一讀完就出 profile 題，第二本仲讀緊；7 輪共 124 條題，一輪最多 5 個答題者；兩本都交付去 PDF 隔籬，`BOOK` 自動清走。答題者每條題平均 6.4 萬 input token。
+
 ## Unreleased — GPU 交接：唔係本機模型嘅 agent 可以一個窗口做晒成個 OCR（issue #3）
 
 - `run_ocr_phase.py --background`：畀「唔係用嗰部本機模型諗嘢」嘅 agent（雲端 agent）用。呢個 call 冇時間預算，agent 將佢放背景、用 `wait_for_run.py` 等；成本書一個窗口，本機模型淨係停一次、開一次。以前一律要前景分輪（`OCR_PHASE_MAX_SECONDS`，通常 540 秒），每一輪結束都開返模型、下一輪再停：script 自己記低嘅實測係一本 609 頁嘅書，兩個引擎合共 7.5 分鐘用喺分段度；一本 639 頁嘅書今次分咗 9 輪。

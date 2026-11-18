@@ -20,7 +20,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - 以 PDF 圖像為最終依據：保留原有異體字、舊字形同舊式標點（頁面印乜字形就寫乜字形），唔好靜靜正規化，亦唔好過度古化；唔好憑空補字；原書嘅 `[]`、`〈〉`、`□` 呢類符號唔可以當 residual 一律刪；既有轉錄（連你自己上一版）唔係 ground truth，只係底稿。
 - 輸出：只刪書眉、頁碼、版心／書口、印章、索書號、條碼同館藏印；正文數字、註號、圖表入面嘅字同表外說明照轉。印出嘅 `*` 寫 `\*`，雙圈句號寫 `。。`。註：引用 `[^n]` 留喺原位，定義預設留喺頁底，同一原印號再用就寫 `[^n-2]`，得一半就留一半。表：橫排表照原行列；直排表將由右至左嘅直欄變成由上至下嘅行，唔按內容重排；冇表頭或者有合併格用 HTML `<table>`；跨頁續表合併。交付稿冇頁碼分隔。
 - **唔可以話「已逐頁視覺校對」「已逐頁同 PDF 對照」**：流程淨係喺佢問嘅位睇圖。定唔到嘅位喺 `doubts.md`，冇列出嚟嘅字唔代表一定啱。
-- 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。
+- 唔停低問人：疑點由流程問校對者，異體由規則揀（異體亦唔使人裁），final audit 嘅錯誤亦當疑點照交付；定唔到嘅寫入 `doubts.md`，成個 run 冇一步等人。題多、要等好耐、要用好多 token 都唔係停低問用戶嘅理由：一直做到交付。
 - 引擎冇裝好，runner 出 ERROR 講缺乜：照講畀用戶知，唔好改用其他引擎或者其他 OCR 工具。
 - 唔好成份讀 `references/` 入面嘅檔：照十淨係讀嗰一節。
 
@@ -32,6 +32,8 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - 用戶睇 PDF 隔籬嘅 `X-draft.md`（未校對草稿）、`X.md`（定稿）、`X-doubts.md`（疑問清單），加咗 `--extract-figures` 先有 `X-圖/`：腳本自己抄，抄唔到嗰行會講原因。由掃描圖資料夾開嘅書冇 PDF：唔抄，用戶睇 `BOOK/draft.md`、`BOOK/final.md`、`BOOK/doubts.md`（抽圖就加 `BOOK/figures/`），`BOOK` 唔清走。
 
 ## 四、點跑：一步一個 command
+
+用戶一次過畀兩個或以上嘅 PDF：唔好逐本行下面六步，照本節尾〈幾個 PDF 一齊做〉。
 
 1. **Render**（前景，純 CPU）：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py PDF BOOK`（第二個參數係 `BOOK`，唔好畀佢 `BOOK/renders`；現成掃描圖：`"$JYUT_OCR_PYTHON" scripts/survey_pdf.py BOOK --images-dir DIR`）。A 套可以逐個睇 `BOOK/survey-report.json` 嘅 `blank_pages` 全頁一眼，真係空白先喺 `page-manifest.json` 嗰頁加 `"marker_expected": false`；B 套唔睇，照正常頁跑。
 2. **OCR**：`env.sh` 有 `OCR_PHASE_RELEASE_CMD`（本機模型佔住 GPU）就照五嘅交接前景跑 `"$JYUT_OCR_PYTHON" scripts/run_ocr_phase.py -- "$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1; echo "exit=$?"; grep -F '[ocr-book] DRAFT' BOOK/ocr.log; tail -3 BOOK/ocr.log`（你唔係用呢部本機模型諗嘢，例如雲端 agent：改為背景跑 `"$JYUT_OCR_PYTHON" scripts/run_ocr_phase.py --background -- "$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1`，用 `wait_for_run.py BOOK BOOK/ocr.log` 等，成本書淨係停、開本機模型一次，見五）；冇就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK > BOOK/ocr.log 2>&1`，用 `wait_for_run.py BOOK BOOK/ocr.log` 等。佢依次做引擎 B（HunyuanOCR）、草稿 `BOOK/draft.md`、引擎 A（PaddleOCR-VL）同引擎 B 補讀。草稿一出（唔等引擎 A），log 有 `[ocr-book] DRAFT 路徑` 行，`wait_for_run.py` 嗰行尾亦有 `; DRAFT 路徑`：第一次見到就用一行話畀用戶知草稿喺邊，唔使等佢回覆；冇呢行（寫唔到）亦唔阻流程。exit 0 之後再跑 `"$JYUT_OCR_PYTHON" scripts/build_draft.py BOOK`（補讀改咗引擎 B 嘅頁）。
@@ -45,6 +47,19 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 **純 Apple Vision**：第 2 步直接跑 `"$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine apple-vision`，唔包 `run_ocr_phase.py`，唔加 OCR 嘅 `--single-engine`，冇 HF 模型／Hunyuan 補讀／未校對草稿。跳過第 3 步；第 4 步用 `"$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-vision BOOK/proofread --single-engine`；第 5 步用 `"$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision`。B 套校對加 `--backend http`；工作檔保留，唔跑 `--all`。
 
 **Hunyuan＋Paddle**：第 2 步可明確加 `--engine hunyuan-paddle`，其餘按上面雙引擎步驟。Linux／WSL2 保留單引擎例外：第 2 步用 `ocr_book.py BOOK --engine hunyuan`（有模型交接就包 `run_ocr_phase.py`）；跳過第 3 步，第 4、5 步按純 Vision 單引擎命令，但底稿目錄用 `BOOK/ocr-hunyuan`。macOS 唔接受 Hunyuan-only。
+
+**幾個 PDF 一齊做**（`ocr_batch.py`）：所有書嘅 OCR 喺一個 call 入面逐本讀（有交接就係一個窗口，本機模型淨係停、開一次）；一本書讀完就即刻校對，唔等其餘嘅書；所有書嘅題目夾埋一輪派。三條 command，依次係「開批」「OCR」「逐輪」，`BATCH` 係開批嗰條印嘅路徑：
+
+- **開批**（前景，即刻返回；render 佢自己喺背景做）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py A.pdf B.pdf ...`。每個 PDF 一個普通嘅 `BOOK`，開喺 `JYUT_OCR_WORK_ROOT` 之下，名佢自己起。佢印 `[batch] BATCH 路徑`，同埋後面兩條寫成嘅 command（`NEXT 1`、`NEXT 2`）：照抄嚟用。
+- **OCR**（一個 call 讀晒全部書）：照 `NEXT 1`。冇 `OCR_PHASE_RELEASE_CMD` 就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --ocr BATCH > BATCH/ocr.log 2>&1`；有就照五包 `run_ocr_phase.py`：你唔係用嗰部本機模型諗嘢就加 `--background` 放背景，你係（一 B）就前景分輪，exit 75 再叫。放咗背景就唔使等佢：即刻去逐輪嗰條。
+- **逐輪**（前景，tool call timeout 開到最大；一個 call 最多等 540 秒，淨係印幾行）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL --max-workers N`（`MODEL` 照六第 4 步；`N` 係一 A 定嗰個，冇 subagent 就唔使加；B 套改為 `--round BATCH --backend http`，全部書 OCR 完先開始校對）。佢自己行每本書嘅第 3 至 6 步：步驟喺背景行，唔使你開、唔使 `wait_for_run.py`；派工同交答案都係佢做，唔使照六跑 `packet_dispatch.py`。照最尾 `[batch] RESULT exit=N`：
+  - **10** 有題等答：`ANSWERERS K` 行講幾多個、喺邊個目錄。每個 `worker-KK.txt` 開一個答題者，**一次過開晒**，prompt 淨係一句 `Read <嗰個檔嘅完整路徑> and do exactly what it says.`；等齊佢哋返嚟（唔好早行、唔好中途停佢哋），再跑同一條。冇 subagent：你自己就係唯一嘅答題者，逐個檔順序照做，全部寫好先再跑同一條。
+  - **75** 未有題（仲讀緊書或者行緊步驟；或者上一輪仲有答題者未寫好答案，佢會等、唔會將同一包派多次）：即刻再跑同一條，description 寫第幾輪；
+  - **4** 仲有書未讀，但 OCR 嗰個 call 已經完咗：嗰行抄咗佢最尾嘅 RESULT，照五嘅 exit 碼處理，再開 OCR 嗰條；
+  - **0** 全部書交付晒：每本嘅 `[finish] RESULT` 行、交付檔同 `[clean] RESULT` 行都印咗，照九逐本講；
+  - **1** 做完但有書失敗：`failed:` 行講邊本、點解，其餘嘅書照樣交付咗。照實話畀用戶知；原因改好先加 `--retry-failed` 再跑（OCR 失敗嘅仲要再開 OCR 嗰條）；
+  - **2** 參數錯，或者另一個 `--round` 仲跑緊。
+- 邊本書去到邊：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --status BATCH`。交付咗嘅書佢自己清走 `BOOK`（即第 6 步；加 `--keep-work` 就留），失敗嘅書留低。單引擎路線：開批嗰條加 `--engine apple-vision` 或者 `--engine hunyuan`，佢自己用上面兩段嘅單引擎 command。細節見 `references/long-book-workflow.md`〈幾個 PDF 一齊做（ocr_batch.py）〉。
 
 ## 五、長步驟同 GPU 交接
 
@@ -93,6 +108,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 2. 由上而下第一個啱嘅：有 `BOOK/finish/` → 第 5 步；有 `BOOK/proofread/` 或者 `book-profile.json` → 第 4 步；有 `BOOK/ocr-hunyuan/` 或者淨係 manifest → 第 2 步（照四.2 揀：有 `OCR_PHASE_RELEASE_CMD` 就一樣經五嘅交接前景跑同一條 `run_ocr_phase.py` command，唔好直接跑 `ocr_book.py`）。每個 script 都跳過已經封好嘅頁；A 套未答嘅 wave 照答。
 3. 舊版技能封好嘅頁同 OCR 底稿照收，唔重做（限未變嘅原生 Paddle／Hunyuan 輸入）：run report 標 `legacy`。Vision／MLX 要符合新版座標、版面同引擎身份封條；舊 Vision 原始座標唔當新版版面用。JSON 版面或者 backend 變咗會拒絕續用，照 ERROR 處理指定頁，唔自動覆蓋。
 4. 第 4 步一開始 exit 2，`ERROR` 以 `resume with --no-…` 開頭：照嗰行加齊，之後呢本書每次都加；唔好 `--overwrite` 成本，唔好重跑 `book_profile.py`。
+5. 一批書（四〈幾個 PDF 一齊做〉）：`BATCH` 喺 `JYUT_OCR_WORK_ROOT` 嘅 `batches/` 入面；同一堆 PDF 再跑開批嗰條亦會認返同一個 `BATCH`，乜都唔重做。跟住直接跑逐輪嗰條：佢講每本書去到邊；exit 4 就再開 OCR 嗰條。
 
 ## 九、同用戶講嘢
 
@@ -105,7 +121,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 用 `grep -n '^##' FILE` 搵行號，由嗰節標題讀到下一個同級或者更高級嘅標題。
 
-- `references/long-book-workflow.md`：〈三次交付同本書目錄〉、〈OCR 階段（ocr_book.py）〉、〈Book profile 同異體〉、〈逐頁校對（proofread_pages.py）〉、〈封條同續跑〉、〈一個 command 做完（finish_book.py）〉、〈清走工作檔（clean_book.py）〉、〈圖：淨係留圖片（--extract-figures）〉、〈疑點（doubts.md）〉、〈用戶決定嘅規則（decisionChanges）〉、〈開關〉、〈修書計數（_book_lint.py）〉、〈agent 規矩嘅實測根據〉。用戶問某類疑點、某個開關點解，或者 exit 碼唔喺上面，先讀。
+- `references/long-book-workflow.md`：〈三次交付同本書目錄〉、〈OCR 階段（ocr_book.py）〉、〈Book profile 同異體〉、〈逐頁校對（proofread_pages.py）〉、〈封條同續跑〉、〈一個 command 做完（finish_book.py）〉、〈清走工作檔（clean_book.py）〉、〈幾個 PDF 一齊做（ocr_batch.py）〉、〈圖：淨係留圖片（--extract-figures）〉、〈疑點（doubts.md）〉、〈用戶決定嘅規則（decisionChanges）〉、〈開關〉、〈修書計數（_book_lint.py）〉、〈agent 規矩嘅實測根據〉。用戶問某類疑點、某個開關點解，或者 exit 碼唔喺上面，先讀。
 - `references/local-ocr.md`：〈GPU 交接（本機模型佔住 GPU）〉、〈GPU 交接期間嘅其他 client〉、〈模型同裝置〉、〈輸出、續跑同核圖〉、〈等背景步驟跑完（`wait_for_run.py`）〉：交接、底稿 blocked 或者截斷嗰陣讀。
 - `references/install.md`：安裝、平台、本機校對模型。
 - `references/subagent-orchestration.md`：A 套 bundle 每種題點答、subagent 分工。

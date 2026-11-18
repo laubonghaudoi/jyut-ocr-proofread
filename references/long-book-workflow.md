@@ -16,6 +16,7 @@
 - [修書（repair_book.py）](#修書repair_bookpy)
 - [一個 command 做完（finish_book.py）](#一個-command-做完finish_bookpy)
 - [清走工作檔（clean_book.py）](#清走工作檔clean_bookpy)
+- [幾個 PDF 一齊做（ocr_batch.py）](#幾個-pdf-一齊做ocr_batchpy)
 - [圖：淨係留圖片（--extract-figures）](#圖淨係留圖片--extract-figures)
 - [疑點（doubts.md）](#疑點doubtsmd)
 - [用戶決定嘅規則（decisionChanges）](#用戶決定嘅規則decisionchanges)
@@ -167,6 +168,20 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 - **`clean_book.py BOOK --all`（交付之後最後一步）**：成個 `BOOK` 連未改過嘅 `X-draft.md` 一齊刪，PDF 隔籬嘅 `X.md`、`X-doubts.md`、`X-圖/` 留低（用戶 2026-10-03 決定：交付檔就係本書，唔再原地修書）。
 - **拒絕（exit 3，乜都冇刪）**：上次 `finish_book.py` 唔係 exit 0；PDF 搵唔到或者 hash 唔啱（掃描圖資料夾開嘅書冇 PDF，一定係呢個：見〈三次交付同本書目錄〉）；有 `finish_book.py` 或者其他程序仲用緊本書（`wait_for_run.py` 同 `tail -f` 唔計）；PDF 隔籬嘅交付檔唔喺度。`--all` 另外：`X.md`、`X-doubts.md` 或者 `X-圖/` 嘅圖用戶改過或者刪咗；PDF 或者交付檔喺 `BOOK` 入面；`BOOK` 有 `*.edited-*.md`、`backup-*/` 或者 `.git`；`final.md` 之後有頁重新封過。照講畀用戶知，唔好自己刪。
 - 刪到一半停咗（exit 1）：照嗰行講嘅再跑同一條命令，已刪嘅列晒。`BOOK/cleaned.json` 記刪咗乜、留低乜、慳返幾多、點續（停咗一半都寫，加 `stopped`）；stdout 最尾 `[clean] RESULT exit=N DONE|STOPPED|REFUSED ...`。`--dry-run` 淨係列。
+
+## 幾個 PDF 一齊做（ocr_batch.py）
+
+- **點解**：逐本做，每本書都要成個流程行完先到下一本：本機模型每本書停、開一次（前景分輪就每輪一次），agent 要等完一本書嘅 OCR 先可以答另一本嘅題。實測一本 639 頁嘅書（2026-11-17）：OCR 66 分鐘，校對連定稿 39 分鐘，後者完全唔使 GPU。所以一批書：OCR 一個 call 逐本讀（引擎嘅模型實測 3 至 5 秒載入，逐本用 `ocr_book.py` 冇損失）；讀完嗰本即刻校對，同下一本嘅 OCR 重疊；所有書嘅題目夾埋派。
+- **每本書仍然係普通嘅 `BOOK`**，批淨係一張清單同自己嘅記號，`BOOK` 入面冇批嘅檔，SKILL.md 四嘅單本 command 隨時用得。`BATCH` 入面：`batch.json`（書單、路線、每本去到邊步、每個 bundle 派過幾次）、`marks/`（每本每步嘅 lock 同 exit 碼，`NAME.ocr.done`／`NAME.ocr.failed`）、`logs/NAME-STEP-NN.log`（每步嘅輸出）、`plans/round-NN/`（每輪嘅 `worker-KK.txt` 同 `plan.json`）、`batch-status.json`（每次 `--round` 重寫：每本嘅階段、兩個引擎讀咗幾多頁、封咗幾多頁、幾多題等緊、失敗原因）、`timeline.jsonl`（每步開始同結束連秒數、每輪派咗幾多題）、`ocr.log`（`--ocr` 嗰條嘅輸出）。
+- **名**：work root 入面已經有 `BOOK` 嘅 `page-manifest.json` 記住呢個 PDF（`source_pdf`）就用返佢，唔再 render；否則由 PDF 檔名轉成細階英文同數字，檔名冇英文字母（例如成個都係中文書名）就用裝住佢嗰個資料夾嘅名，撞名加 `-2`。`BATCH` 預設喺 `WORK_ROOT/batches/`，由 PDF 清單定名：同一條 command 再跑認返同一批，每本書去到邊照舊。
+- **Render**：開批嗰條即刻返回，render 喺背景逐本做（實測 16 核心：334 頁 41 秒，即 0.12 秒一頁）。`--ocr` 去到未 render 嘅書會等；冇人 render 緊就自己做。
+- **`--ocr BATCH`**：逐本跑 `ocr_book.py`（輸出加落 `BOOK/ocr.log`），做完再 `build_draft.py`。一本失敗就記低原因、讀下一本，最後 exit 1；有時間預算（`run_ocr_phase.py` 設嘅 `OCR_PHASE_DEADLINE`）而用完就 exit 75，同一條再跑。`run_ocr_phase.py` 識得呢條 command：按批嘅路線估顯存同啟動時間。`ocr_batch.py` 其他 call 唔使 GPU，包入交接會被拒絕。同一批唔可以有兩個 `--ocr` 一齊跑（第二個 exit 2）。
+- **`--round BATCH` 點行每本書**：OCR 完咗嘅書依次行 `book_profile.py`（`<=4` 頁或者單引擎冇呢步）、`proofread_pages.py`、`finish_book.py`，就係 SKILL.md 四嘅 command。Packet 後端第一次校對嗰陣，本書未有封好嘅頁就加 `--same-print-marks --unmarked-page-sample`，之後每次同一條；`--max-bundles` 用 `--max-workers` 個數。步驟喺背景行、唔跟 call 結束：唔同書最多 `--jobs` 個一齊（預設 4）；http 後端一次一本，而且等全部書 OCR 完先開始，因為 OCR 窗口入面本機模型停咗。一步 exit 10 或者 11：本書 `packets/` 未答齊就列入今輪，答齊就用 `--answered-by` 交答案（`apply_packet_answers.py`）再行同一步。`finish_book.py` exit 3（有頁未封）會再校對一次先再定稿，exit 4 再跑；exit 0 之後跑 `clean_book.py BOOK --all`（雙引擎路線先做；`--keep-work` 唔做），佢拒絕（exit 3）就照印，本書仍然算交付咗。
+- **一輪派幾多**：等緊答案嘅書，bundle 照書嘅次序排，大約 `--items-per-worker` 條題一個答題者（預設 10；校對嗰步同時加 `--max-items-per-bundle` 同一個數，因為一個 bundle 唔會拆開畀兩個答題者），一輪最多 `--max-workers` 個（預設 20）；多出嚟嘅留畀下一輪，所以排前嘅書最先答齊、最先行落去。有書仲行緊 profile 或者校對（即將有題）嗰陣最多等 90 秒先派，等佢哋入埋同一輪。一輪派出之後 `--answer-grace` 秒內（預設 600）再跑 `--round`，而嗰輪仲有答案檔未寫：佢等（到 `--wait` 就 exit 75），唔會將同一包派畀第二個答題者；過咗呢段時間仍然冇寫嘅包先再派。一個 bundle 派咗 4 次都冇人答齊，嗰本書當失敗，唔會無限派。
+- **點解每個答題者 10 條**：實測（細嘅睇圖模型做答題者；input token 差唔多全部係 cache 讀取）：每個答題者大約 38 條題嗰陣，每條題 8.5 萬 input token（一本 639 頁嘅書，1,682 條題、44 個答題者，2026-11-17）；10 條或以下係 6.4 萬（兩本短書，86 條題、10 個答題者，2026-11-18；啱啱 10 條嗰啲大約 5 萬）。亦唔係愈少愈平：答題者每一輪都要重讀自己嘅指示，未答任何題已經用咗大約 30 萬 token，所以淨係得 3 條題嗰個每條要 11.2 萬。20 條未量過。題少咗一輪就派少啲、輪數多啲；但 GPU 同時讀緊下一本書，輪數唔係成批書等嘅嘢。
+- **失敗唔累街坊**：render、OCR 或者任何一步失敗，淨係嗰本書標 `failed`，原因喺最尾幾行同 `batch-status.json`，其他書照行，最後 exit 1。`--retry-failed` 清走失敗記號再試（OCR 失敗嘅要再開 `--ocr` 嗰條）。背景步驟連 session 一齊俾人殺咗：下一個 `--round` 見到冇 exit 碼就再開，同一步斷多過三次先當失敗。
+- **exit 4**：仲有書等 OCR、冇任何步驟行緊、冇 `--ocr` 跑緊，而 `BATCH/ocr.log` 最尾有 `RESULT exit=N`（即係嗰個 call 完咗）：`--round` 抄嗰行出嚟。未開過 `--ocr`（冇 log）就係 exit 75，行尾講 `no --ocr call is reading right now`。
+- 未做：幾張卡或者幾部機分工；掃描圖資料夾開嘅書（一批淨係收 PDF）。
 
 ## 圖：淨係留圖片（--extract-figures）
 

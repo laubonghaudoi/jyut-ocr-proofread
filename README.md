@@ -218,6 +218,7 @@ flowchart TD
 | **單引擎**（安裝路線 ⑤；Linux 亦可明確用 Hunyuan 單引擎） | 部機淨係得一個引擎                                              | 第 ② 步淨係一個引擎讀（淨用 Apple Vision 就冇未校對草稿）；跳過第 ③ 步；第 ④ 步每頁對住原圖轉錄，底稿只係提示；第 ⑤ 步唔修書，工作檔留低 |
 | **本機模型校對**（`--backend http`）                   | 有本機 OpenAI-compatible 模型；agent 本身就係嗰個模型就一定要用 | 第 ③ ④ 步由腳本直接問模型，頁圖唔入 agent 嘅 context，亦冇 wave                                                                          |
 | **GPU 交接**                                           | 本機校對模型同 OCR 搶同一張 GPU                                 | 第 ② 步經 `run_ocr_phase.py` 跑：等模型其他 client 做完先停模型，OCR 跑完再開返                                                          |
+| **幾個 PDF 一齊做**（`ocr_batch.py`）                  | 一次過轉幾本書                                                  | 全部書嘅第 ② 步喺一個 call 逐本讀（有 GPU 交接就係一個窗口）；一本讀完即刻行第 ③ 至 ⑤ 步，同下一本嘅 OCR 重疊；所有書嘅題目夾埋一輪派   |
 
 雙引擎手動命令（喺技能根目錄，用安裝器配置嘅 `JYUT_OCR_PYTHON`）：
 
@@ -236,6 +237,14 @@ flowchart TD
 "$JYUT_OCR_PYTHON" scripts/ocr_book.py BOOK --engine apple-vision
 "$JYUT_OCR_PYTHON" scripts/proofread_pages.py BOOK/renders BOOK/ocr-vision BOOK/proofread --single-engine
 "$JYUT_OCR_PYTHON" scripts/finish_book.py BOOK --single-engine --ocr-a BOOK/ocr-vision
+```
+
+幾個 PDF 一齊做（第一條印出 `BATCH` 路徑同後面兩條寫成嘅 command；一本書失敗唔影響其他書）：
+
+```bash
+"$JYUT_OCR_PYTHON" scripts/ocr_batch.py A.pdf B.pdf C.pdf
+"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --ocr BATCH > BATCH/ocr.log 2>&1 &          # 全部書嘅 OCR，一個 call
+"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL           # 重複跑到 exit 0：10 有題等答，75 未有題
 ```
 
 長步驟放背景，用 `scripts/wait_for_run.py` 等。完整流程、exit 碼同續跑見 [`SKILL.md`](SKILL.md)；各步細節、每類疑點同開關見 [跑書流程](references/long-book-workflow.md)；引擎、裝置同 GPU 交接見 [本機 OCR](references/local-ocr.md)；冇可用 OCR 引擎、要人手分段轉錄見 [人手分段同 structured 定稿](references/structured-workflow.md)。

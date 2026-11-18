@@ -83,7 +83,7 @@ Paddle 嘅裝置一定係明確嘅 `gpu:N` 或者 `cpu`（`OCR_PADDLE_DEVICE`／
 兩種行法：
 
 - **前景分輪（預設）**：一個 tool call 一個交接，有時間預算（`OCR_PHASE_MAX_SECONDS`），做唔晒就 exit 75 再叫。每一輪結束都開返本機模型，因為 agent 可能正正係用嗰個模型：指令一返回佢就要個模型諗下一步。代價係每個分段都停、開模型一次（實測一本 609 頁嘅書，兩個引擎合共 7.5 分鐘用喺分段度）。
-- **背景一個窗口（`--background`）**：agent 嘅模型喺第二度（雲端 agent）先用。`run_ocr_phase.py --background -- …` 冇時間預算，agent 將佢放背景、用 `wait_for_run.py` 等；成本書（或者幾本書）一個窗口，本機模型淨係停一次、開一次。看門程序同前景一樣：個 call 俾人殺咗就開返模型。Agent 係本機模型嘅話會被拒絕（exit 2，乜都冇停），三個訊號任何一個中都算：`JYUT_OCR_AGENT_IS_LOCAL_MODEL=1`；Qwen Code 行緊校對用嗰個模型；或者行呢個 call 嘅 process（shell、agent）有連線去模型 server。
+- **背景一個窗口（`--background`）**：agent 嘅模型喺第二度（雲端 agent）先用。`run_ocr_phase.py --background -- …` 冇時間預算，agent 將佢放背景、用 `wait_for_run.py` 等；成本書一個窗口，本機模型淨係停一次、開一次；幾本書用 `ocr_batch.py --ocr BATCH`（SKILL.md 四〈幾個 PDF 一齊做〉），成批都係一個窗口。看門程序同前景一樣：個 call 俾人殺咗就開返模型。Agent 係本機模型嘅話會被拒絕（exit 2，乜都冇停），三個訊號任何一個中都算：`JYUT_OCR_AGENT_IS_LOCAL_MODEL=1`；Qwen Code 行緊校對用嗰個模型；或者行呢個 call 嘅 process（shell、agent）有連線去模型 server。
 
 喺 `env.sh` 設定：
 
