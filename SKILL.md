@@ -130,6 +130,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 - `references/long-book-workflow.md`：〈三次交付同本書目錄〉、〈OCR 階段（ocr_book.py）〉、〈Book profile 同異體〉、〈逐頁校對（proofread_pages.py）〉、〈封條同續跑〉、〈一個 command 做完（finish_book.py）〉、〈清走工作檔（clean_book.py）〉、〈幾個 PDF 一齊做（ocr_batch.py）〉、〈圖：淨係留圖片（--extract-figures）〉、〈疑點（doubts.md）〉、〈用戶決定嘅規則（decisionChanges）〉、〈開關〉、〈修書計數（_book_lint.py）〉、〈agent 規矩嘅實測根據〉。用戶問某類疑點、某個開關點解，或者 exit 碼唔喺上面，先讀。
 - `references/local-ocr.md`：〈GPU 交接（本機模型佔住 GPU）〉、〈GPU 交接期間嘅其他 client〉、〈模型同裝置〉、〈輸出、續跑同核圖〉、〈等背景步驟跑完（`wait_for_run.py`）〉：交接、底稿 blocked 或者截斷嗰陣讀。
 - `references/install.md`：安裝、平台、本機校對模型。
+- `references/cluster-bulk-ocr.md`：〈配方〉、〈點解咁分〉、〈兩個 OCR 引擎〉、〈校對模型〉、〈點跑〉、〈未量度同已知問題〉（H200 Slurm 叢集大批 OCR）。
 - `references/subagent-orchestration.md`：A 套 bundle 每種題點答、subagent 分工。
 - `references/packet-worker.md`：答題者（subagent）淨係讀呢一頁；你自己答包都係照佢。
 - `references/content-fidelity.md`：開 `--content-fidelity on` 之前讀。

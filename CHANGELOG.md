@@ -20,6 +20,12 @@
 - `ocr_batch.py --round`：第二次派題開始淨係印兩行短嘅（邊幾個 worker 檔、RESULT），成段指示同 command 喺每個 caller 第一次、之後每 25 次、同帶一次性選項（`--answerers-gone`、`--retry-failed`、`--not-started`）嗰次先印。160 頁實跑量到，呢啲輸出每次 1,300 字，佔主 agent context 增長嘅 35%，而主 agent 每個請求都要重讀成個 context：佢嘅成本去到每條題 0.46 美仙，係答題者嘅一半。
 - 同一次實跑量到 `c6e84fc` 嘅效果：題目排緊隊嗰陣 20 個位平均用到 18.2 個（之前 14.2），每分鐘答 38.8 條（之前同樣份量 27.5）；主 agent 冇因為成本自己停；384 個答題者有 1 個俾平台拒絕、之後重派。按 token 裝份量嘅估算喺現代書偏低（估 3.6 萬、實際 5.0 萬），45% 嘅答題者仍然過咗加價線，未改。
 - 未做：快路仲未由 book profile 量度一致率嚟開關，亦未有抽查；有出入嘅 block 仍然成段問；排版題仍然每頁一條。
+## Unreleased — 新文件：叢集大批 OCR 嘅配方（`references/cluster-bulk-ocr.md`）
+
+- 喺 H200 Slurm 叢集（Ubuntu 22.04、driver 570、冇 root）大批 OCR 嘅配方，2026-11-19 喺 M1 逐件量度：一個 OCR 節點（GPU 0 serve PaddleOCR-VL、GPU 1–3 三條 HunyuanOCR 線、GPU 4–7 兩個校對 replica）加其餘校對節點（每個 4 × TP2 + MTP 嘅 Qwen3.8-Flash-Next）。
+- 記低每個引擎同校對模型每張卡嘅吞吐、點解校對要大部分 GPU（每頁 GPU 時間約係 OCR 嘅 13 倍）、`ocr_batch.py` 嘅 http 路線點解唔啱叢集、點樣將單本 command 並排行。成條流程頭尾嘅吞吐未量度，量完補。
+- `SKILL.md` 十嘅參考清單加呢份。
+
 ## Unreleased — PaddleOCR-VL 可以交外部 VL 伺服器讀（sglang-server／vllm-server）
 
 - 問題（M1 叢集 H200，Paddle 3.3.1 CUDA 12.6 wheel，driver 570）：native PaddleOCR-VL 生成卡死：版面偵測做完，VL 逐 token 生成嗰陣一個 CPU 核 100%、GPU 0%，一頁永遠讀唔完（worker 900 秒超時）。試過 `CUDA_LAUNCH_BLOCKING`、`CUDA_MODULE_LOADING=EAGER`、stream-safe allocator、naive allocator，全部冇用；喺 embedding 外面包一層 Python 有時會好、有時唔會，靠唔住。
