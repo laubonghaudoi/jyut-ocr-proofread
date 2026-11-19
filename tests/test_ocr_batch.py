@@ -996,18 +996,42 @@ class HttpBackendTests(BatchCase):
 
 
 ANSWERER = r'''
-import json, re, sys
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
-if len(sys.argv) > 2:
-    print("I will not answer:", sys.argv[2])
+mode = sys.argv[2] if len(sys.argv) > 2 else ""
+def stand():
+    # Stands without ending, a process of its own under it: both are noted beside the worker file.
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    Path(sys.argv[1]).with_suffix(".pids").write_text(f"{os.getpid()} {child.pid}")
+    print("standing", flush=True)
+    time.sleep(600)
+if mode == "stand":
+    stand()
+elif mode != "stay" and mode:
+    print("I will not answer:", mode)
     sys.exit(1)
 for bundle in re.findall(r"^- (\S+bundle-\d+\.json) \(", text, flags=re.M):
     data = json.loads(Path(bundle).read_text(encoding="utf-8"))
     rows = [{"request_id": item["request_id"], "answer": "構件：略\\n定案：甲\\nRESEARCH: no"} for item in data["items"]]
     Path(data["expected_answers_file"]).write_text(json.dumps({"answers": rows}, ensure_ascii=False), encoding="utf-8")
-print("answered", sys.argv[1])
+print("answered", sys.argv[1], flush=True)
+if mode == "stay":
+    stand()
 '''
+
+
+def gone(pid: int) -> bool:
+    """Whether the process PID has ended (one that has ended and is not yet collected counts)."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return True
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state == "Z"
 
 
 class ScriptAnswererTests(BatchCase):
@@ -1051,6 +1075,48 @@ class ScriptAnswererTests(BatchCase):
             if code != 75:
                 break
         self.assertEqual(code, 0, out)
+
+    def pids(self) -> list[int]:
+        return [int(word) for file in (self.b.batch / "plans").glob("round-*/worker-*.pids")
+                for word in file.read_text().split()]
+
+    def test_an_answerer_still_running_when_its_time_is_over_is_stopped_with_what_it_started(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        code, out = b.round("--answerer-command", self.command("stand"), "--answer-grace", "2", wait=30)
+        self.assertEqual(code, 5, out)
+        self.assertIn("one stopped when its time was over is one of them", out)
+        self.assertIn("[ocr_batch] stopped: no answers 2 seconds (--answer-grace) after it was started", out)
+        pids = self.pids()
+        self.assertGreaterEqual(len(pids), 6)             # three answerers at least, each with a process under it
+        stopped = [file for file in (b.batch / "plans").glob("round-*/worker-*.log") if "[ocr_batch] stopped" in file.read_text()]
+        for file in stopped:
+            for word in file.with_suffix(".pids").read_text().split():
+                self.assertTrue(gone(int(word)), f"{file.name}: process {word} is still there")
+        self.assertGreaterEqual(len(stopped), 3)
+        # Any still standing were handed out in the call's last pass; the next call, their time over, stops them.
+        time.sleep(2.2)
+        b.round("--answerer-command", self.command(), "--answer-grace", "2", wait=1)
+        for pid in pids:
+            self.assertTrue(gone(pid), f"process {pid} is still there")
+
+    def test_an_answerer_that_wrote_its_answers_and_does_not_end_is_stopped_when_its_time_is_over(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        for _ in range(60):
+            code, out = b.round("--answerer-command", self.command("stay"), "--answer-grace", "3", wait=6)
+            if code != 75:
+                break
+        self.assertEqual(code, 0, out)                    # the answers counted: the books were delivered
+        pids = self.pids()
+        self.assertTrue(pids)
+        time.sleep(3.2)
+        b.round("--answerer-command", self.command(), "--answer-grace", "3", wait=1)
+        for pid in pids:
+            self.assertTrue(gone(pid), f"process {pid} is still there")
+        self.assertEqual(b.record().get("ending"), [])
 
     def test_a_command_that_cannot_be_started_is_said_at_once(self) -> None:
         b = self.b

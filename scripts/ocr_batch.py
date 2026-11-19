@@ -94,7 +94,11 @@ process's working directory) and {batch} the batch folder; an answerer needs to 
 the bundles and their crops, and to write the answers files.  A share whose process has ended
 without its answers is handed out again at once; ANSWERER_FAILURES of them in a row with none
 answered in between end the call with exit 5 and the last lines the command wrote
-(BATCH/plans/round-NNNN/worker-KK.log).
+(BATCH/plans/round-NNNN/worker-KK.log).  A process still running when --answer-grace seconds
+are over is stopped, with whatever it started, before its share goes out again - it counts as
+one that ended without answers, and its log says so; one that wrote its answers and has not
+ended is given the same time, then stopped.  Found on the 28-case evaluation (2026-11-19, 288
+answerers of a command-line agent): one stood for 13 minutes without writing or ending.
 
 Why: measured on eight sample books (2026-11-19, 384 answerers), a main agent that starts the
 answerers makes about one request for every answerer, each reading its whole context again -
@@ -177,6 +181,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -906,6 +911,42 @@ def start_answerer(template: str, file: Path, batch: Path, work: str) -> int:
     return process.pid
 
 
+def process_mark(pid: int) -> str:
+    """When the process PID started, as ps prints it: with the number, what tells an answerer
+    from a later process that was given the same number."""
+    try:
+        done = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return " ".join(done.stdout.split())
+
+
+def stop_answerer(flight: dict[str, Any], why: str) -> None:
+    """End the answerer process of FLIGHT and whatever it started (it leads a session of its
+    own), and write WHY at the end of its log.  A process a call before this one started is
+    only stopped when it is still the one that was started then."""
+    pid = int(flight["pid"])
+    mine = next((process for process in STARTED if process.pid == pid), None)
+    if mine is None and flight.get("mark") and process_mark(pid) != flight["mark"]:
+        return
+    if flight.get("log"):
+        with contextlib.suppress(OSError), open(flight["log"], "a", encoding="utf-8") as log:
+            log.write(f"\n[ocr_batch] {why}\n")
+    for sign in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sign)
+        except OSError:
+            return
+        end = time.time() + STOP_SECONDS
+        while time.time() < end:
+            if not process_alive(pid):
+                return
+            time.sleep(0.05)
+
+
+STOP_SECONDS = 3                    # how long a stopped answerer is given to end before it is killed
+
+
 STARTED: list[subprocess.Popen] = []     # this call's answerer processes: polled, so that none stays a zombie
 
 
@@ -956,20 +997,39 @@ def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[d
                              for pair in last.get("bundles") or []]
     now = time.time()
     kept = []
+    ending = []
+    for old in record.get("ending") or []:
+        # Answered, its process not ended yet: given the rest of its time, then stopped.
+        if not process_alive(int(old["pid"])):
+            continue
+        if now - float(old.get("t") or 0) < grace:
+            ending.append(old)
+        else:
+            stop_answerer(old, f"stopped: its answers were written, and it had not ended {grace:g} seconds "
+                               f"(--answer-grace) after it was started")
     for flight in record.get("flights") or []:
         if "pid" in flight:
             # An answerer this script started: at work while its process runs and its answers
-            # are not all written.  Ended without them, its share goes out again at once.
+            # are not all written.  Ended without them, its share goes out again at once; still
+            # running when its time is over, it is stopped first - two answerers are not left
+            # writing one answers file, and a process that stands does not stay for good.
             if answered(flight):
                 record["answererFailures"] = 0
-            elif not process_alive(int(flight["pid"])):
-                record["answererFailures"] = int(record.get("answererFailures") or 0) + 1
-                record["answererLog"] = flight.get("log")
-            elif now - float(flight.get("t") or 0) < grace:
-                kept.append(flight)
+                if process_alive(int(flight["pid"])):
+                    ending.append({key: flight.get(key) for key in ("pid", "mark", "t", "log")})
+                continue
+            if process_alive(int(flight["pid"])):
+                if now - float(flight.get("t") or 0) < grace:
+                    kept.append(flight)
+                    continue
+                stop_answerer(flight, f"stopped: no answers {grace:g} seconds (--answer-grace) after it was started")
+            record["answererFailures"] = int(record.get("answererFailures") or 0) + 1
+            record["answererLog"] = flight.get("log")
         elif now - float(flight.get("t") or 0) < grace and unsettled(flight, now, settle):
             kept.append(flight)
     record["flights"] = kept
+    if ending or record.get("ending"):
+        record["ending"] = ending
     return record["flights"]
 
 
@@ -1098,7 +1158,8 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
         record["answererFailures"] = 0
         write_json(batch / "batch.json", record)
         say(f"[batch] RESULT exit={EXIT_ANSWERERS_FAIL} ANSWERERS FAIL - {ANSWERER_FAILURES} answerer processes in a row "
-            f"ended without writing their answers; the last one's output ({log}): "
+            f"ended without writing their answers (one stopped when its time was over is one of them); "
+            f"the last one's output ({log}): "
             f"{tail(Path(log), 6) if log else '-'} - tell the person: the command is --answerer-command's "
             f"({arguments.answerer_command}); nothing is lost, and the same round command carries on once it works")
         return EXIT_ANSWERERS_FAIL
@@ -1134,6 +1195,7 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
                     for flight in fresh:
                         file = out / f"worker-{flight['worker']:02d}.txt"
                         flight["pid"] = start_answerer(arguments.answerer_command, file, batch, record["workRoot"])
+                        flight["mark"] = process_mark(flight["pid"])
                         flight["log"] = str(file.with_suffix(".log"))
                 except OSError as error:
                     record["flights"] = [flight for flight in record["flights"] if flight not in fresh or "pid" in flight]
