@@ -293,7 +293,7 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 
 `book_profile.py`：`--no-learned-heads`（唔學書眉）、`--no-doubled-notation`、`--force-calibrate-engines`（短檔都校準引擎）、`--probe-pages`、`--pages`、`--max-crops`、`--reuse-engines`（同一批頁、同一個模型就沿用上次嘅引擎量度）、`--no-inflight-cap`、`--workers`。
 
-`repair_book.py`（`finish_book.py` 叫，agent 唔使直接用；每個關一個階段）：`--no-furniture`（書眉、卷次、頁碼、頁邊漏字）、`--no-marks`（引擎 B 代標點字、直排括號、標題符號）、`--no-brackets`（編者括號〔〕）、`--no-contents`（目錄同篇）、`--no-title-page`（由右至左印嘅題名頁）、`--no-levels`（標題級數）、`--no-paragraphs`（頁內分段）、`--no-joins`（分頁位 label）、`--no-runs`（兩個引擎都讀到但頁面冇嘅數字、拉丁字、假名、□、註號同標點）、`--no-forms`（中文入面嘅半形標點轉全形、冇引擎讀到嘅著重號）、`--no-script`（簡體書嘅繁體裁決答案）、`--no-words`（同一讀法幾種寫法）。另有 `--output`、`--resume`、`--pages`、`--workers` 同輸入路徑（`--assembled`、`--page-sources`、`--proofread`、`--renders`、`--ocr-a`、`--ocr-b`、`--profile`、`--page-manifest`）。
+`repair_book.py`（`finish_book.py` 叫，agent 唔使直接用；每個關一個階段）：`--no-furniture`（書眉、卷次、頁碼、頁邊漏字）、`--no-marks`（引擎 B 代標點字、直排括號、標題符號）、`--no-brackets`（編者括號〔〕）、`--no-contents`（目錄同篇）、`--no-title-page`（由右至左印嘅題名頁）、`--no-levels`（標題級數）、`--no-paragraphs`（頁內分段）、`--no-joins`（分頁位 label）、`--no-runs`（兩個引擎都讀到但頁面冇嘅數字、拉丁字、假名、□、註號同標點）、`--no-notes`（全書連續編號嘅註：兩三位數嘅註號同佢哋嘅註，按兩個引擎嘅讀法同頁內連續定號寫返）、`--no-forms`（中文入面嘅半形標點轉全形、冇引擎讀到嘅著重號）、`--no-script`（簡體書嘅繁體裁決答案）、`--no-words`（同一讀法幾種寫法）。另有 `--output`、`--resume`、`--pages`、`--workers` 同輸入路徑（`--assembled`、`--page-sources`、`--proofread`、`--renders`、`--ocr-a`、`--ocr-b`、`--profile`、`--page-manifest`）。
 
 `finish_book.py`、`clean_book.py` 嘅開關見 `SKILL.md` 第七節。
 

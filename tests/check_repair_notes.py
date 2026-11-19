@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Offline checks of N9 (scripts/_repair_notes.py, the notes stage of
+repair_book.py): the numbers of a page's notes and their calls where the
+book numbers its notes on from page to page.
+
+- a page whose calls and notes 64 and 65 the page lacks, engine A reading
+  ⑥④ and ⑥5 (circled glyphs, a circled glyph and a plain figure) and engine
+  B the calls as superscripts: written ⑥④ ⑥⑤ at both, and finalize pairs
+  them (the whole finish);
+- the bench's page 77: engine B reads the notes 72-74 as \\textcircled{7},
+  {8}, {9} (its \\t a tab) and the calls as {2}, {3}, {4}, engine A one call
+  as ⑦⑧: 72-74 written at the notes and the calls;
+- a note numbered 240 that engine A reads ⑳ and engine B
+  $\\textcircled {240}$, its call engine A alone reads (⑳): ②④⓪ at both;
+- left: calls engine A reads ⑫ and ⑬ where engine B reads 19 at both (a
+  run neither engine backs the other on), and notes the page already holds;
+  --no-notes switches the stage off.
+
+No model, no GPU, no corpus: made-up books (tests/repair_fixture.py), each
+page changed only where a case is set up.
+
+Usage: python3 tests/check_repair_notes.py   (exits non-zero if any check fails)
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import offline  # noqa: E402,F401
+import repair_fixture as fx  # noqa: E402
+import repair_book  # noqa: E402
+import _footnotes  # noqa: E402
+
+FAILURES: list[str] = []
+TAB_CIRCLED = "\textcircled"   # engine B's \textcircled whose \t arrived as a tab
+
+
+def check(condition: bool, message: str) -> None:
+    print(f"{'ok  ' if condition else 'FAIL'} {message}")
+    if not condition:
+        FAILURES.append(message)
+
+
+def repair(root: Path, spec: dict, name: str, *argv: str) -> tuple[int, dict[int, str], list[dict]]:
+    book = fx.write_book(root / name, spec)
+    out = root / f"{name}-out"
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        status = repair_book.main(["--workers", "1", str(book), "--output", str(out), *argv])
+    pages = {int(p.stem.split("-")[1]): p.read_text(encoding="utf-8") for p in (out / "pages").glob("*.md")}
+    log = [json.loads(line) for line in (out / "repair-log.jsonl").read_text(encoding="utf-8").splitlines()]
+    return status, pages, log
+
+
+def rules(log: list[dict], page: int) -> list[str]:
+    return [r["rule"] for r in log if r["page"] == page]
+
+
+def spec_of() -> dict:
+    spec = fx.make_spec()
+    # Scan 14: notes 64 and 65 and their calls.
+    spec[14]["items"][1:1] = [("line", "春山居士云⑥④甲乙丙丁"), ("line", "秋夜居士曰⑥⑤戊己庚辛"),
+                              ("line", "⑥④〔明〕春風吹過"), ("line", "⑥⑤〔清〕小橋流水")]
+    spec[14]["aEdits"] = [("⑥⑤〔清〕", "⑥5〔清〕")]
+    spec[14]["bEdits"] = [("云⑥④", "云$ ^{64} $"), ("曰⑥⑤", "曰$ ^{65} $")]
+    spec[14]["sealedEdits"] = [("云⑥④", "云"), ("曰⑥⑤", "曰"), ("⑥④〔明〕", "〔明〕"), ("⑥⑤〔清〕", "〔清〕")]
+    # Scan 15: the bench's page 77.
+    spec[15]["items"][1:1] = [("line", "能食諸虫毒⑦②其實被形容"), ("line", "今皆化為土著⑦③亦步入"),
+                              ("line", "醞釀的過程⑦④所以明代"), ("line", "⑦②〔清〕鄭昌齡修"),
+                              ("line", "⑦③〔明〕劉熙祚修"), ("line", "⑦④〔美〕梁肇庭著")]
+    spec[15]["aEdits"] = [("⑦②〔清〕", "⑦2〔清〕"), ("⑦③〔明〕", "⑦3〔明〕"), ("過程⑦④", "過程⑦⑧")]
+    spec[15]["bEdits"] = [("毒⑦②", f"毒$ {TAB_CIRCLED}{{2}} $"), ("著⑦③", f"著$ {TAB_CIRCLED}{{3}} $"),
+                          ("程⑦④", f"程$ {TAB_CIRCLED}{{4}} $"), ("⑦②〔清〕", f"$ {TAB_CIRCLED}{{7}} $〔清〕"),
+                          ("⑦③〔明〕", f"$ {TAB_CIRCLED}{{8}} $〔明〕"), ("⑦④〔美〕", f"$ {TAB_CIRCLED}{{9}} $〔美〕")]
+    spec[15]["sealedEdits"] = [("毒⑦②", "毒"), ("著⑦③", "著"), ("程⑦④", "程"), ("⑦②〔清〕", "〔清〕"),
+                               ("⑦③〔明〕", "〔明〕"), ("⑦④〔美〕", "〔美〕")]
+    # Scan 16: a note numbered 240.
+    spec[16]["items"][1:1] = [("line", "依據前人研究②④⓪依據前文"), ("line", "②④⓪《明清史料》甲編")]
+    spec[16]["aEdits"] = [("究②④⓪", "究⑳"), ("②④⓪《", "⑳《")]
+    spec[16]["bEdits"] = [("究②④⓪", "究"), ("②④⓪《", "$\\textcircled {240}$《")]
+    spec[16]["sealedEdits"] = [("究②④⓪", "究"), ("②④⓪《", "《")]
+    # Scan 17: calls 193 and 194 that engine A reads ⑫ and ⑬ and engine B 19.
+    spec[17]["items"][1:1] = [("line", "分爭者也①⑨③崇禎帝"), ("line", "致垂政體①⑨④兩廣總督")]
+    spec[17]["aEdits"] = [("也①⑨③", "也⑫"), ("體①⑨④", "體⑬")]
+    spec[17]["bEdits"] = [("也①⑨③", "也$ ^{19} $"), ("體①⑨④", "體$ ^{19} $")]
+    spec[17]["sealedEdits"] = [("也①⑨③", "也"), ("體①⑨④", "體")]
+    # Scan 18: notes the page already holds.
+    spec[18]["items"][1:1] = [("line", "甲乙丙丁⑧①戊己庚辛"), ("line", "⑧①〔明〕田園雜記")]
+    return spec
+
+
+def main_checks(tmp: Path) -> None:
+    status, pages, log = repair(tmp, spec_of(), "notes")
+    check(status == 0, f"notes: the run exits 0 (exit {status})")
+    p = pages[14]
+    check("云⑥④甲" in p and "曰⑥⑤戊" in p and "⑥④〔明〕春風吹過" in p and "⑥⑤〔清〕小橋流水" in p
+          and "N9" in rules(log, 14),
+          f"N9: calls and notes 64 and 65 the page lacks are written as circled digits ({rules(log, 14)}, "
+          f"{p[p.find('春山'):p.find('春山') + 60]!r})")
+    text, report = _footnotes.convert(f"<!-- page_014 -->\n{p}")
+    check("[^64]" in text and "[^64]: 〔明〕" in text and "[^65]: 〔清〕" in text,
+          f"N9: finalize pairs the calls and notes N9 wrote ({text[text.find('春山'):text.find('春山') + 40]!r})")
+    p = pages[15]
+    check("毒⑦②其" in p and "著⑦③亦" in p and "程⑦④所" in p and "⑦②〔清〕" in p and "⑦③〔明〕" in p and "⑦④〔美〕" in p,
+          f"N9 on the bench's page 77: 72-74 written at the calls and the notes, engine B's 7-9 and 2-4 and engine A's "
+          f"⑦⑧ notwithstanding ({p[p.find('能食'):p.find('能食') + 50]!r})")
+    p = pages[16]
+    check("究②④⓪依" in p and "②④⓪《明清史料》" in p,
+          f"N9: a note numbered 240 (engine B \\textcircled{{240}}, engine A ⑳) and its call written ②④⓪ "
+          f"({p[p.find('依據'):p.find('依據') + 40]!r})")
+    p = pages[17]
+    check("N9" not in rules(log, 17) and "也崇" in p and "體兩" in p,
+          f"N9: calls engine A reads ⑫ ⑬ and engine B 19 19 are left ({rules(log, 17)})")
+    p = pages[18]
+    check("N9" not in rules(log, 18) and p.count("⑧①") == 2,
+          f"N9: notes and calls the page already holds are left ({rules(log, 18)})")
+    status, pages, log = repair(tmp, spec_of(), "notes-off", "--no-notes")
+    check(status == 0 and not any(r["rule"] == "N9" for r in log),
+          f"--no-notes switches the stage off ({sorted({r['rule'] for r in log})})")
+
+
+if __name__ == "__main__":
+    with tempfile.TemporaryDirectory() as directory:
+        main_checks(Path(directory))
+    print("all note-number checks passed" if not FAILURES else f"FAIL: {len(FAILURES)} failure(s)")
+    sys.exit(1 if FAILURES else 0)

@@ -131,6 +131,14 @@
    "note": "bench copy of this page (jyut-ocr-bench doukeoi-zingkeoi/s0077, 2026-11-18): Qwen3.8-Flash-Next set the notes as a bulleted list without their numbers (- 〔明〕…, both engines ⑦3〔明〕…); the notes were then not read as foot notes, the page's last line was a note's, and edge_safe withheld note 73's 44 / 6 / 13b-14a and the English note 74 (125 characters) in 2 of 3 runs. Fixed by B3 (_repair_brackets.note_line): the bullet goes where both engines open the line with a number."
   },
   {
+   "id": "exact-77-r2",
+   "page": 77,
+   "type": "contains_exact",
+   "value": "[^72]:",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench, 2026-11-18): the book numbers its notes on from page to page, printed as circled figures of two or three digits that the engines read each its own way (engine A ⑥④ ⑥5 ⑦3 ⑳, engine B ^{64} \\textcircled{2} \\textcircled{240}); no rule wrote them, so no note of the page became a footnote for any model (note F1 21-28). Fixed by N9 (_repair_notes.py, the notes stage): the page's notes and calls settled as one run of consecutive numbers and written as circled digits, which finalize pairs."
+  },
+  {
    "id": "golden-316-h4",
    "page": 316,
    "type": "golden_page",
@@ -191,6 +199,14 @@
      "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
     }
    }
+  },
+  {
+   "id": "exact-327-r1",
+   "page": 327,
+   "type": "contains_exact",
+   "value": "[^240]:",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench, 2026-11-18): the book numbers its notes on from page to page, printed as circled figures of two or three digits that the engines read each its own way (engine A ⑥④ ⑥5 ⑦3 ⑳, engine B ^{64} \\textcircled{2} \\textcircled{240}); no rule wrote them, so no note of the page became a footnote for any model (note F1 21-28). Fixed by N9 (_repair_notes.py, the notes stage): the page's notes and calls settled as one run of consecutive numbers and written as circled digits, which finalize pairs."
   },
   {
    "id": "golden-583-h8",
@@ -458,6 +474,14 @@
      "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
     }
    }
+  },
+  {
+   "id": "exact-75-r1",
+   "page": 75,
+   "type": "contains_exact",
+   "value": "[^64]:",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench, 2026-11-18): the book numbers its notes on from page to page, printed as circled figures of two or three digits that the engines read each its own way (engine A ⑥④ ⑥5 ⑦3 ⑳, engine B ^{64} \\textcircled{2} \\textcircled{240}); no rule wrote them, so no note of the page became a footnote for any model (note F1 21-28). Fixed by N9 (_repair_notes.py, the notes stage): the page's notes and calls settled as one run of consecutive numbers and written as circled digits, which finalize pairs."
   },
   {
    "id": "golden-608-m1",

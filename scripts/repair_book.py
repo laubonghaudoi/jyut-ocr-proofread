@@ -22,7 +22,8 @@ The run, in order:
    the editors' brackets 〔〕 the engines read (per page), contents, title page, heading levels, paragraphs and joins
    (book level), and the text runs (digits, Latin letters, kana, □,
    note calls ①) and the marks both engines read that the page lacks, with the marks of a refused
-   first answer that engine A confirms (_repair_runs.py); the marks' forms (ASCII marks of
+   first answer that engine A confirms (_repair_runs.py); the numbers of the notes and calls
+   of a book that numbers its notes on from page to page (_repair_notes.py); the marks' forms (ASCII marks of
    Chinese text full width, no emphasis markers); 裁決's answers in traditional
    script, in a book printed in simplified script, as phase 3 writes them
    now; last, one
@@ -77,6 +78,7 @@ import _repair_edits as re_  # noqa: E402
 import _repair_inputs as ri  # noqa: E402
 import _repair_model as rm  # noqa: E402
 import _repair_joins as rj  # noqa: E402
+import _repair_notes as rnotes  # noqa: E402
 import _repair_rules as rr  # noqa: E402
 import _repair_runs as rn  # noqa: E402
 import _repair_structure as rs  # noqa: E402
@@ -231,6 +233,17 @@ def runs_stage(context: Context) -> StageResult:
     return StageResult(plan.edits, plan.doubts)
 
 
+def notes_stage(context: Context) -> StageResult:
+    """The numbers of a page's notes and their calls where the book numbers
+    its notes on from page to page (_repair_notes N9), on the text the runs
+    stage leaves (its Western note lines among them); its edits pass the
+    page-edge check as the runs stage's do."""
+    plan = rnotes.note_numbers(context.book, context.model, context.ledger.texts, context.order(), context.facts())
+    plan.edits = rn.edge_safe(context.book, context.ledger.texts, context.order(), context.boundaries, plan.edits,
+                              plan)
+    return StageResult(plan.edits, plan.doubts)
+
+
 def forms_stage(context: Context) -> StageResult:
     """The marks' forms, on the text every other stage has written: ASCII
     marks of Chinese text full width, emphasis runs no engine read out
@@ -281,6 +294,7 @@ STAGES: tuple[Stage, ...] = (
     Stage("paragraphs", "--no-paragraphs", paragraphs_stage),
     Stage("joins", "--no-joins", joins_stage),
     Stage("runs", "--no-runs", runs_stage),
+    Stage("notes", "--no-notes", notes_stage),
     Stage("forms", "--no-forms", forms_stage),
     Stage("script", "--no-script", script_stage),
     Stage("words", "--no-words", words_stage),
@@ -297,6 +311,7 @@ STAGE_RULES = {
     "paragraphs": ["P6", "P8", "P5"],
     "joins": ["S", "T", "H", "L", "J", "P", "P6"],
     "runs": ["R1", "N1", "N5", "N8", "N6", "N7", "N2"],
+    "notes": ["N9"],
     "forms": ["K9", "K12"],
     "script": ["V1"],
     "words": ["W1"],
