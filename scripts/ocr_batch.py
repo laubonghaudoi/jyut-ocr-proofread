@@ -96,9 +96,12 @@ without its answers is handed out again at once; ANSWERER_FAILURES of them in a 
 answered in between end the call with exit 5 and the last lines the command wrote
 (BATCH/plans/round-NNNN/worker-KK.log).  A process still running when --answer-grace seconds
 are over is stopped, with whatever it started, before its share goes out again - it counts as
-one that ended without answers, and its log says so; one that wrote its answers and has not
-ended is given the same time, then stopped.  Found on the 28-case evaluation (2026-11-19, 288
-answerers of a command-line agent): one stood for 13 minutes without writing or ending.
+one that ended without answers, and its log says so.  One that wrote its answers and has not
+ended ENDING_SECONDS later is stopped too, and at once when the batch is over; its answers
+count and its place was free from the moment they were written.  Found with a command-line
+agent (2026-11-19): of 288 answerers of the 28-case evaluation one stood for 13 minutes, and
+of 201 of a sample batch 5 had written their answers and their result and did not end - the
+rest ended within 15 seconds of their last answers file.
 
 Why: measured on eight sample books (2026-11-19, 384 answerers), a main agent that starts the
 answerers makes about one request for every answerer, each reading its whole context again -
@@ -945,6 +948,7 @@ def stop_answerer(flight: dict[str, Any], why: str) -> None:
 
 
 STOP_SECONDS = 3                    # how long a stopped answerer is given to end before it is killed
+ENDING_SECONDS = 60                 # how long an answerer that wrote its answers is given to end by itself
 
 
 STARTED: list[subprocess.Popen] = []     # this call's answerer processes: polled, so that none stays a zombie
@@ -998,15 +1002,15 @@ def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[d
     now = time.time()
     kept = []
     ending = []
+    allowed = min(grace, ENDING_SECONDS)
     for old in record.get("ending") or []:
-        # Answered, its process not ended yet: given the rest of its time, then stopped.
+        # Answered, its process not ended yet: given a moment more, then stopped.
         if not process_alive(int(old["pid"])):
             continue
-        if now - float(old.get("t") or 0) < grace:
+        if now - float(old.get("since") or 0) < allowed:
             ending.append(old)
         else:
-            stop_answerer(old, f"stopped: its answers were written, and it had not ended {grace:g} seconds "
-                               f"(--answer-grace) after it was started")
+            stop_answerer(old, f"stopped: its answers were written, and it had not ended {allowed:g} seconds later")
     for flight in record.get("flights") or []:
         if "pid" in flight:
             # An answerer this script started: at work while its process runs and its answers
@@ -1016,7 +1020,7 @@ def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[d
             if answered(flight):
                 record["answererFailures"] = 0
                 if process_alive(int(flight["pid"])):
-                    ending.append({key: flight.get(key) for key in ("pid", "mark", "t", "log")})
+                    ending.append({"since": now, **{key: flight.get(key) for key in ("pid", "mark", "log")}})
                 continue
             if process_alive(int(flight["pid"])):
                 if now - float(flight.get("t") or 0) < grace:
@@ -1242,6 +1246,13 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
                 if row.get("cleaned"):
                     say(f"[batch] {row['name']}: {row['cleaned']}")
             code = 1 if failed else 0
+            for old in record.get("ending") or []:
+                # The batch is over: an answerer that has not ended is not left behind.
+                if process_alive(int(old["pid"])):
+                    stop_answerer(old, "stopped: its answers were written, it had not ended, and the batch is over")
+            if record.get("ending"):
+                record["ending"] = []
+                write_json(batch / "batch.json", record)
             say(f"[batch] RESULT exit={code} {'DONE' if not failed else 'DONE, ' + str(len(failed)) + ' FAILED'} - "
                 f"{status_line(rows)}")
             return code

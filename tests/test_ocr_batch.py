@@ -1101,22 +1101,23 @@ class ScriptAnswererTests(BatchCase):
         for pid in pids:
             self.assertTrue(gone(pid), f"process {pid} is still there")
 
-    def test_an_answerer_that_wrote_its_answers_and_does_not_end_is_stopped_when_its_time_is_over(self) -> None:
+    def test_an_answerer_that_wrote_its_answers_and_does_not_end_is_stopped(self) -> None:
         b = self.b
         b.begin()
         self.assertEqual(b.ocr()[0], 0)
         for _ in range(60):
-            code, out = b.round("--answerer-command", self.command("stay"), "--answer-grace", "3", wait=6)
+            code, out = b.round("--answerer-command", self.command("stay"), "--answer-grace", "2", wait=6)
             if code != 75:
                 break
         self.assertEqual(code, 0, out)                    # the answers counted: the books were delivered
         pids = self.pids()
         self.assertTrue(pids)
-        time.sleep(3.2)
-        b.round("--answerer-command", self.command(), "--answer-grace", "3", wait=1)
+        # Stopped a moment after their answers, and whatever was left when the batch was over, at once.
         for pid in pids:
             self.assertTrue(gone(pid), f"process {pid} is still there")
         self.assertEqual(b.record().get("ending"), [])
+        logs = [file.read_text() for file in (b.batch / "plans").glob("round-*/worker-*.log")]
+        self.assertTrue(all("[ocr_batch] stopped: its answers were written" in log for log in logs), logs[:2])
 
     def test_a_command_that_cannot_be_started_is_said_at_once(self) -> None:
         b = self.b
