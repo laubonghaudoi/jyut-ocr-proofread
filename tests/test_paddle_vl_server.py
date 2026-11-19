@@ -95,5 +95,43 @@ class ServerBackendTests(unittest.TestCase):
                 self.assertIn(words, err.getvalue())
 
 
+class ServedBlockTextTests(unittest.TestCase):
+    """SGLang opens some blocks with a newline the native and MLX readers never write; it went
+    into the drafts and led the repair's line pairing astray (s0583 lost its Western lines)."""
+    RESULT = {
+        "width": 1000, "height": 2000,
+        "layout_det_res": {"boxes": [{"order": 1, "score": 0.9}, {"order": 2, "score": 0.8}]},
+        "parsing_res_list": [
+            {"block_label": "paragraph_title", "block_content": "\n外文專書：", "block_bbox": [100, 100, 400, 150],
+             "block_order": 1},
+            {"block_label": "reference_content", "block_content": "\nCh'u, T'ung-tsu.\nLocal Government",
+             "block_bbox": [100, 200, 900, 300], "block_order": 2},
+        ],
+    }
+
+    def lines(self, backend):
+        import os
+        import paddleocr_vl_worker as worker
+        old = os.environ.pop("JYUT_PADDLE_VL_BACKEND", None)
+        try:
+            if backend:
+                os.environ["JYUT_PADDLE_VL_BACKEND"] = backend
+            return [line["text"] for line in worker.normalise_page(self.RESULT)[0]]
+        finally:
+            os.environ.pop("JYUT_PADDLE_VL_BACKEND", None)
+            if old is not None:
+                os.environ["JYUT_PADDLE_VL_BACKEND"] = old
+
+    def test_a_served_block_loses_its_leading_newline_and_keeps_the_rest(self):
+        for backend in ("sglang-server", "vllm-server"):
+            with self.subTest(backend=backend):
+                self.assertEqual(self.lines(backend), ["外文專書：", "Ch'u, T'ung-tsu.\nLocal Government"])
+
+    def test_native_and_mlx_text_is_left_as_read(self):
+        for backend in (None, "mlx-vlm-server"):
+            with self.subTest(backend=backend):
+                self.assertEqual(self.lines(backend), ["\n外文專書：", "\nCh'u, T'ung-tsu.\nLocal Government"])
+
+
 if __name__ == "__main__":
     unittest.main()

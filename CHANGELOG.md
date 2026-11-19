@@ -33,6 +33,13 @@
 - `ocr_batch.py --round`：第二次派題開始淨係印兩行短嘅（邊幾個 worker 檔、RESULT），成段指示同 command 喺每個 caller 第一次、之後每 25 次、同帶一次性選項（`--answerers-gone`、`--retry-failed`、`--not-started`）嗰次先印。160 頁實跑量到，呢啲輸出每次 1,300 字，佔主 agent context 增長嘅 35%，而主 agent 每個請求都要重讀成個 context：佢嘅成本去到每條題 0.46 美仙，係答題者嘅一半。
 - 同一次實跑量到 `c6e84fc` 嘅效果：題目排緊隊嗰陣 20 個位平均用到 18.2 個（之前 14.2），每分鐘答 38.8 條（之前同樣份量 27.5）；主 agent 冇因為成本自己停；384 個答題者有 1 個俾平台拒絕、之後重派。按 token 裝份量嘅估算喺現代書偏低（估 3.6 萬、實際 5.0 萬），45% 嘅答題者仍然過咗加價線，未改。
 - 未做：快路仲未由 book profile 量度一致率嚟開關，亦未有抽查；有出入嘅 block 仍然成段問；排版題仍然每頁一條。
+## Unreleased — PaddleOCR-VL 伺服器要用技能嘅 chat template（`runtime/paddleocr-vl-server-chat-template.jinja`）
+
+- 問題（M1，SGLang 0.5.23 serve PaddleOCR-VL-1.6，`--vl-backend sglang-server`）：成條流程喺 M1 跑 28 個 bench 案，28 案 CER 23.00%、表格儲存格 F1 33.1（Mac 底稿 15.09%、83.4）。模型自己嘅 chat template 淨係喺 `{"type": "image"}` 放圖；PaddleX 送嘅係 `{"type": "image_url"}`，圖放錯位，答案頭一個 token 走樣：表格第一格冇咗 `<fcel>`，轉 HTML 嗰陣跌咗一格、成行錯位；文字 block 開頭多咗換行或者一個字（`孫在「盜區」`、`4-3` 冇咗「表」）。伺服器單獨答同一個請求、同時答幾百個都一樣，問題唔係並行。
+- 改動：新檔 `runtime/paddleocr-vl-server-chat-template.jinja`：同模型嘅 template 一樣，淨係 `image_url` 都當圖。`references/local-ocr.md` 講伺服器一定要用佢（SGLang `--chat-template`），換 template 要改 `--vl-server-revision`。`paddleocr_vl_worker.py`：伺服器後端嘅 block 文字開頭嘅換行刪走（防護；冇用呢份 template 嗰陣先會出現）。
+- 實測：換 template 之後底稿同 Mac 嘅 MLX 底稿逐頁相似度 0.977 至 1.0；28 案 CER 18.69%、儲存格 F1 82.3。仲差嘅主要係 `doukeoi-zingkeoi/s0583`（校對答案漏咗西文書目，修書補唔齊；974 錯，Mac 底稿三輪都係 110），未查清。
+- 測試：`tests/test_paddle_vl_server.py` 加伺服器 block 開頭換行嘅兩個例。
+
 ## Unreleased — 新文件：叢集大批 OCR 嘅配方（`references/cluster-bulk-ocr.md`）
 
 - 喺 H200 Slurm 叢集（Ubuntu 22.04、driver 570、冇 root）大批 OCR 嘅配方，2026-11-19 喺 M1 逐件量度：一個 OCR 節點（GPU 0 serve PaddleOCR-VL、GPU 1–3 三條 HunyuanOCR 線、GPU 4–7 兩個校對 replica）加其餘校對節點（每個 4 × TP2 + MTP 嘅 Qwen3.8-Flash-Next）。

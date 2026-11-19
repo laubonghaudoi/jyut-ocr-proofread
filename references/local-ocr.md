@@ -38,6 +38,8 @@ Linux 上可以將 PaddleOCR-VL 嘅 VL 識別交畀一個你自己開嘅 OpenAI 
 - `--vl-server-revision`（`OCR_PADDLE_VL_SERVER_REVISION`，必填）：呼叫者聲明嘅部署版本，伺服器換權重或者 runtime 就要改；
 - `--vl-concurrency`（`OCR_PADDLE_VL_CONCURRENCY`，預設 16）：一頁有幾多個 block 同時送去伺服器。
 
+**伺服器一定要用技能嘅 chat template**：`runtime/paddleocr-vl-server-chat-template.jinja`（SGLang：`--chat-template` 指住佢；vLLM 一樣）。模型自己嘅 template 淨係喺 `{"type": "image"}` 嗰度放圖，PaddleX 送嘅係 OpenAI 格式 `{"type": "image_url"}`，咁圖就放錯位，答案開頭會走樣：表格第一格冇咗 `<fcel>`，轉做 HTML 嗰陣成格跌咗、成行錯位；文字 block 開頭多咗換行或者多咗一個字。2026-11-19 喺 M1 實測（成條流程，28 個 bench 案）：用模型原本 template，28 案 CER 23.00%、表格儲存格 F1 33.1；換咗呢份 template，底稿同 Mac 嘅 MLX 底稿逐頁幾乎一樣（相似度 0.977 至 1.0），28 案 CER 18.69%、儲存格 F1 82.3（Mac 底稿 83.4）。仲差嘅主要係 `doukeoi-zingkeoi/s0583`：校對答案漏咗西文書目，修書補唔齊（974 錯，Mac 底稿三輪都係 110），未查清。換 template 即係換讀法：`--vl-server-revision` 要改。
+
 底稿身份記住呢個後端：本機權重檔嘅 SHA-256（伺服器應該 serve 同一份）、模型名、部署版本同並行數；同 native 或者 MLX 嘅底稿唔通用，換後端要 `--overwrite`。worker 載入之後核實 Paddle 真係用緊聲明嘅 URL、模型同並行數，版面偵測喺 `--device`，唔啱就唔讀。伺服器由你開、由你管，runner 唔會開、停或者重啟佢。
 
 ## 模型同裝置

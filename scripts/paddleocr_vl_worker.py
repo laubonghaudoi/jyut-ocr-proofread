@@ -156,8 +156,17 @@ def normalise_page(
 
     lines: list[dict[str, Any]] = []
     regions: list[dict[str, Any]] = []
+    # A VL server whose chat template does not place the image (the model's own template takes
+    # only {"type": "image"} parts; PaddleX sends "image_url") opens some blocks with a newline
+    # the native and MLX readers never write, which led the repair's line pairing astray
+    # (doukeoi-zingkeoi/s0583 lost its bibliography's Western lines).  The server should run with
+    # runtime/paddleocr-vl-server-chat-template.jinja (references/local-ocr.md); this guard keeps
+    # such a newline out of the drafts all the same.  It is not text: it goes.
+    served = os.environ.get("JYUT_PADDLE_VL_BACKEND") in ("sglang-server", "vllm-server")
     for block in blocks:
         text = block.get("block_content")
+        if served and isinstance(text, str):
+            text = text.lstrip("\r\n")
         order = _as_int(block.get("block_order"), default=-1)
         bbox = block.get("block_bbox")
         if not isinstance(text, str) or not text.strip():
