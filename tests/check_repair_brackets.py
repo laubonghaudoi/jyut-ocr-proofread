@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline checks of B1 (scripts/_repair_brackets.py, the brackets stage of
+"""Offline checks of B1 and B3 (scripts/_repair_brackets.py, the brackets stage of
 repair_book.py), P8 (scripts/_repair_joins.py, the paragraphs stage) and
 S18 (scripts/_repair_structure.py, the levels stage):
 
@@ -24,6 +24,12 @@ S18 (scripts/_repair_structure.py, the levels stage):
   heading, P5's); a list item with a note number inside its text keeps its
   bullet; P6 leaves the note lines as they are; and two such lines either
   side of a page break are not joined (J);
+- B3: a note's line the page set as a list item without its number loses
+  the bullet where both engines open the line with a number (engine B's
+  LaTeX \\textcircled with its \\t a tab too), and a number the page wrote
+  inside the bracket after it ([③荷]) comes out before the bracket; left
+  where engine B reads no number there, and a list both engines read keeps
+  its bullets;
 - S18: on a page whose structure pass phase 3 refused, a plain line that is
   an engine A title block is a heading again; on another page it is left.
 
@@ -176,6 +182,39 @@ def note_checks(tmp: Path) -> None:
           f"P8: a list item with a note number inside its text keeps its bullet ({rules(log, 19)})")
 
 
+def note_line_checks(tmp: Path) -> None:
+    """B3: the opening of a note's line both engines open with a marker."""
+    spec = fx.make_spec()
+    # Scan 16: two notes the page set as a bulleted list without their
+    # numbers (the bench's Flash-Next page: - 〔清〕…); engine B writes the
+    # second number as LaTeX whose \t arrived as a tab.
+    # A line with no full stop before them: engine B reads a full stop as 口
+    # (repair_fixture), and then it is not aligned to the page there.
+    spec[16]["items"][1:1] = [("line", "春山居士"), ("line", "①〔清〕春風吹過"), ("line", "②〔明〕小橋流水")]
+    spec[16]["sealedEdits"] = [("①〔清〕春風吹過", "- 〔清〕春風吹過"), ("②〔明〕小橋流水", "- 〔明〕小橋流水")]
+    spec[16]["bEdits"] = [("②〔明〕", "$ \textcircled{2} $〔明〕")]
+    # Scan 17: a note's number the page wrote inside the bracket after it,
+    # as square brackets (the bench's 27B page: [②荷]); and a look-alike
+    # where engine B reads no number there, which stays.
+    spec[17]["items"][1:1] = [("line", "秋夜居士"), ("line", "③〔荷〕田園雜記"), ("line", "④〔法〕山居雜記")]
+    spec[17]["sealedEdits"] = [("③〔荷〕田園雜記", "[③荷]田園雜記"), ("④〔法〕山居雜記", "〔④法〕山居雜記")]
+    spec[17]["bEdits"] = [("④〔法〕", "〔法〕")]
+    # Scan 15: a list both engines read as a list keeps its bullets.
+    spec[15]["items"][1:1] = [("line", "- 甲乙丙丁"), ("line", "- 戊己庚辛")]
+    status, pages, log = repair(tmp, spec, "note-lines")
+    check(status == 0, f"note lines: the run exits 0 (exit {status})")
+    check("- 〔" not in pages[16] and "〔清〕春風吹過" in pages[16] and "〔明〕小橋流水" in pages[16]
+          and rules(log, 16).count("B3") == 2,
+          f"B3: a note's line the page set as a list item, its number lost, loses the bullet where both engines open "
+          f"it with a number (engine B's LaTeX one with a tab too) ({rules(log, 16)}, {pages[16][-80:]!r})")
+    check("③〔荷〕田園雜記" in pages[17] and "B3" in rules(log, 17),
+          f"B3: the number the page wrote inside the bracket after it goes before the bracket ({pages[17][-80:]!r})")
+    check("〔④法〕山居雜記" in pages[17] and rules(log, 17).count("B3") == 1,
+          f"B3: where engine B reads no number there, the page's line stays ({rules(log, 17)})")
+    check("- 甲乙丙丁" in pages[15] and "- 戊己庚辛" in pages[15] and "B3" not in rules(log, 15),
+          f"B3: a list both engines read keeps its bullets ({rules(log, 15)})")
+
+
 def title_checks(tmp: Path) -> None:
     spec = fx.make_spec()
     # A title engine A reads as a title block, which the sealed page holds
@@ -197,6 +236,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         bracket_checks(Path(directory))
         note_checks(Path(directory))
+        note_line_checks(Path(directory))
         title_checks(Path(directory))
     print("all bracket, note-line and title checks passed" if not FAILURES else f"FAIL: {len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)

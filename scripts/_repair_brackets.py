@@ -57,7 +57,27 @@ punctuator's shape right; B2 wrote 2 on one book (where the user's copy
 prints no bracket), 2 on each of two books with goldens, right by them,
 and 10 and 20 on two more.
 
-B1 and B2 ask no model and name no doubt: the edits are in the log.
+B3 puts right the opening of a note's line where both engines open that
+line with a note marker and the page opens it otherwise: a bullet the page
+opens it with goes (- 〔明〕… where both read ⑦3〔明〕…), and a note marker
+the page writes inside the bracket that follows it in both engines comes
+out before it (〔②荷〕… where both read ②〔荷〕…; B1 has made the page's
+square brackets the editors' ones by then).  The book prints a number
+there, not a bullet, and the marker before the bracket.  Why it matters
+(jyut-ocr-bench, 2026-11-18, the HTTP runs of two local models on the
+bench copy of the modern book): set as a bulleted list, a page's notes
+were not read as foot notes (_ocr_markdown.foot_notes), so the page's
+last line was a note's, and the runs stage withheld every edit on it
+that would make that line another kind (edge_safe) - a note's year, volume
+and page range, and the English note after it, 125 characters, the page's
+own doubts naming them; with the marker inside its bracket, the note was
+no definition finalize_page_markers.py could pair with its call, and the
+footnote stayed a paragraph with ② left in the body.  Not where either
+engine is not aligned to the page there or reads no marker opening the
+line, nor where an engine reads a bullet itself; a marker is moved only
+where both engines read the same one before the bracket.
+
+B1, B2 and B3 ask no model and name no doubt: the edits are in the log.
 """
 
 from __future__ import annotations
@@ -68,6 +88,7 @@ from typing import Any, Mapping, Sequence
 import _repair_rules as rr
 import _repair_runs as rn
 import _repair_edits as re_
+from _note_markers import marker_key
 
 OPEN, CLOSE = "〔", "〕"
 # The shapes the page may hold where the engines read the editors' brackets:
@@ -191,6 +212,82 @@ def brackets(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], orde
                         "before": old, "engineA": rn.show(g.a_raw or "", 80), "engineB": rn.show(g.b_raw or "", 80),
                         "inside": page.s.chars[k:later], "readBy": by}))
     return plan
+
+
+# B3: the opening brackets a page may write a note marker inside (B1 has made
+# the square ones 〔 by then), and a bullet at a line's start (the page's
+# Markdown list item).
+OPENERS = frozenset("〔［[【（(〈《「『")
+BULLET = re.compile(r"[ \t]*[-*+][ \t]+")
+
+
+def _opening(raw: str | None, side: str) -> list[Any] | None:
+    """The tokens, spaces aside, that open the last line of an engine's gap
+    RAW (after its last line break); None where it is not aligned there or
+    its gap holds no line break."""
+    if raw is None or "\n" not in raw:
+        return None
+    return [t for t in rn.tokens(raw[raw.rfind("\n") + 1:], side, line_start=True) if t.kind != rn.SPACE]
+
+
+def _marker(token: Any) -> str | None:
+    """The note marker TOKEN stands for (its marker_key), or None: a marker
+    token, or engine B's LaTeX of one ($ \\textcircled{7} $, which the
+    tokens read as unknown markup; its \\t often arrives as a tab, a JSON
+    escape taken, as rn.SUPERSCRIPT_RE allows)."""
+    if token.kind == rn.MARKER:
+        return token.cls
+    if token.kind == rn.OTHER:
+        return marker_key(token.raw.replace("\textcircled", r"\textcircled")) or None
+    return None
+
+
+def note_lines(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: Sequence[int],
+               facts: rr.BookFacts | None = None) -> rr.Plan:
+    """B3 over the pages ORDER (after B1 and B2 are applied)."""
+    facts = facts or rr.book_facts(book, model)
+    setting = rn.Setting(book, model, facts, list(order), texts)
+    plan = rr.Plan()
+    for scan in order:
+        page = setting.page(scan)
+        if not page.s.chars:
+            continue
+        for gap in page.gaps():
+            edit = note_line(scan, page.text, gap)
+            if edit is not None:
+                plan.edits.append(edit)
+    return plan
+
+
+def note_line(scan: int, text: str, gap: Any) -> re_.Edit | None:
+    """B3 on one gap of the page: the opening of the page line the gap
+    opens, where both engines open their line there with a note marker -
+    a bullet the page put before it out, and a marker the page wrote inside
+    the bracket that follows it in both engines put before the bracket."""
+    raw = text[gap.start:gap.end]
+    if "\n" not in raw:
+        return None
+    a, b = _opening(gap.a_raw, "a"), _opening(gap.b_raw, "b")
+    if not a or not b or _marker(a[0]) is None or _marker(b[0]) is None:
+        return None
+    cut = raw.rfind("\n") + 1
+    line = raw[cut:]
+    new = line
+    bullet = BULLET.match(new)
+    if bullet:
+        new = new[bullet.end():]
+    # The page's marker inside the bracket: the same marker before the same
+    # bracket in both engines.
+    p = [t for t in rn.tokens(new, "page", line_start=True) if t.kind != rn.SPACE]
+    if (len(p) >= 2 and len(a) >= 2 and len(b) >= 2 and p[0].kind == rn.MARK and p[0].raw in OPENERS
+            and _marker(p[1]) is not None and _marker(p[1]) == _marker(a[0]) == _marker(b[0])
+            and a[1].kind == b[1].kind == rn.MARK and a[1].raw in OPENERS and b[1].raw in OPENERS):
+        new = new[:p[0].start] + p[1].raw + p[0].raw + new[p[0].end:p[1].start] + new[p[1].end:]
+    if new == line:
+        return None
+    return re_.Edit(scan, gap.start, gap.end, raw[:cut] + new, rule="B3", evidence={
+        "before": raw, "engineA": rn.show(gap.a_raw or "", 80), "engineB": rn.show(gap.b_raw or "", 80),
+        "bullet": bool(bullet), "marker": new != (line[bullet.end():] if bullet else line)})
 
 
 def doubled(scan: int, text: str, gap: Any) -> re_.Edit | None:

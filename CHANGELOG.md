@@ -1,5 +1,13 @@
 # 更新摘要
 
+## Unreleased — 修書 B3：註腳行嘅開頭照兩個引擎改返（冇 bullet，註號喺括號前面）
+
+- 問題一（jyut-ocr-bench `doukeoi-zingkeoi/s0077`，Qwen3.8-Flash-Next 三輪有兩輪）：模型將頁腳註寫成 Markdown 清單（`- 〔明〕…`），而且冇註號；兩個引擎都讀到 `⑦3〔明〕…`。清單唔算頁腳註（`_ocr_markdown.foot_notes`），於是頁嘅最後一行係註腳嗰行，`edge_safe` 將會改變嗰行種類嘅修改全部扣起：第 73 註嘅 44、6、13b-14a 同埋第 74 條英文註，共 125 字，淨係寫咗做疑問（withheld at the page's edge: the page's last line would change kind）。冇寫清單嗰一輪、Gemini、Haiku 同 27B 都冇呢個問題。
+- 問題二（`doukeoi-zingkeoi/s0014`，Qwen3.8-27B）：模型將第 2 註嘅開頭寫成 `[②荷]`，即係註號放咗入括號入面；兩個引擎都讀到 `②〔荷〕`。B1 將方括號改成 `〔②荷〕` 之後，`finalize_page_markers.py` 配唔到註號同正文嘅 ②，嗰條註變咗普通段落，正文留低 ②；評分將成條第 1 註當係搬咗位（172 個錯）。
+- 改動：新規則 B3（`scripts/_repair_brackets.py` `note_line`，喺 brackets 階段、B1 B2 之後、joins 之前行）。兩個引擎都用註號開一行（engine B 嘅 LaTeX `$ \textcircled{7} $` 都算，連佢個 `\t` 變咗 tab 嘅情況），而頁面嗰行：(1) 用 bullet 開頭，就拎走個 bullet；(2) 將同一個註號寫咗喺跟住嘅括號入面，就搬返去括號前面。兩邊引擎有一邊冇對齊、冇讀到註號、或者自己都讀到 bullet，就唔郁。P8 照舊處理頁面保留咗註號嘅清單項；B3 處理頁面連註號都冇咗、要靠引擎先知係註嘅情況。
+- 測試：`tests/check_repair_brackets.py` 加 B3 嘅 case（冇註號嘅清單註腳行、engine B LaTeX 連 tab、註號喺方括號入面），同埋唔郁嘅 case（engine B 冇讀到註號、兩個引擎都讀到嘅真清單）；`tests/cases/doukeoi-zingkeoi.json` 加兩條 `regression` assertion（77 頁要有 `Sow-Theng Leong, Migration`，14 頁要有 `〔荷〕Anton Blok`）。修書相關測試全部過，`check_benchmark_snapshot.py` 過；全套 `tests/run_all.py` 喺呢部 Mac 照舊係同改之前一樣嗰 22 個檔失敗。
+- 驗證（重放，唔使模型）：四輪已封頁（Flash-Next 1568019 兩輪、Flash-Next cb0cb06、27B cb0cb06）用 cb0cb06 同今版各行一次 `finish_book.py`；cb0cb06 嗰兩輪用 cb0cb06 重放同原本輸出逐 byte 一樣。今版淨係改咗有清單註腳或者註號入括號嘅頁，冇一頁分數變差：Flash-Next cb0cb06 77 頁 129 → 16 個錯，27 案 CER 7.08% → 6.59%（28 案 15.66% → 15.30%）；27B 14 頁 172 → 2 個錯、該頁註釋配對 66.7 → 100，27 案 8.60% → 7.85%（28 案 16.75% → 16.21%），全集註釋 F1 21.4 → 27.6。另外 s0075、s0315-0318-table 嘅清單註腳行冇咗 bullet（照印本），分數冇變。
+
 ## Unreleased — 修書：一條西文書目斷開兩行又差一個撇號，唔再令成段西文行漏晒
 
 - 問題：jyut-ocr-bench 嘅書目頁 `doukeoi-zingkeoi/s0583`（即 609 頁現代書掃描 583 頁）用 HTTP 本機模型校對，Qwen3.8-Flash-Next 兩輪同 Hy4-flash 兩輪都漏咗第二段九條西文書目，缺 966 字；Gemini 4 Hydrogen 同 Claude Haiku 5.5 嗰幾輪淨係缺約 110 字。兩個引擎都讀到嗰啲行，修書亦知道（`run-no-place`：runs both engines read left out, no rule writes them），但冇寫返。

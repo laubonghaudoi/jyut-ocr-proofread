@@ -155,9 +155,12 @@ def marks_stage(context: Context) -> StageResult:
 def brackets_stage(context: Context) -> StageResult:
     """The editors' brackets 〔〕 the engines read, in that shape on the
     page, and no round bracket doubled beside one (_repair_brackets B1,
-    B2)."""
-    plan = rb.brackets(context.book, context.model, context.ledger.texts, context.order(), context.facts())
-    return StageResult(plan.edits, plan.doubts)
+    B2), applied before B3 proposes the openings of notes' lines (no
+    bullet, the marker before its bracket) on the text they leave."""
+    first = rb.brackets(context.book, context.model, context.ledger.texts, context.order(), context.facts())
+    context.apply(first.edits)
+    plan = rb.note_lines(context.book, context.model, context.ledger.texts, context.order(), context.facts())
+    return StageResult(plan.edits, first.doubts + plan.doubts)
 
 
 def contents_stage(context: Context) -> StageResult:
@@ -287,7 +290,7 @@ STAGES: tuple[Stage, ...] = (
 STAGE_RULES = {
     "furniture": ["F1", "F6", "F8"],
     "marks": ["K1", "K5", "K9", "K11", "K-seq"],
-    "brackets": ["B1", "B2"],
+    "brackets": ["B1", "B2", "B3"],
     "contents": ["S15", "S14", "S9", "K1", "S4", "S7", "S11"],
     "title-page": ["S13"],
     "levels": ["S18", "S5"],

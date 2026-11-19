@@ -98,6 +98,14 @@
    }
   },
   {
+   "id": "exact-14-r1",
+   "page": 14,
+   "type": "contains_exact",
+   "value": "〔荷〕Anton Blok",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench doukeoi-zingkeoi/s0014, 2026-11-18): Qwen3.8-27B wrote note 2's opening as [②荷] (both engines ②〔荷〕); B1 made it 〔②荷〕, finalize_page_markers.py could not pair it with its call, and the note stayed a paragraph with ② in the body (bench: 172 errors, the note scored as moved). Fixed by B3: the number goes before the bracket."
+  },
+  {
    "id": "golden-77-h3",
    "page": 77,
    "type": "golden_page",
@@ -113,6 +121,14 @@
      "ratchetFrom": "goldgate gate tree-1: model-off repair of the delivered seals with code-19 (== main 2026-10-13), new harness; 2026-10-13"
     }
    }
+  },
+  {
+   "id": "exact-77-r1",
+   "page": 77,
+   "type": "contains_exact",
+   "value": "Sow-Theng Leong, Migration",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench doukeoi-zingkeoi/s0077, 2026-11-18): Qwen3.8-Flash-Next set the notes as a bulleted list without their numbers (- 〔明〕…, both engines ⑦3〔明〕…); the notes were then not read as foot notes, the page's last line was a note's, and edge_safe withheld note 73's 44 / 6 / 13b-14a and the English note 74 (125 characters) in 2 of 3 runs. Fixed by B3 (_repair_brackets.note_line): the bullet goes where both engines open the line with a number."
   },
   {
    "id": "golden-316-h4",
