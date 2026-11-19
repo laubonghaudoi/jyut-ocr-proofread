@@ -199,6 +199,9 @@ CLEANED_NAME = "cleaned.json"              # clean_book.py's record of the fifth
 FIGURES_JSON = "figures.json"              # finish/: the figures kept as pictures (scripts/_figures.py)
 FIGURES_SOURCE = "combined-figures.md"     # finish/: the repaired book with their image lines and footnotes
 FOOTNOTES_JSON = "footnotes.json"          # finish/: the footnotes written, the pages left as printed (_footnotes.py)
+# The repair's B4 mark of an unpaired note at a line's start (_repair_brackets.UNPAIRED_HEAD),
+# written a blockquote in final.md.
+UNPAIRED_NOTE_LINE = re.compile(r"(?m)^( {0,3})\[\^unpaired-\d+-\d+\]: ")
 BOUNDARIES_NAME = "boundaries.json"        # finish/: the repair's, a join to a plate's text taken out made a break
 LOCK_NAME = ".lock"
 ASSEMBLED = "assembled"
@@ -953,6 +956,14 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
     if markers or malformed or "<!-- page_" in text:
         raise FinishError(EXIT_FAILED, f"page markers are left in the final text ({len(markers)} markers, "
                                        f"{len(malformed)} malformed)")
+    # A note at a page's foot that holds no number and found no call (the
+    # repair's B4 mark, read as a foot note by the boundary contract, which
+    # carried it past a paragraph split at the page break): a blockquote, out
+    # of the sentence and marked as a note (issue #8).
+    text, unpaired = UNPAIRED_NOTE_LINE.subn(r"\1> ", text)
+    if unpaired:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
     new = temporary.read_bytes()
     edited = keep_edited(book, FINAL, new, log)
     remember_written(book, FINAL, new)
@@ -971,7 +982,7 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
     return {"status": "written" if changed else "unchanged", "characters": len(text), "auditErrors": errors,
             "auditExit": code, "figures": len(figures), "pictures": len(pictures), "footnotes": notes["footnotes"],
             "footnotesRelabelled": notes["relabelled"], "footnotesAcrossPages": len(notes["crossPage"]),
-            "notePagesLeft": len(notes["left"]),
+            "notePagesLeft": len(notes["left"]), "unpairedNotes": unpaired,
             "extractFigures": bool(getattr(arguments, "extract_figures", False)),
             "renumberFootnotes": renumber_fn,
             "relocateFootnotes": relocate_fn,
@@ -1127,6 +1138,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "heading-mark-unread": ("marks", "標題入面有兩個引擎都冇讀到嘅標點，要對圖睇有冇印"),
     "run-mark-dropped": ("marks", "寫入兩個引擎都讀到嘅數字嗰陣，刪咗或者換咗頁面兩個引擎都冇讀到嘅標點（要對圖睇有冇印）"),
     "note-markers-unverified": ("marks", "註號：引擎讀到嘅註號頁面冇，或者數值唔同（冇改）"),
+    "note-unpaired": ("marks", "頁底嘅註冇註號，配唔到正文：寫做未配對嘅註（final.md 入面係引用段 `> `，唔會切開句子），要對圖補返註號"),
     "note-unmatched": ("marks", "呢版嘅註號同註唔係一個對一個：配唔上嘅冇寫成腳註，照印咗嘅樣留低，要對圖"),
     # structure
     "unit-not-in-scan": ("structure", "目錄有、正文搵唔到嘅篇"),

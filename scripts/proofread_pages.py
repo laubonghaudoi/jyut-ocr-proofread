@@ -1517,6 +1517,78 @@ NOTE_LINE_ANCHOR = 4
 NOTE_BLOCK_LABELS = frozenset({"footnote", "vision_footnote"})
 
 
+# Issue #8, item 4: where the rules leave a page's note numbers unsettled, the
+# answerer reads them off the page (note-numbers): each note's printed number,
+# the first characters of its text, and the body's characters right before
+# its call.  The repair's N9 (_repair_notes) takes the answer as one more
+# reading beside the engines', and finds a call the engines missed by the
+# characters before it.  Asked only where the page prints notes (engine A's
+# note blocks, or a line an engine opens with a note number) and the engines
+# read more note numbers than the page holds, or one wrote a run of circled
+# figures (CIRCLED_RUN: a two- or three-figure number in one circle).
+NOTE_NUMBERS_SYSTEM = """你係古籍校對員。畀你一張完整書頁。頁底（或者表格下面）印咗註，正文入面印咗對應嘅註號：圈號、上標數字，可能係兩三位數（例如圈入面印 72、240）。
+
+逐條註答：
+- number：條註前面印嘅編號，寫阿拉伯數字（圈入面兩三位數照寫，例如 72、240）。
+- note：條註開頭嘅頭幾個字，照印，最多十二個字，唔使標點。
+- before：正文入面呢個註號前面緊貼嘅幾個字，照印，最多十二個字，連標點。正文搵唔到佢個註號就寫空字串。
+
+淨係答 JSON：{"notes": [{"number": "72", "note": "...", "before": "..."}]}。頁上冇註就答 {"notes": []}。睇唔清嘅編號唔好寫，唔好由前後編號推斷。"""
+NOTE_NUMBERS_USER = "列出呢頁每一條註嘅編號、開頭幾個字，同正文入面佢個註號前面嘅字。"
+NOTE_NUMBERS_MAX_TOKENS = 16000
+NOTE_NUMBERS_LIMIT = 60
+NOTE_NUMBERS_TEXT = 24
+
+
+def note_question_reason(draft: str | None, draft2: str | None, text: str,
+                         blocks: Sequence[Mapping[str, Any]]) -> str | None:
+    """Why the page's note numbers go to the answerer (note-numbers), or None."""
+    def count(t: str | None) -> int:
+        return sum(1 for m in _note_markers.iter_note_markers(t or "") if _note_markers.marker_key(m.group()))
+
+    def heads(t: str | None) -> bool:
+        return any(_note_markers.NOTE_LINE_RE.match(line.lstrip()) for line in (t or "").splitlines())
+
+    if not (note_block_texts(blocks) or heads(draft) or heads(draft2)):
+        return None
+    if CIRCLED_RUN.search(draft or "") or CIRCLED_RUN.search(draft2 or ""):
+        return "an engine wrote a note number as a run of circled figures"
+    read, held = max(count(draft), count(draft2)), count(text)
+    return f"the engines read {read} note numbers, the page holds {held}" if read > held else None
+
+
+def parse_note_numbers(raw: str | None) -> list[dict[str, str]] | None:
+    """The note-numbers answer as [{"number", "note", "before"}], numbers of
+    one to three figures; None where it is no such JSON."""
+    match = re.search(r"\{.*\}", raw or "", re.S)
+    try:
+        data = json.loads(match.group(0)) if match else None
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("notes"), list):
+        return None
+    out = []
+    for item in data["notes"][:NOTE_NUMBERS_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        number = re.sub(r"\D", "", unicodedata.normalize("NFKC", str(item.get("number") or "")))
+        if not number or len(number) > 3 or int(number) < 1:
+            continue
+        out.append({"number": str(int(number)),
+                    "note": str(item.get("note") or "").strip()[:NOTE_NUMBERS_TEXT],
+                    "before": str(item.get("before") or "").strip()[:NOTE_NUMBERS_TEXT]})
+    return out
+
+
+def ask_note_numbers(client: "Client", render_bytes: bytes, reason: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The note-numbers question on the whole page: the record N9 reads
+    ({"reason", "notes", "parsed"}) and the call's usage."""
+    raw, used = client.ask_answering(NOTE_NUMBERS_SYSTEM, NOTE_NUMBERS_USER, render_bytes, NOTE_NUMBERS_MAX_TOKENS,
+                                     kind="note-numbers")
+    notes = parse_note_numbers(raw)
+    return {"reason": reason, "notes": notes or [], "parsed": notes is not None}, used
+
+
 def note_block_texts(blocks: Sequence[Mapping[str, Any]]) -> list[str]:
     """The text of the page's note blocks: those engine A labelled a note
     (NOTE_BLOCK_LABELS), and those in a folio's margin band (margin_blocks),
@@ -4312,7 +4384,7 @@ EFFORT_KINDS = (
     "table-rebuild", "table-rebuild-retry", "census", "census+punctuate", "punctuate", "punctuate-retry", "punctuate-shape",
     "writer", "format", "format-retry", "notation",
     "page-inventory", "page-inventory-correction", "content-recovery", "content-recovery-correction",
-    "coverage-review", "coverage-review-correction",
+    "coverage-review", "coverage-review-correction", "note-numbers",
 )
 
 
@@ -13299,6 +13371,9 @@ def _proofread_page_inner(
     _LOOP_CUTS.set(loop_cuts)
     render_bytes = job.render.read_bytes()
     draft = job.draft_text.read_text(encoding="utf-8").strip()
+    # Engine A's layout blocks: the merge loads them; empty on a page
+    # transcribed whole (note_question_reason reads them at the end).
+    blocks: list[dict[str, Any]] = []
     metrics = aggregate_usage([])
     metric_calls: list[Mapping[str, Any]] = []
     page_concurrency = max(1, getattr(arguments, "page_concurrency", DEFAULT_PAGE_CONCURRENCY) or 1)
@@ -16715,6 +16790,13 @@ def _proofread_page_inner(
         if coverage_review is not None:
             evidence["finalCoverageSha256"] = coverage_review["result_sha256"]
     model_sites = variant_model_sites(disagreements, arguments)
+    # Issue #8, item 4: note numbers the rules leave unsettled, read off the
+    # page by the answerer for the repair's N9 (note_question_reason).
+    note_numbers = None
+    note_question = note_question_reason(draft, draft2, writer_text, blocks)
+    if note_question and client is not None and render_bytes:
+        note_numbers, used = ask_note_numbers(client, render_bytes, note_question)
+        add(used)
     record: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "scanPage": job.scan_page,
@@ -16758,6 +16840,8 @@ def _proofread_page_inner(
         "engineALoopsDropped": loops_dropped,
         # Each text change a decision-dependent rule made (see decision_changes).
         "decisionChanges": decision_changes,
+        # The note-numbers answer (ask_note_numbers), where it was asked.
+        **({"noteNumbers": note_numbers} if note_numbers is not None else {}),
         # Switch --keep-arabic-numerals: every figure engine A read that may
         # number something (arabic_figures), kept or not and why.  Only when on.
         **({"arabicFigures": arabic_figures_seen} if getattr(arguments, "keep_arabic_numerals", False) else {}),

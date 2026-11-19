@@ -57,6 +57,22 @@ naming both readings.  Pages whose notes run 1, 2, 3 keep N1's calls; N9
 then only writes what N1 left.  The edits pass the page-edge check
 (_repair_runs.edge_safe) as the runs stage's do.
 
+Issue #8 adds three sources of evidence.  (2) The page's structure: a note
+at the page's foot that B4 marked unpaired and no engine read a number for
+is a note slot with no reading; where the readings do not settle the notes
+(or such a slot is among them), the page's calls number them in order -
+as many calls as notes, every call read exactly by one engine at least (the
+note it calls stands at the page's foot), one run of consecutive numbers,
+no note read otherwise - and N9 writes the number over B4's mark.  (3) The
+pages around: pages are read in order, and the number after the previous
+page's last note is taken first wherever every slot reads it at least
+truncated (one note the engines read 82 and 85 after a page ending at 81).
+(4) The answerer: where phase 3 asked note-numbers (the sealed record's
+noteNumbers), its numbers are one more reading ("m") on the note whose
+line opens with the note's first characters and on the call after the
+characters it gives before it (read once on the page), and a call no engine
+read gets a slot there.
+
 Replayed on the sealed pages of five Qwen runs of the bench (2026-11-18):
 only pages 75, 77 and 327 change, none scores worse; on one run every note
 of the three pages is paired (note F1 27.6 -> 68.4) and its errors there
@@ -74,6 +90,7 @@ import _repair_edits as re_
 import _repair_rules as rr
 import _repair_runs as rn
 from _note_markers import NOTE_CIRCLED, NUMBER_RE, marker_key
+from _repair_brackets import UNPAIRED_HEAD
 
 CIRCLED = re.compile(rf"[{NOTE_CIRCLED}]")
 # Plain or superscript figures right after circled glyphs (⑦3, ⑦⁴: one number).
@@ -100,6 +117,12 @@ def clusters(seg: str) -> list[tuple[int, int, str]]:
     at = 0
     while at < len(seg):
         c = seg[at]
+        if seg.startswith("[^", at):
+            # Footnote syntax (B4's unpaired mark, a definition, a call): no
+            # marker of the print.
+            close = seg.find("]", at)
+            at = close + 1 if close > at else at + 2
+            continue
         if CIRCLED.match(c):
             end, digits = at, ""
             while end < len(seg) and CIRCLED.match(seg[end]):
@@ -163,6 +186,8 @@ class Slot:
     shown: dict[str, str] = field(default_factory=dict)      # engine -> as read
     # The marker the page holds there: its span in the gap's text and as written.
     held: tuple[int, int, str] | None = None
+    # B4's unpaired mark at the note line's start, which the number writes over.
+    mark: int = 0
 
 
 def _marks(seg: str, side: str) -> list[tuple[str, str]]:
@@ -196,7 +221,14 @@ def _call_insert(page_seg: str, engine_seg: str, cluster: tuple[int, int, str], 
 
 
 def _key_text(text: str) -> str:
-    return re.sub(r"[\s*_]", "", text)[:8]
+    return re.sub(r"[\s*_]", "", UNPAIRED_HEAD.sub("", text, count=1))[:8]
+
+
+def _mark(line: str) -> int:
+    """The length of B4's unpaired mark opening LINE (its leading spaces
+    with it), 0 where it holds none."""
+    m = UNPAIRED_HEAD.match(line.lstrip(" \t"))
+    return len(line) - len(line.lstrip(" \t")) + m.end() if m else 0
 
 
 def _slots(page: rn.PageRuns) -> list[Slot]:
@@ -261,7 +293,7 @@ def _slots(page: rn.PageRuns) -> list[Slot]:
                     o = offsets[hits[0]]
                     slot.held = slot.held or (o + held[0][0], o + held[0][1], p[held[0][0]:held[0][1]])
                 elif slot.insert is None:
-                    slot.insert = offsets[hits[0]] + lead
+                    slot.insert, slot.mark = offsets[hits[0]] + (0 if _mark(p) else lead), _mark(p)
                 slot.readings[side], slot.shown[side] = spans[0][2], line[spans[0][0]:spans[0][1]]
             if gap.edge != "end":
                 last, page_last = lines[-1], page_lines[-1]
@@ -276,7 +308,7 @@ def _slots(page: rn.PageRuns) -> list[Slot]:
                         slot.held = slot.held or (o + held[0][0], o + held[0][1],
                                                   page_last[held[0][0]:held[0][1]])
                     elif slot.insert is None:
-                        slot.insert = offsets[-1] + lead
+                        slot.insert, slot.mark = offsets[-1] + (0 if _mark(page_last) else lead), _mark(page_last)
                     slot.readings[side], slot.shown[side] = spans[0][2], last[spans[0][0]:spans[0][1]]
     return sorted(found.values(), key=lambda s: (s.at, s.kind != "call"))
 
@@ -343,67 +375,197 @@ def settle(slots: Sequence[Slot], prefer: int | None = None) -> tuple[int | None
     return None, [None] * len(slots)
 
 
+def _assign(notes: Sequence[Slot], calls: Sequence[Slot], n0: int, c0: int | None,
+            nhow: Sequence[str | None], chow: Sequence[str | None]) -> dict[str, list] | None:
+    """What each slot will hold, as (start, end, text, slot, how) in its gap's
+    text (an insertion where start == end, B4's mark written over), for notes
+    numbered from N0 and calls from C0 (None: no calls written); None where a
+    note would stay without its number, or no note would find its call.  A
+    marker the page holds that N9 reads as the number but marker_key does
+    not (⑦3, ⑦⁴) is written over."""
+    writes: dict[str, list] = {"note": [], "call": []}
+    for kind, group, start, how in (("note", notes, n0, nhow), ("call", calls, c0, chow)):
+        if start is None:
+            continue
+        for i, (slot, read) in enumerate(zip(group, how)):
+            number = str(start + i)
+            if slot.held is not None:
+                if marker_key(slot.held[2]) == number:
+                    continue
+                if slot.readings.get("page") == number:
+                    writes[kind].append((slot.held[0], slot.held[1], written(start + i), slot, "held"))
+                    continue
+                if kind == "note":
+                    # A note of the run that would stay unpaired: finalize
+                    # would make the others footnotes and leave it a paragraph
+                    # among them (the bench scores that worse than none).
+                    return None
+                continue
+            if read is None or slot.insert is None:
+                if kind == "note":
+                    return None
+                continue
+            writes[kind].append((slot.insert, slot.insert + slot.mark, written(start + i), slot, read))
+    noted = {str(n0 + i) for i in range(len(notes))}
+    called = {marker_key(s.held[2]) for s in calls if s.held} | {marker_key(text) for _, _, text, _, _ in writes["call"]}
+    if not noted & called:
+        # No note of the page would find its call: the numbers written would
+        # stand as printed glyphs and pair with nothing.
+        return None
+    return writes
+
+
+def _by_readings(notes: Sequence[Slot], calls: Sequence[Slot], prior: int | None) -> dict[str, list] | None:
+    """The page's notes settled by their readings (PRIOR, the number after
+    the previous page's last note, preferred where every note reads it at
+    least truncated), and its calls on the notes' run, else on their own;
+    None where they do not settle, the calls and notes share no number, or
+    _assign refuses."""
+    if any(not n.readings for n in notes):
+        return None
+    n0, nhow = settle(notes, prior)
+    if n0 is None:
+        return None
+    c0, chow = settle(calls, n0) if calls else (None, [])
+    if c0 is not None and (n0 + len(notes) <= c0 or c0 + len(calls) <= n0):
+        # The calls and the notes settled on numbers that share none: one of
+        # them is misread, and which is not given.
+        return None
+    return _assign(notes, calls, n0, c0, nhow, chow)
+
+
+def _model_slots(page: rn.PageRuns, slots: list[Slot]) -> list[Slot]:
+    """Issue #8, item 4: the answerer's reading of the page's note numbers
+    (the sealed record's noteNumbers, proofread_pages.ask_note_numbers) as one
+    more reading ("m"): a note's number on the note slot whose line opens
+    with the note's first characters, a call's on the call slot after the
+    characters the answer gives before it, read once on the page - a new call
+    slot where no engine read a call there (written after the marks the
+    answer gives after those characters, where the page holds them).
+    Returns the new call slots."""
+    import proofread_pages as pp
+    record = getattr(page.pd, "record", None) or {}
+    answer = (record.get("noteNumbers") or {}).get("notes") or []
+    if not answer:
+        return []
+    fold = lambda s: pp.variant_fold(pp.CJK(s or ""))
+    chars = pp.variant_fold(page.s.chars)
+    text = page.text
+    new: list[Slot] = []
+    for item in answer:
+        number = str(item.get("number") or "")
+        if not number.isdigit():
+            continue
+        head = fold(item.get("note"))[:4] or re.sub(r"[^A-Za-z]", "", item.get("note") or "")[:6].lower()
+        if len(head) >= 2:
+            for slot in slots:
+                if slot.kind != "note":
+                    continue
+                start = text.rfind("\n", 0, slot.gap.start + (slot.insert or 0)) + 1
+                line = text[start:text.find("\n", start) if "\n" in text[start:] else len(text)]
+                line = UNPAIRED_HEAD.sub("", line.lstrip(" \t"), count=1)
+                lead = fold(line)[:len(head)] if pp.CJK(head) else re.sub(r"[^A-Za-z]", "", line)[:len(head)].lower()
+                if lead == head:
+                    slot.readings["m"], slot.shown["m"] = number, number
+                    break
+        before = item.get("before") or ""
+        tail_chars = fold(before)[-6:]
+        if len(tail_chars) < 2:
+            continue
+        hits = [i for i in range(len(chars)) if chars.startswith(tail_chars, i)]
+        if len(hits) != 1:
+            continue
+        k = hits[0] + len(tail_chars)
+        found = [s for s in slots + new if s.kind == "call" and s.gap.k == k]
+        if found:
+            found[0].readings["m"], found[0].shown["m"] = number, number
+            continue
+        if k >= len(page.s.chars):
+            continue
+        gap = page.gap(k)
+        seg = text[gap.start:gap.end].split("\n")[0]
+        if clusters(seg) or "\n" in text[gap.start:gap.end]:
+            continue
+        last = max((i for i, c in enumerate(before) if pp.CJK(c)), default=-1)
+        marks = before[last + 1:].strip()
+        if not seg.startswith(marks):
+            continue
+        new.append(Slot("call", gap.start, gap, len(marks), readings={"m": number}, shown={"m": number}))
+    return new
+
+
+def _layout_slots(page: rn.PageRuns, slots: list[Slot]) -> list[Slot]:
+    """The notes at PAGE's foot that B4 marked unpaired and no engine read a
+    number for: note slots with no reading, written over B4's mark (issue
+    #8: the page's structure pairs them with its calls)."""
+    taken = {s.gap.start + s.insert for s in slots if s.kind == "note" and s.insert is not None}
+    taken |= {s.gap.start + s.held[0] for s in slots if s.kind == "note" and s.held is not None}
+    out: list[Slot] = []
+    at = 0
+    gaps = list(page.gaps())
+    for line in page.text.split("\n"):
+        mark = _mark(line)
+        if mark and at not in taken:
+            gap = next((g for g in gaps if g.start <= at <= g.end), None)
+            if gap is not None:
+                out.append(Slot("note", at, gap, at - gap.start, mark=mark))
+        at += len(line) + 1
+    return out
+
+
+def _layout(notes: Sequence[Slot], calls: Sequence[Slot], prior: int | None) -> int | None:
+    """The page's notes numbered by its calls (issue #8, item 2): as many calls
+    as notes, every call read exactly by an engine as one run of consecutive
+    numbers (one engine is enough: the note it calls stands at the page's
+    foot), no note read otherwise than its number (exactly or truncated);
+    PRIOR, the number after the previous page's last note, first."""
+    if not notes or len(calls) != len(notes):
+        return None
+    starts = ([prior] if prior else []) + sorted({int(v) - i for i, c in enumerate(calls)
+                                                 for v in c.readings.values() if v and v.isdigit()})
+    for start in starts:
+        if start < 1:
+            continue
+        if all(str(start + i) in [v for v in c.readings.values() if v] for i, c in enumerate(calls)) and all(
+                not n.readings or any(v == str(start + i) or _truncation(v, str(start + i))
+                                      for v in n.readings.values() if v) for i, n in enumerate(notes)):
+            return start
+    return None
+
+
 def note_numbers(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: Sequence[int],
                  facts: rr.BookFacts | None = None) -> rr.Plan:
-    """N9 over the pages ORDER."""
+    """N9 over the pages ORDER, in order: a page's notes continue from the
+    previous page's last note where the readings allow (issue #8, item 3)."""
     facts = facts or rr.book_facts(book, model)
     setting = rn.Setting(book, model, facts, list(order), texts)
     plan = rr.Plan()
+    last: int | None = None
     for scan in order:
         page = setting.page(scan)
         if not page.s.chars:
             continue
         slots = _slots(page)
+        slots = slots + _layout_slots(page, slots)
+        slots = sorted(slots + _model_slots(page, slots), key=lambda s: (s.at, s.kind != "call"))
         inserts: dict[int, list[tuple[int, int, str, Slot, str]]] = {}
-        settled: dict[str, tuple[int, list[Slot], list[str | None]]] = {}
-        for kind in ("note", "call"):
-            group = [s for s in slots if s.kind == kind]
-            if not group:
-                continue
-            start, how = settle(group, settled["note"][0] if kind == "call" and "note" in settled else None)
-            if start is not None:
-                settled[kind] = (start, group, how)
-        if "note" not in settled:
+        notes = [s for s in slots if s.kind == "note"]
+        calls = [s for s in slots if s.kind == "call"]
+        if not notes:
             # Calls alone pair with nothing on the page.
             continue
-        if "call" in settled:
-            (n0, notes, _), (c0, calls, _) = settled["note"], settled["call"]
-            if n0 + len(notes) <= c0 or c0 + len(calls) <= n0:
-                # The page's calls and its notes settled on numbers that share
-                # none: one of them is misread, and which is not given.
-                continue
-        # What each slot will hold: (start, end, text) in its gap's text, an
-        # insertion where start == end; a marker the page holds that N9 reads
-        # as the number but marker_key does not (⑦3, ⑦⁴) is written over.
-        writes: dict[str, list[tuple[int, int, str, Slot, str]]] = {"note": [], "call": []}
-        complete = True
-        for kind, (start, group, how) in settled.items():
-            for i, (slot, read) in enumerate(zip(group, how)):
-                number = str(start + i)
-                if slot.held is not None:
-                    if marker_key(slot.held[2]) == number:
-                        continue
-                    if slot.readings.get("page") == number:
-                        writes[kind].append((slot.held[0], slot.held[1], written(start + i), slot, "held"))
-                        continue
-                    complete = complete and kind != "note"
-                    continue
-                if read is None or slot.insert is None:
-                    complete = complete and kind != "note"
-                    continue
-                writes[kind].append((slot.insert, slot.insert, written(start + i), slot, read))
-        if not complete:
-            # A note of the run that would stay unpaired: finalize would make
-            # the others footnotes and leave it a paragraph among them (the
-            # bench scores such a page worse than with none converted).
+        prior = last + 1 if last else None
+        writes = _by_readings(notes, calls, prior)
+        if writes is None:
+            start = _layout(notes, calls, prior)
+            writes = None if start is None else _assign(notes, calls, start, start,
+                                                        ["layout"] * len(notes), ["exact"] * len(calls))
+        if writes is None:
             continue
-        calls_held = {marker_key(s.held[2]) for s in (settled["call"][1] if "call" in settled else []) if s.held}
-        calls_written = {marker_key(text) for _, _, text, _, _ in writes["call"]}
-        notes_start, notes_group, _ = settled["note"]
-        if not {str(notes_start + i) for i in range(len(notes_group))} & (calls_held | calls_written):
-            # No note of the page would find its call: the numbers written
-            # would stand as printed glyphs and pair with nothing.
-            continue
+        numbers = [int(marker_key(text)) for _, _, text, slot, _ in writes["note"] if marker_key(text).isdigit()]
+        numbers += [int(marker_key(s.held[2])) for s in notes if s.held and marker_key(s.held[2]).isdigit()]
+        if numbers:
+            last = max(numbers)
         for start_end in writes.values():
             for s, e, text, slot, read in start_end:
                 inserts.setdefault(slot.gap.k, []).append((s, e, text, slot, read))

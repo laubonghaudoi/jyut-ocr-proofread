@@ -232,7 +232,7 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 - `content-fidelity-unresolved`：（`--content-fidelity on`）清點、補讀或者覆核定唔到，嗰頁照封。
 - `sealed-report`：舊版封存嘅頁，有未分類嘅疑問。
 
-**標點**：`punctuation-partial`（標點可能漏咗）、`punctuation-count-mismatch`（保留嘅標點數同 census 差過界線）、`doubled-count-mismatch`（雙圈數唔一致）、`punctuation-unread`（有幾個字之間嘅標點冇讀過）、`punctuation-left-bare`（頁上有標點，嗰段一個都冇加）、`punctuation-whole-page`（成頁一次過加，冇逐段核）、`MARK-UNBALANCED`（括號或者引號唔成對）、`MARK-REVERSED`（倒轉咗嘅「）（」）、`MARK-SHAPE`（括號形狀可疑）、`retry-marks-unverified`（重試過嘅標點段，第一次答案嘅符號寫唔返）、`heading-mark-unread`（標題入面兩個引擎都冇讀到嘅標點）、`run-mark-dropped`（寫數字嗰陣刪咗或者換咗兩個引擎都冇讀到嘅標點）、`note-markers-unverified`（引擎讀到嘅註號頁面冇或者數值唔同）、`note-unmatched`（註號同註唔係一個對一個，照原印留低）。
+**標點**：`punctuation-partial`（標點可能漏咗）、`punctuation-count-mismatch`（保留嘅標點數同 census 差過界線）、`doubled-count-mismatch`（雙圈數唔一致）、`punctuation-unread`（有幾個字之間嘅標點冇讀過）、`punctuation-left-bare`（頁上有標點，嗰段一個都冇加）、`punctuation-whole-page`（成頁一次過加，冇逐段核）、`MARK-UNBALANCED`（括號或者引號唔成對）、`MARK-REVERSED`（倒轉咗嘅「）（」）、`MARK-SHAPE`（括號形狀可疑）、`retry-marks-unverified`（重試過嘅標點段，第一次答案嘅符號寫唔返）、`heading-mark-unread`（標題入面兩個引擎都冇讀到嘅標點）、`run-mark-dropped`（寫數字嗰陣刪咗或者換咗兩個引擎都冇讀到嘅標點）、`note-markers-unverified`（引擎讀到嘅註號頁面冇或者數值唔同）、`note-unpaired`（頁底嘅註冇註號、配唔到正文，寫做未配對嘅註：final.md 入面係引用段 `> `，唔會切開句子）、`note-unmatched`（註號同註唔係一個對一個，照原印留低）。
 
 **分頁、標題同目錄**：`unit-not-in-scan`（目錄有、正文搵唔到嘅篇）、`leaves-missing`（頁碼跳咗：用戶對 PDF 睇係咪真係缺頁；agent 唔好自己補）、`HEAD-FRAGMENT`（頁頂標題可能係上一頁未完嘅句）、`TOC-UNMATCHED`（目錄項喺正文搵唔到）、`heading-kind-unknown`（認唔到係乜嘅標題，級數照舊）、`JOIN-UNRESOLVED`（分頁位冇 label）。
 
@@ -293,7 +293,7 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 
 `book_profile.py`：`--no-learned-heads`（唔學書眉）、`--no-doubled-notation`、`--force-calibrate-engines`（短檔都校準引擎）、`--probe-pages`、`--pages`、`--max-crops`、`--reuse-engines`（同一批頁、同一個模型就沿用上次嘅引擎量度）、`--no-inflight-cap`、`--workers`。
 
-`repair_book.py`（`finish_book.py` 叫，agent 唔使直接用；每個關一個階段）：`--no-furniture`（書眉、卷次、頁碼、頁邊漏字）、`--no-marks`（引擎 B 代標點字、直排括號、標題符號）、`--no-brackets`（編者括號〔〕）、`--no-contents`（目錄同篇）、`--no-title-page`（由右至左印嘅題名頁）、`--no-levels`（標題級數）、`--no-paragraphs`（頁內分段）、`--no-joins`（分頁位 label）、`--no-runs`（兩個引擎都讀到但頁面冇嘅數字、拉丁字、假名、□、註號同標點）、`--no-notes`（全書連續編號嘅註：兩三位數嘅註號同佢哋嘅註，按兩個引擎嘅讀法同頁內連續定號寫返）、`--no-forms`（中文入面嘅半形標點轉全形、冇引擎讀到嘅著重號）、`--no-script`（簡體書嘅繁體裁決答案）、`--no-words`（同一讀法幾種寫法）。另有 `--output`、`--resume`、`--pages`、`--workers` 同輸入路徑（`--assembled`、`--page-sources`、`--proofread`、`--renders`、`--ocr-a`、`--ocr-b`、`--profile`、`--page-manifest`）。
+`repair_book.py`（`finish_book.py` 叫，agent 唔使直接用；每個關一個階段）：`--no-furniture`（書眉、卷次、頁碼、頁邊漏字）、`--no-marks`（引擎 B 代標點字、直排括號、標題符號）、`--no-brackets`（編者括號〔〕）、`--no-contents`（目錄同篇）、`--no-title-page`（由右至左印嘅題名頁）、`--no-levels`（標題級數）、`--no-paragraphs`（頁內分段）、`--no-joins`（分頁位 label）、`--no-runs`（兩個引擎都讀到但頁面冇嘅數字、拉丁字、假名、□、註號同標點）、`--no-notes`（註號同佢哋嘅註：兩三位數嘅圈號、頁底冇註號嘅註（用正文註號順序配）、前一頁最後一條註之後嘅號、答題者 `note-numbers` 嘅讀法，按兩個引擎嘅讀法同頁內連續定號寫返；issue #8）、`--no-forms`（中文入面嘅半形標點轉全形、冇引擎讀到嘅著重號）、`--no-script`（簡體書嘅繁體裁決答案）、`--no-words`（同一讀法幾種寫法）。點數一本書嘅註號喺邊度冇咗：`scripts/note_census.py BOOK ...`（淨係讀，唔使 GPU；每個註號位分做頁面有、兩個引擎讀到一樣、得一個引擎讀到、兩個引擎位置差少少、兩個引擎讀到唔同、頁底註兩個引擎都冇讀到註號，另計兩三位數；書做完就連 `finish/footnotes.json` 嘅腳註數；issue #8）。另有 `--output`、`--resume`、`--pages`、`--workers` 同輸入路徑（`--assembled`、`--page-sources`、`--proofread`、`--renders`、`--ocr-a`、`--ocr-b`、`--profile`、`--page-manifest`）。
 
 `finish_book.py`、`clean_book.py` 嘅開關見 `SKILL.md` 第七節。
 

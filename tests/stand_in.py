@@ -53,6 +53,8 @@ class StandIn:
                against it (confirm_nothing); by default engine A's text of the
                book's pages, as run() finds it - a crop that shows the spot as
                engine A read it
+    notes      the note-numbers answer (issue #8): a list of {"number", "note",
+               "before"}; by default none ({"notes": []})
     """
 
     model, effort = "stand-in", None
@@ -61,7 +63,8 @@ class StandIn:
                  judge: Callable[[str, str], str] | None = None,
                  formatter: Callable[[str, str], str] | None = None,
                  rebuild: Callable[[str], str] | None = None,
-                 coverage: str | None = None):
+                 coverage: str | None = None, notes: list[dict[str, str]] | None = None):
+        self.notes = notes or []
         self.census = census
         self.punctuate = punctuate or (lambda span: span)
         self.judge = judge or (lambda a, b: a or "無")
@@ -95,6 +98,9 @@ class StandIn:
             return self.formatter(between(user_text), kind), metrics
         if system == pp.BLIND_SYSTEM:
             return (self.coverage if self.coverage is not None else self.engine_a_text), metrics
+        if system == pp.NOTE_NUMBERS_SYSTEM:
+            import json
+            return json.dumps({"notes": self.notes}, ensure_ascii=False), metrics
         if system == pp.REBUILD_SYSTEM and self.rebuild is not None:
             return self.rebuild(between(user_text)), metrics
         return "RECORD: row" if "RECORD" in user_text else "[]", metrics

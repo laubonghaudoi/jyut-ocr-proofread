@@ -77,7 +77,26 @@ engine is not aligned to the page there or reads no marker opening the
 line, nor where an engine reads a bullet itself; a marker is moved only
 where both engines read the same one before the bracket.
 
-B1, B2 and B3 ask no model and name no doubt: the edits are in the log.
+B4 (issue #8) marks a note the page prints at its foot that the page holds
+with no number as an unpaired note: the lines of the page's last run that
+engine A reads in a note block (proofread_pages.NOTE_BLOCK_LABELS: a
+footnote, or a figure's source note) and that open with no note number
+(_ocr_markdown.NOTE_LINE_RE) nor a footnote head, and the Western lines among
+them, are written `[^unpaired-SCAN-N]: ` and their text.  The joins stage
+and finalize read such a line as a foot note (_ocr_markdown.foot_notes): a
+`join` runs on the body's line above the notes and carries the notes past
+the end of the split paragraph, where until then the note, read as the
+page's last line of prose, cut the sentence (issue #8: 「原文如此。」 alone
+between the two halves of a sentence, 241 times in eight modern books).
+N9 writes the note's number over the mark where it settles one (from the
+engines' readings, the page's calls, or the model's reading); finish_book's
+finalize writes what stays unpaired as a blockquote (`> `), out of the
+sentence and marked, with a `note-unpaired` doubt.  A bullet the page put
+before such a line goes with it.  Not on a page whose engine A blocks are
+not known, nor a line in the middle of the page.
+
+B1, B2, B3 and B4 ask no model; B1-B3 name no doubt (the edits are in the
+log), B4 names each line it marks (`note-unpaired`).
 """
 
 from __future__ import annotations
@@ -240,6 +259,92 @@ def _marker(token: Any) -> str | None:
     if token.kind == rn.OTHER:
         return marker_key(token.raw.replace("\textcircled", r"\textcircled")) or None
     return None
+
+
+# B4: the label an unpaired note's mark carries (finish_book writes the line a
+# blockquote), and the mark at a line's start.
+UNPAIRED = "unpaired"
+UNPAIRED_HEAD = re.compile(rf"\[\^{UNPAIRED}-\d+-\d+\]: ")
+
+
+def _note_head(line: str) -> bool:
+    """LINE opens with a note number or a footnote definition's head."""
+    from _ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, line_body
+    body = line_body(line).lstrip()
+    return bool(NOTE_LINE_RE.match(body) or FOOTNOTE_HEAD_RE.match(body))
+
+
+def unpaired_notes(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: Sequence[int],
+                   facts: rr.BookFacts | None = None) -> rr.Plan:
+    """B4 over the pages ORDER (after B3 is applied)."""
+    import proofread_pages as pp
+    facts = facts or rr.book_facts(book, model)
+    setting = rn.Setting(book, model, facts, list(order), texts)
+    plan = rr.Plan()
+    for scan in order:
+        page = setting.page(scan)
+        if not page.s.chars or not page._block_of:
+            continue
+        text = page.text
+        offsets = list(page.s.offsets)
+        # Each nonblank line: its span and the labels of engine A's blocks its
+        # characters lie in ("" for a line with no CJK character).
+        lines: list[tuple[int, int, str]] = []
+        at = 0
+        for raw in text.split("\n"):
+            lines.append((at, at + len(raw), raw))
+            at += len(raw) + 1
+        # Engine A's note blocks' text, for a line the alignment does not reach
+        # (a footnote engine A reads outside its reading order): the line is
+        # a note's where its first characters stand in one (proofread_pages
+        # note_labels' anchor).
+        notes_text = [pp.variant_fold(pp.CJK(str(b.get("text") or ""))) for b in page.pd.a_blocks
+                      if b.get("label") in pp.NOTE_BLOCK_LABELS]
+        kinds: list[str] = []
+        for start, end, raw in lines:
+            if not raw.strip():
+                kinds.append("blank")
+                continue
+            ks = [k for k, o in enumerate(offsets) if start <= o < end]
+            labels = [page.a_label(k) for k in ks]
+            lead = pp.variant_fold(pp.CJK(raw))[:pp.NOTE_LINE_ANCHOR]
+            if not ks:
+                kinds.append("latin" if re.search(r"[A-Za-z]{3}", raw) else "other")
+            elif sum(1 for lab in labels if lab in pp.NOTE_BLOCK_LABELS) * 2 > len(labels):
+                kinds.append("note")
+            elif not any(labels) and len(lead) >= 2 and any(lead in text for text in notes_text):
+                kinds.append("note")
+            else:
+                kinds.append("body")
+        # The page's last run: from the end, blank, note and Western lines and
+        # lines already notes, with at least one note-block line in it.
+        run: list[int] = []
+        for n in range(len(lines) - 1, -1, -1):
+            if kinds[n] in ("blank", "note", "latin") or (kinds[n] != "blank" and _note_head(lines[n][2])):
+                run.append(n)
+                continue
+            if lines[n][2].strip() in ("---", "***", "___"):
+                run.append(n)
+                continue
+            break
+        if not any(kinds[n] == "note" for n in run):
+            continue
+        top = min((n for n in run if kinds[n] == "note"), default=None)
+        count = 0
+        for n in sorted(run):
+            start, end, raw = lines[n]
+            if kinds[n] not in ("note", "latin") or n < top or not raw.strip() or _note_head(raw):
+                continue
+            count += 1
+            bullet = BULLET.match(raw)
+            body_at = start + (bullet.end() if bullet else len(raw) - len(raw.lstrip(" \t")))
+            head = f"[^{UNPAIRED}-{scan}-{count}]: "
+            plan.edits.append(re_.Edit(scan, start, body_at, head, rule="B4", evidence={
+                "before": text[start:body_at], "line": rn.show(raw, 60), "label": kinds[n]}))
+            plan.doubts.append(("note-unpaired", scan,
+                                f"a note at the page's foot with no number, written as an unpaired note: "
+                                f"{rn.show(raw.strip(), 60)}", {"line": raw.strip()[:200]}))
+    return plan
 
 
 def note_lines(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: Sequence[int],

@@ -311,7 +311,9 @@ def write_book(root: Path, spec: Mapping[int, Mapping[str, Any]], *, assemble: b
                   "adjudications": list(page.get("adjudications") or []),
                   "doubts": list(page.get("sealDoubts") or []),
                   **({"punctuationPasses": list(page["punctuationPasses"])} if page.get("punctuationPasses") else {}),
-                  **({"tableStitch": dict(page["tableStitch"])} if page.get("tableStitch") else {})}
+                  **({"tableStitch": dict(page["tableStitch"])} if page.get("tableStitch") else {}),
+                  # A check's own fields of the sealed record (noteNumbers, issue #8).
+                  **dict(page.get("recordExtra") or {})}
         data = seal(markdown, record)
         (root / "proofread" / f"{stem}.md").write_text(markdown, encoding="utf-8")
         (root / "proofread" / f"{stem}.json").write_bytes(data)

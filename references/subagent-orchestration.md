@@ -44,6 +44,7 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
    - `format`（及 `-retry`）：加 Markdown 結構（標題、段落、列表、表格），刪書邊嘅書眉同頁碼，每個鎖定嘅字、標點、原圖證實嘅數字／算式／項號同 `⟦Tn⟧` 表格記號都要原封保留；原印項號加 bullet 之後仍然係內容。
    - `writer`：淨係得一份底稿或者引擎讀唔到嘅頁：對住整頁原圖轉錄，底稿只係提示。
    - `coverage-read`：盲讀一張裁圖，用嚟證實裁決答「無」嘅位係咪真係冇字。
+   - `note-numbers`（issue #8）：睇完整原頁，逐條頁底註答佢印嘅編號（圈入面兩三位數照寫阿拉伯數字，例如 72、240）、條註開頭幾個字、同正文入面佢個註號前面緊貼嘅幾個字，照 JSON 契約答；睇唔清嘅編號唔好寫，唔好由前後編號推斷。淨係規則配唔到註號嘅頁先會問。
    - `page-inventory`、`content-recovery`、`coverage-review`（淨係 `--content-fidelity on`）：睇完整原頁，照 JSON 契約答；兩份底稿一致唔係完整嘅證據；唔可以由註文或者連號推斷漏咗嘅註號。見 `content-fidelity.md`。
    - 任何 `-correction` 題：腳本話上一個答案唔合契約（欄位、hash 抄錯），照佢講嘅改一次。
 3. **寫答案**：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次。`usage`、`response_id` 淨係寫量度到嘅；冇就唔寫（記做未知，唔當零）。可以寫 `answered_by`（答題 model 嘅確實 ID）。Worker 淨係寫自己嗰份 answers、報答咗幾多題，然後即刻**停寫**（STOP-WRITE）；唔准掂 `packets/answers.jsonl`、`page-NNNN.md`、`page-NNNN.json`。答案齊唔齊由 `packet_dispatch.py` 再跑一次睇（未齊嘅包會再列出嚟），內容由 `apply_packet_answers.py` 驗；用註冊咗嘅 writer 角色先要另外報 SHA-256。

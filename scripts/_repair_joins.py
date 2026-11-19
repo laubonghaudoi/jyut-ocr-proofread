@@ -43,7 +43,9 @@ aside (all of them where no line holds such a character: no body text).
   breaks after an unfinished body that lines set aside follow, all
   `paragraph` before; at 31, 26, 37, 20 and 52 of them the lines set aside
   are foot notes alone, and those are joined now (left: a note that lost
-  its number or is marked ●, a title page's line; most of a historical monograph's foot
+  its number - since issue #8 a joined one too where engine A reads it in a
+  footnote block, which B4 marks an unpaired note - or is marked ●, a title
+  page's line; most of a historical monograph's foot
   notes lost their numbers or are list items; with the finish's note
   number, 2026-10-25, a historical monograph 53: a note opening with superscripts).  Two
   of those joins (a multi-volume archival compilation 2 and 4, one each) follow a body ending in ：,

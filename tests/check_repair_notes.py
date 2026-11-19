@@ -14,7 +14,16 @@ book numbers its notes on from page to page.
   $\\textcircled {240}$, its call engine A alone reads (⑳): ②④⓪ at both;
 - left: calls engine A reads ⑫ and ⑬ where engine B reads 19 at both (a
   run neither engine backs the other on), and notes the page already holds;
-  --no-notes switches the stage off.
+  --no-notes switches the stage off;
+- a page's one note the engines read 82 and 85 takes the number after the
+  previous page's last note (issue #8, item 3);
+- issue #8, items 2 and 5: a note at the page's foot with no number in engine
+  A's footnote block is marked unpaired (B4) and numbered by its call, which
+  engine A alone reads, and finalize pairs them; a note no call numbers stays
+  marked, and finalize writes it a blockquote;
+- issue #8, item 4: a call no engine read, given by the answerer's
+  note-numbers reading by the characters before it, is written with its
+  note and paired; without the answer the page is left.
 
 No model, no GPU, no corpus: made-up books (tests/repair_fixture.py), each
 page changed only where a case is set up.
@@ -92,6 +101,32 @@ def spec_of() -> dict:
     spec[17]["sealedEdits"] = [("也①⑨③", "也"), ("體①⑨④", "體")]
     # Scan 18: notes the page already holds.
     spec[18]["items"][1:1] = [("line", "甲乙丙丁⑧①戊己庚辛"), ("line", "⑧①〔明〕田園雜記")]
+    # Scan 19: one note the engines read 82 and 85, its call 82 by both: the
+    # number after scan 18's last note (81) settles it.
+    spec[19]["items"][1:1] = [("line", "春山居士云⑧②甲乙丙丁"), ("line", "⑧②〔清〕秋夜雜記")]
+    spec[19]["bEdits"] = [("云⑧②", "云$ ^{82} $"), ("⑧②〔清〕", "⑧⑤〔清〕")]
+    spec[19]["sealedEdits"] = [("云⑧②", "云"), ("⑧②〔清〕", "〔清〕")]
+    # Scan 20, issue #8: a note at the page's foot with no number in engine
+    # A's footnote block, its call ① read by engine A alone; and on scan 13 a
+    # note at the foot no call numbers.
+    spec[20]["items"][1:1] = [("line", "甲乙丙丁①戊己庚辛")]
+    spec[20]["bEdits"] = [("丁①戊", "丁戊")]
+    spec[20]["sealedEdits"] = [("丁①戊", "丁戊")]
+    # Scans 12 and 11, issue #8 item 4: a note 99 both engines read, whose call
+    # neither engine read; on scan 12 the answerer's note-numbers reading
+    # (the sealed record's noteNumbers) gives the call by the characters
+    # before it, on scan 11 there is no answer.
+    for scan in (12, 11):
+        spec[scan]["items"][1:1] = [("line", "春山居士云⑨⑨甲乙丙丁"), ("line", "⑨⑨〔明〕田園雜記")]
+        spec[scan]["aEdits"] = [("云⑨⑨", "云")]
+        spec[scan]["bEdits"] = [("云⑨⑨", "云")]
+        spec[scan]["sealedEdits"] = [("云⑨⑨", "云"), ("⑨⑨〔明〕", "〔明〕")]
+    spec[12]["recordExtra"] = {"noteNumbers": {"reason": "made up", "parsed": True, "notes": [
+        {"number": "99", "note": "〔明〕田園雜記", "before": "春山居士云"}]}}
+    for scan, text in ((20, "原文如此"), (13, "編者案此處原缺")):
+        spec[scan].setdefault("extraSealed", []).append(text)
+        spec[scan].setdefault("extraBlocks", []).append({"text": text, "boundingBox": fx.box_of(300, 900, 16, 200),
+                                                         "blockLabel": "footnote", "blockOrder": -1})
     return spec
 
 
@@ -120,6 +155,30 @@ def main_checks(tmp: Path) -> None:
     p = pages[18]
     check("N9" not in rules(log, 18) and p.count("⑧①") == 2,
           f"N9: notes and calls the page already holds are left ({rules(log, 18)})")
+    p = pages[12]
+    check("云⑨⑨甲" in p and "⑨⑨〔明〕田園雜記" in p and "N9" in rules(log, 12),
+          f"issue #8 item 4: a call no engine read, given by the answerer's note-numbers reading, written with its "
+          f"note ({rules(log, 12)}, {p[p.find('春山'):p.find('春山') + 40]!r})")
+    text, _ = _footnotes.convert(f"<!-- page_012 -->\n{p}")
+    check("云[^99]甲" in text and "[^99]: 〔明〕" in text, f"issue #8 item 4: finalize pairs them ({text[-50:]!r})")
+    check("N9" not in rules(log, 11) and "云甲" in pages[11],
+          f"without the answer, a note whose call no engine read is left: it would pair with nothing ({rules(log, 11)})")
+    p = pages[19]
+    check("云⑧②甲" in p and "⑧②〔清〕秋夜雜記" in p,
+          f"N9: one note the engines read 82 and 85 takes the number after the previous page's last note (81) "
+          f"({p[p.find('春山'):p.find('春山') + 40]!r})")
+    p = pages[20]
+    check("丁①戊" in p and "\n①原文如此" in p and "B4" in rules(log, 20) and "N9" in rules(log, 20),
+          f"issue #8: a note with no number at the page's foot (engine A: footnote) is numbered by its call, read by "
+          f"engine A alone ({rules(log, 20)}, {p[p.find('甲乙'):]!r})")
+    text, _ = _footnotes.convert(f"<!-- page_020 -->\n{p}")
+    check("丁[^1]戊" in text and "[^1]: 原文如此" in text, f"issue #8: finalize pairs them ({text[-60:]!r})")
+    p = pages[13]
+    check("[^unpaired-13-1]: 編者案此處原缺" in p and "B4" in rules(log, 13),
+          f"B4: a note at the page's foot with no number that no call numbers stays marked unpaired ({p[-60:]!r})")
+    import finish_book
+    check(finish_book.UNPAIRED_NOTE_LINE.sub(r"\1> ", "正文。\n\n[^unpaired-13-1]: 編者案。\n") == "正文。\n\n> 編者案。\n",
+          "finalize writes an unpaired note as a blockquote")
     status, pages, log = repair(tmp, spec_of(), "notes-off", "--no-notes")
     check(status == 0 and not any(r["rule"] == "N9" for r in log),
           f"--no-notes switches the stage off ({sorted({r['rule'] for r in log})})")

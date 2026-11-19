@@ -40,6 +40,7 @@ DOUBT_KINDS = (
     "run-mark-dropped",      # marks of the page neither engine reads there, dropped (or engine A's written for them) by N6
     "retry-marks-unverified",  # a refused first answer's marks engine A confirms, not written back
     "note-markers-unverified",  # a page's note numbers the engines read that the page lacks or writes otherwise
+    "note-unpaired",         # a note at a page's foot with no number, written as an unpaired note (B4; a blockquote in final.md)
     "heading-mark-unread",   # heading marks neither engine read, left: engine A read a column there (K11)
     "same-reading-written-differently",  # one engine's reading beside one character, written different ways (W1)
     # 裁決's answer in traditional script written in engine A's simplified

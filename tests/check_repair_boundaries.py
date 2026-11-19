@@ -204,6 +204,18 @@ def notes_spec() -> dict[int, dict[str, Any]]:
     return spec
 
 
+def aside_spec() -> dict[int, dict[str, Any]]:
+    """Scan 9's unfinished body followed by a line set aside that opens with
+    no note number, in a block engine A labels text (no footnote)."""
+    spec = fx.make_spec()
+    end_page(spec, 9, final=False)
+    text = prose(901, 12, True)
+    spec[9]["extraSealed"].append(text)
+    spec[9].setdefault("extraBlocks", []).append({"text": text, "boundingBox": fx.box_of(60, 900, 16, 200),
+                                                  "blockLabel": "text", "blockOrder": -1})
+    return spec
+
+
 def list_spec() -> dict[int, dict[str, Any]]:
     """A list running on across scans 16 and 17."""
     spec = fx.make_spec()
@@ -286,10 +298,24 @@ def boundary_checks(tmp: Path) -> None:
           and [result.evidence[k].get("footNotes") for k in ("16", "17")] == [2, 1],
           f"J: a paragraph running on over three pages, each of the first two ending with its foot notes, is joined "
           f"at both breaks ({[result.labels[k] for k in (16, 17)]}, exit {result.status})")
-    check(result.labels[10] == "paragraph" and result.rule_of(10) == "P" and result.evidence["10"]["setAside"] == 1
-          and "footNotes" not in result.evidence["10"],
-          f"P: an unfinished body that a line set aside follows, which opens with no note number, is not joined "
-          f"({result.labels[10]}, {result.evidence['10']})")
+    # Issue #8: the line set aside is a note engine A reads in a footnote
+    # block that lost its number; B4 marks it an unpaired note, so the join
+    # runs on the body's line above it and the note follows the paragraph.
+    combined9 = (result.out / "combined-repaired.md").read_text(encoding="utf-8")
+    check(result.labels[10] == "join" and result.rule_of(10) == "J" and result.evidence["10"].get("footNotes") == 1
+          and "[^unpaired-9-1]: " in combined9,
+          f"J: an unfinished body that a note at the page's foot with no number follows (engine A: a footnote block) "
+          f"is joined past the note, which B4 marks unpaired ({result.labels[10]}, {result.evidence['10']})")
+    final9 = om.apply_boundary_contract(combined9, result.labels)
+    body9 = prose(9 * 13, 60, False)
+    first10 = next(item[1] for item in spec[10]["items"] if item[0] == "para")
+    check(body9 + first10 in final9 and final9.index("[^unpaired-9-1]: ") > final9.index(body9 + first10),
+          "finalize: the sentence runs on across the page and the unpaired note follows the joined paragraph")
+    aside = repair(tmp, aside_spec(), "aside")
+    check(aside.labels[10] == "paragraph" and aside.rule_of(10) == "P" and aside.evidence["10"]["setAside"] == 1
+          and "footNotes" not in aside.evidence["10"],
+          f"P: an unfinished body that a line set aside follows, which opens with no note number and that engine A "
+          f"reads as no footnote, is not joined ({aside.labels[10]}, {aside.evidence['10']})")
     check(result.status == 0 and result.labels[12] == "paragraph" and result.rule_of(12) == "P"
           and result.evidence["12"].get("footNotes") == 1 and result.evidence["12"]["kinds"][0] == "table",
           f"P: a body ending with a table row above its foot notes is read by that row, not the note: no join into "
