@@ -11,6 +11,13 @@
 - `ocr_batch.py --round`：第二次派題開始淨係印兩行短嘅（邊幾個 worker 檔、RESULT），成段指示同 command 喺每個 caller 第一次、之後每 25 次、同帶一次性選項（`--answerers-gone`、`--retry-failed`、`--not-started`）嗰次先印。160 頁實跑量到，呢啲輸出每次 1,300 字，佔主 agent context 增長嘅 35%，而主 agent 每個請求都要重讀成個 context：佢嘅成本去到每條題 0.46 美仙，係答題者嘅一半。
 - 同一次實跑量到 `c6e84fc` 嘅效果：題目排緊隊嗰陣 20 個位平均用到 18.2 個（之前 14.2），每分鐘答 38.8 條（之前同樣份量 27.5）；主 agent 冇因為成本自己停；384 個答題者有 1 個俾平台拒絕、之後重派。按 token 裝份量嘅估算喺現代書偏低（估 3.6 萬、實際 5.0 萬），45% 嘅答題者仍然過咗加價線，未改。
 - 未做：快路仲未由 book profile 量度一致率嚟開關，亦未有抽查；有出入嘅 block 仍然成段問；排版題仍然每頁一條。
+## Unreleased — PaddleOCR-VL 可以交外部 VL 伺服器讀（sglang-server／vllm-server）
+
+- 問題（M1 叢集 H200，Paddle 3.3.1 CUDA 12.6 wheel，driver 570）：native PaddleOCR-VL 生成卡死：版面偵測做完，VL 逐 token 生成嗰陣一個 CPU 核 100%、GPU 0%，一頁永遠讀唔完（worker 900 秒超時）。試過 `CUDA_LAUNCH_BLOCKING`、`CUDA_MODULE_LOADING=EAGER`、stream-safe allocator、naive allocator，全部冇用；喺 embedding 外面包一層 Python 有時會好、有時唔會，靠唔住。
+- 改動：`run_paddleocr_vl.py --vl-backend sglang-server|vllm-server`，配 `--vl-server-url`、`--vl-server-model`、`--vl-server-revision`（必填）、`--vl-concurrency`（各有 `OCR_PADDLE_VL_*` 環境變數）。版面偵測照喺 `--device`；VL 識別交 PaddleX 嘅 genai client 送去伺服器。底稿身份記住後端、本機權重 SHA-256、模型名、部署版本同並行數；worker 載入後核實 URL、模型、並行數同版面裝置。伺服器由用戶開同管。
+- 實測：M1 一張 H200 跑 SGLang 0.5.23 serve 固定版本嘅 PaddleOCR-VL-1.6，8 頁全部封好（skill 自己嘅 runner）；吞吐每粒鐘 2,258 頁（1 個版面 process）、6,476（4）、9,201（8）、11,341（16）。
+- 文件：`references/local-ocr.md` 新一節。測試：新檔 `tests/test_paddle_vl_server.py`（身份、worker 環境、核實、參數）。全套測試失敗同改之前一樣。
+
 ## Unreleased — 安裝：預編嘅 llama.cpp 喺舊 Linux 行唔到，就用源碼建置同一個 commit
 
 - 問題（M1 叢集，Ubuntu 22.04，glibc 2.35，driver 570）：安裝器淨睇 driver 揀預編嘅 `llama-b10969-bin-ubuntu-cuda-12.8-x64`，但呢個二進制要 glibc 2.38（`GLIBC_2.38`、`GLIBCXX_3.4.32`），`llama-server --version` 一行就失敗，安裝停喺度，冇行文件講嘅源碼後備。

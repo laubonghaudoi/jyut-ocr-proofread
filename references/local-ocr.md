@@ -28,6 +28,18 @@ macOS 只支援原生 Apple Silicon；Intel Mac 唔支援。純 Vision 跑 `ocr_
 - 兩引擎分歧只係問題嘅位；一致亦可能一齊錯。唔自動投票、唔按多數字形全域替換。
 - 安裝／初始化負責下載及核驗模型；跑書期間引擎缺失、裝置暫時用唔到或者單頁失敗，runner 出 ERROR 講原因：照講畀用戶知，唔無限重試，唔自行換模型，亦唔改用其他 OCR 工具。
 
+## PaddleOCR-VL 交外部 VL 伺服器（sglang-server／vllm-server）
+
+Linux 上可以將 PaddleOCR-VL 嘅 VL 識別交畀一個你自己開嘅 OpenAI 相容伺服器（SGLang 或 vLLM 載入 `PADDLE_VL_MODEL_DIR` 嗰份固定版本權重），版面偵測仍然由 Paddle 喺 `--device` 做。點解要：M1 叢集嘅 H200（Paddle CUDA 12.6 wheel、driver 570）用 native 生成，一頁永遠讀唔完（worker 900 秒超時）；同一條 pipeline 交 SGLang 0.5.23 讀，一頁 1 至 5 秒，一張卡開 16 個版面 process 實測每粒鐘 11,341 頁（2026-11-19）。
+
+- `--vl-backend sglang-server`（或 `vllm-server`，PaddleX 嘅名），即 `OCR_PADDLE_VL_BACKEND`；
+- `--vl-server-url`（`OCR_PADDLE_VL_SERVER_URL`）：伺服器嘅 OpenAI base URL，例如 `http://127.0.0.1:31500/v1`；
+- `--vl-server-model`（`OCR_PADDLE_VL_SERVER_MODEL`，預設 `PaddleOCR-VL-1.6`）：伺服器 serve 嘅模型名；
+- `--vl-server-revision`（`OCR_PADDLE_VL_SERVER_REVISION`，必填）：呼叫者聲明嘅部署版本，伺服器換權重或者 runtime 就要改；
+- `--vl-concurrency`（`OCR_PADDLE_VL_CONCURRENCY`，預設 16）：一頁有幾多個 block 同時送去伺服器。
+
+底稿身份記住呢個後端：本機權重檔嘅 SHA-256（伺服器應該 serve 同一份）、模型名、部署版本同並行數；同 native 或者 MLX 嘅底稿唔通用，換後端要 `--overwrite`。worker 載入之後核實 Paddle 真係用緊聲明嘅 URL、模型同並行數，版面偵測喺 `--device`，唔啱就唔讀。伺服器由你開、由你管，runner 唔會開、停或者重啟佢。
+
 ## 模型同裝置
 
 喺 skill 目錄執行 runner。Hunyuan 優先用安裝器已核實嘅 `llama-server`、GGUF 模型同 mmproj；Paddle 用裝好 Paddle（GPU 版 `paddlepaddle-gpu` 或者 CPU 版 `paddlepaddle`）同 `paddleocr` 嘅獨立 Python 環境，worker 要支援 `PaddleOCRVL(pipeline_version="v1.6", device=..., vl_rec_model_dir=..., layout_detection_model_dir=...)`。權重唔包喺 skill，亦唔因為上游模型卡更新就自動換版本。

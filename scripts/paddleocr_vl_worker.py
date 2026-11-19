@@ -314,6 +314,13 @@ def main(argv: list[str] | None = None) -> int:
                        vl_rec_server_url=os.environ["JYUT_PADDLE_VL_SERVER_URL"],
                        vl_rec_api_model_name=os.environ["JYUT_PADDLE_VL_API_MODEL"],
                        vl_rec_max_concurrency=1)
+    elif os.environ.get("JYUT_PADDLE_VL_BACKEND") in ("sglang-server", "vllm-server"):
+        # A server someone else runs reads the blocks; the layout detector stays on the device.
+        options.pop("vl_rec_model_dir", None)
+        options.update(vl_rec_backend=os.environ["JYUT_PADDLE_VL_BACKEND"],
+                       vl_rec_server_url=os.environ["JYUT_PADDLE_VL_SERVER_URL"],
+                       vl_rec_api_model_name=os.environ["JYUT_PADDLE_VL_API_MODEL"],
+                       vl_rec_max_concurrency=int(os.environ.get("JYUT_PADDLE_VL_CONCURRENCY", "16")))
 
     try:
         with contextlib.redirect_stdout(sys.stderr):

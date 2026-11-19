@@ -51,6 +51,15 @@ from typing import Any, Mapping, Sequence
 import _paddle_pool
 from _paddle_pool import (CARD_RESERVE_MIB, MAX_AUTO_WORKERS, MIN_PAGES_A_WORKER, WORKERS_ENV,
                           WORKER_SHARE_MIB)
+# An OpenAI-compatible server someone else runs (SGLang or vLLM, as PaddleX names them), serving the
+# pinned PaddleOCR-VL weights: Paddle keeps the layout detector on --device and sends each block's
+# recognition there.  Native Paddle generation stalls on H200 GPUs (CUDA 12.6 wheel, driver 570:
+# a page never ends); a server also batches the blocks of many pages and books.
+SERVER_BACKENDS = ("sglang-server", "vllm-server")
+SERVER_URL_ENV, SERVER_MODEL_ENV = "OCR_PADDLE_VL_SERVER_URL", "OCR_PADDLE_VL_SERVER_MODEL"
+SERVER_REVISION_ENV, SERVER_CONCURRENCY_ENV = "OCR_PADDLE_VL_SERVER_REVISION", "OCR_PADDLE_VL_CONCURRENCY"
+DEFAULT_SERVER_CONCURRENCY = 16
+
 from _mlx_vlm_server import (BACKEND as MLX_BACKEND, MLXDeadline, MLXError, MLXServer,
                              SupervisedProcess, probe as probe_mlx)
 
@@ -188,7 +197,7 @@ def draft_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
             "settings": settings}
     # Native drafts retain their old identity.  An accelerated backend is a
     # different reader, even when its raw text happens to match the CPU draft.
-    if profile.get("vlBackend") == MLX_BACKEND:
+    if profile.get("vlBackend") == MLX_BACKEND or profile.get("vlBackend") in SERVER_BACKENDS:
         identity["backend"] = profile["backendIdentity"]
     return identity
 
@@ -458,6 +467,8 @@ def validate_completion(
             return ResumeCheck(False, "draft identity (pipeline, model revision or settings) does not match")
     elif profile.get("vlBackend") == MLX_BACKEND:
         return ResumeCheck(False, "MLX requires a backend-specific draft identity; use --overwrite")
+    elif profile.get("vlBackend") in SERVER_BACKENDS:
+        return ResumeCheck(False, "a VL server backend requires a backend-specific draft identity; use --overwrite")
     elif provenance.get("ocrProfileSha256") == profile_sha256(profile):
         legacy = "written before draft identity was recorded; same profile"
     elif provenance.get("ocrProfileSha256") == legacy_profile_hash(profile):
@@ -512,7 +523,8 @@ class BudgetExpired(Exception):
 
 
 def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, Any]] | None,
-                       *, mlx_url: str | None = None) -> dict[str, str]:
+                       *, mlx_url: str | None = None,
+                       server: Mapping[str, Any] | None = None) -> dict[str, str]:
     """The worker's device and weight settings (paddleocr_vl_worker.main).
 
     A GPU run turns PaddleX's silent CPU fallback into an error.  A CPU run hides
@@ -534,6 +546,11 @@ def worker_environment(device: str | None, weights: Mapping[str, Mapping[str, An
         environment.update(JYUT_PADDLE_VL_BACKEND=MLX_BACKEND,
                            JYUT_PADDLE_VL_SERVER_URL=mlx_url,
                            JYUT_PADDLE_VL_API_MODEL=str(weights["vl"]["directory"]))
+    if server:
+        environment.update(JYUT_PADDLE_VL_BACKEND=str(server["backend"]),
+                           JYUT_PADDLE_VL_SERVER_URL=str(server["url"]),
+                           JYUT_PADDLE_VL_API_MODEL=str(server["model"]),
+                           JYUT_PADDLE_VL_CONCURRENCY=str(server["concurrency"]))
     return environment
 
 
@@ -544,7 +561,7 @@ class PaddleWorker:
                  lease_fds: tuple[int, ...] = (), *, device: str | None = None,
                  weights: Mapping[str, Mapping[str, Any]] | None = None,
                  log_path: Path | None = None,
-                 mlx_url: str | None = None,
+                 mlx_url: str | None = None, server: Mapping[str, Any] | None = None,
                  ready_timeout: float = WORKER_READY_TIMEOUT_SECONDS, ready_capped: bool = False,
                  memory_mib: int | None = None, defer_ready: bool = False):
         worker_env = dict(os.environ, JYUT_PADDLE_PIPELINE_VERSION=pipeline_version)
@@ -552,9 +569,10 @@ class PaddleWorker:
             # One of several on the card: its allocator stops here instead of taking what is left.
             worker_env["FLAGS_gpu_memory_limit_mb"] = str(memory_mib)
         for name in ("JYUT_PADDLE_DEVICE", "JYUT_PADDLE_VL_MODEL_DIR", "JYUT_PADDLE_LAYOUT_MODEL_DIR",
-                     "JYUT_PADDLE_VL_BACKEND", "JYUT_PADDLE_VL_SERVER_URL", "JYUT_PADDLE_VL_API_MODEL"):
+                     "JYUT_PADDLE_VL_BACKEND", "JYUT_PADDLE_VL_SERVER_URL", "JYUT_PADDLE_VL_API_MODEL",
+                     "JYUT_PADDLE_VL_CONCURRENCY"):
             worker_env.pop(name, None)
-        worker_env.update(worker_environment(device, weights, mlx_url=mlx_url))
+        worker_env.update(worker_environment(device, weights, mlx_url=mlx_url, server=server))
         # The worker's stderr (PaddleX's log, CUDA and out-of-memory messages)
         # goes to this run's log; only the JSON responses come back on stdout.
         log_handle = log_path.open("wb") if log_path is not None else None
@@ -858,6 +876,37 @@ def execution_problem(device: str, loaded: Mapping[str, Any]) -> str | None:
     return None
 
 
+def server_identity(backend: str, weights: Mapping[str, Any], model: str, revision: str,
+                    concurrency: int) -> dict[str, Any]:
+    """A VL server backend's identity: the pinned local weights the server is declared to serve
+    (their assets' SHA-256, as for MLX), the model name and the caller-declared deployment
+    revision (change it after the server's weights or runtime change), the block concurrency."""
+    assets: dict[str, str] = {}
+    for role in ("vl", "layout"):
+        directory = Path(weights[role]["directory"])
+        files = [f for f in directory.iterdir() if f.is_file() and
+                 (f.suffix in (".json", ".safetensors", ".pdiparams", ".yml", ".yaml",
+                               ".jinja", ".model", ".txt", ".py") or f.name == "tokenizer")]
+        assets[role] = profile_sha256({f.name: sha256_file(f) for f in sorted(files)})
+    return {"name": backend, "modelAssetsSha256": assets, "apiModel": model,
+            "serverRevision": revision, "vlRecMaxConcurrency": concurrency}
+
+
+def server_execution_problem(loaded: Mapping[str, Any], server: Mapping[str, Any]) -> str | None:
+    """Whether the worker's recogniser uses the declared server, model and concurrency."""
+    expected = {"vlBackend": server["backend"], "vlApiModel": server["model"],
+                "vlMaxConcurrency": server["concurrency"]}
+    for key, value in expected.items():
+        if loaded.get(key) != value:
+            return f"VL server attestation failed: {key}={loaded.get(key)!r}, expected {value!r}"
+    if str(loaded.get("vlServerUrl", "")).rstrip("/") != str(server["url"]).rstrip("/"):
+        return "VL server attestation failed: Paddle did not use the declared server URL"
+    layout = loaded.get("layoutDevice")
+    if isinstance(layout, str) and layout and layout.partition(":")[0] != server["layoutDevice"].partition(":")[0]:
+        return f"Paddle loaded the layout detector on {layout}, not {server['layoutDevice']}"
+    return None
+
+
 def mlx_identity(weights: Mapping[str, Any], runtime: Mapping[str, Any]) -> dict[str, Any]:
     """Attest local assets, not an arbitrary cache folder's name or location."""
     model = Path(weights["vl"]["directory"])
@@ -950,9 +999,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="interpreter that has PaddleOCR installed (or set PADDLEOCR_PYTHON)",
     )
     parser.add_argument("--pipeline-version", default="v1.6")
-    parser.add_argument("--vl-backend", choices=("native", MLX_BACKEND),
+    parser.add_argument("--vl-backend", choices=("native", MLX_BACKEND, *SERVER_BACKENDS),
                         default=os.environ.get("OCR_PADDLE_VL_BACKEND", "native"),
-                        help="VL inference backend (or OCR_PADDLE_VL_BACKEND; default native)")
+                        help="VL inference backend (or OCR_PADDLE_VL_BACKEND; default native); "
+                             "sglang-server/vllm-server: an OpenAI-compatible server you run, at --vl-server-url")
+    parser.add_argument("--vl-server-url", default=os.environ.get(SERVER_URL_ENV),
+                        help=f"the VL server's OpenAI base URL, e.g. http://127.0.0.1:31500/v1 (or {SERVER_URL_ENV})")
+    parser.add_argument("--vl-server-model", default=os.environ.get(SERVER_MODEL_ENV, "PaddleOCR-VL-1.6"),
+                        help=f"the model name the VL server serves (or {SERVER_MODEL_ENV}; default PaddleOCR-VL-1.6)")
+    parser.add_argument("--vl-server-revision", default=os.environ.get(SERVER_REVISION_ENV),
+                        help=f"caller-declared deployment revision of the VL server (or {SERVER_REVISION_ENV}); "
+                             "change it after the server's weights or runtime change")
+    parser.add_argument("--vl-concurrency", type=int,
+                        default=int(os.environ.get(SERVER_CONCURRENCY_ENV, DEFAULT_SERVER_CONCURRENCY)),
+                        help=f"a page's blocks sent to the VL server at once (or {SERVER_CONCURRENCY_ENV}; "
+                             f"default {DEFAULT_SERVER_CONCURRENCY})")
     parser.add_argument("--mlx-python", default=os.environ.get("MLX_VLM_PYTHON"),
                         help="isolated MLX-VLM Python interpreter (or MLX_VLM_PYTHON)")
     parser.add_argument("--model-revision", default=os.environ.get("PADDLEOCR_MODEL_REVISION", "unversioned-cache"),
@@ -1042,8 +1103,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if requested_device is None:
             device_source = "detected"
         use_mlx = arguments.vl_backend == MLX_BACKEND
-        if arguments.vl_backend not in ("native", MLX_BACKEND):
+        use_server = arguments.vl_backend in SERVER_BACKENDS
+        if arguments.vl_backend not in ("native", MLX_BACKEND, *SERVER_BACKENDS):
             raise ConfigurationError(f"unknown VL backend {arguments.vl_backend!r}")
+        if use_server:
+            if not arguments.vl_server_url or not arguments.vl_server_url.startswith(("http://", "https://")):
+                raise ConfigurationError(f"{arguments.vl_backend} needs --vl-server-url (or {SERVER_URL_ENV}): "
+                                         "the server's http(s) OpenAI base URL")
+            if not arguments.vl_server_revision:
+                raise ConfigurationError(f"{arguments.vl_backend} needs --vl-server-revision (or "
+                                         f"{SERVER_REVISION_ENV}): the drafts record which deployment read them")
+            if not arguments.vl_server_model or arguments.vl_concurrency < 1:
+                raise ConfigurationError("--vl-server-model must be set and --vl-concurrency at least 1")
         if use_mlx:
             if requested_device and requested_device != "cpu":
                 raise ConfigurationError("MLX uses CPU layout and Metal VL; --device must be cpu")
@@ -1082,6 +1153,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             execution.update(vlBackend=MLX_BACKEND, mlxRuntime=mlx_runtime,
                              mlxInterpreter=mlx_interpreter, weights=weights,
                              queueResource=arguments.gpu_resource, deviceFallback="refused")
+        server: dict[str, Any] | None = None
+        if use_server:
+            weights = resolve_weights(arguments.pipeline_version, arguments.vl_model_dir,
+                                      arguments.layout_model_dir)
+            server = {"backend": arguments.vl_backend, "url": arguments.vl_server_url.rstrip("/"),
+                      "model": arguments.vl_server_model, "concurrency": arguments.vl_concurrency,
+                      "layoutDevice": device}
+            current_profile.update(vlBackend=arguments.vl_backend,
+                                   backendIdentity=server_identity(arguments.vl_backend, weights,
+                                                                   arguments.vl_server_model,
+                                                                   arguments.vl_server_revision,
+                                                                   arguments.vl_concurrency),
+                                   modelIdentityAssurance="local-model-assets-sha256-and-caller-declared-server-revision")
+            execution.update(vlBackend=arguments.vl_backend, vlServerUrl=server["url"],
+                             vlServerModel=server["model"], vlServerRevision=arguments.vl_server_revision,
+                             weights=weights)
     except (ConfigurationError, MLXError, OSError, subprocess.TimeoutExpired) as error:
         print(f"ERROR {error}", file=sys.stderr)
         return 2
@@ -1154,7 +1241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             if device_problem:
                 raise ConfigurationError(device_problem)
-            if not use_mlx:
+            if not use_mlx and not use_server:
                 execution["weights"] = resolve_weights(
                     arguments.pipeline_version, arguments.vl_model_dir, arguments.layout_model_dir)
         except ConfigurationError as error:
@@ -1214,18 +1301,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                             interpreter, tool.worker_file, arguments.pipeline_version,
                             lease_fds=lease.pass_fds, device=device, weights=execution["weights"],
                             log_path=worker_log.with_name(f"{worker_log.stem}.{number}{worker_log.suffix}"),
-                            memory_mib=share, defer_ready=True)))
+                            server=server, memory_mib=share, defer_ready=True)))
                     except OSError as error:
                         print(f"  worker {number}: {error}; left out", file=sys.stderr, flush=True)
                 worker = PaddleWorker(interpreter, tool.worker_file, arguments.pipeline_version,
                                       lease_fds=lease.pass_fds, device=device,
                                       weights=execution["weights"], log_path=worker_log,
                                       ready_timeout=ready_limit, ready_capped=ready_capped,
-                                      mlx_url=mlx_server.url if mlx_server else None, memory_mib=share)
+                                      mlx_url=mlx_server.url if mlx_server else None, server=server,
+                                      memory_mib=share)
                 model_ready_at = time.time()
                 execution.update({key: worker.execution.get(key)
                                   for key in ("vlDevice", "layoutDevice", "dtype")})
                 problem = (mlx_execution_problem(worker.execution, mlx_server) if mlx_server
+                           else server_execution_problem(worker.execution, server) if server
                            else execution_problem(device, worker.execution))
                 if problem:
                     raise WorkerUnavailable(problem)
@@ -1234,13 +1323,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                      weightDtype=current_profile["backendIdentity"]["weightDtype"],
                                      vlClient=worker.execution)
                 description = (f"Metal GPU, CPU layout ({execution['weightDtype']} weights)" if use_mlx
+                               else f"{device} layout, VL on {server['backend']} {server['url']}" if server
                                else f"{device} ({execution['dtype'] or 'dtype not reported'})")
                 workers = [worker]
                 for number, extra in spare:
                     limit, capped = budget.page_timeout(WORKER_READY_TIMEOUT_SECONDS)
                     try:
                         extra.await_ready(limit, capped)
-                        problem = execution_problem(device, extra.execution)
+                        problem = (server_execution_problem(extra.execution, server) if server
+                                   else execution_problem(device, extra.execution))
                     except BudgetExpired:
                         problem = "the time budget ran out while it loaded"
                     except (WorkerUnavailable, OSError) as error:
