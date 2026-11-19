@@ -44,7 +44,10 @@ repair and a look-alike it must leave:
   paragraph, beside an entry the engines read a mark apart, left out as a
   doubt; nothing where they read a figure on the next character's line
   apart, or where a figure opens engine A's line there; an entry engine A
-  cuts at a hyphen joined with no space, beside one engine B cuts in two).
+  cuts at a hyphen joined with no space, beside one engine B cuts in two;
+  an entry engine A cuts in two that the engines read an apostrophe apart,
+  written as engine A reads it, and one they read a figure apart, left out,
+  the entries after either paired and written).
 - N8 (agreed_checks, made-up pages) writes the marks both engines read alike
   in a gap of running text where the page holds none of them, or some in
   their order (all of them then; the page's ASCII mark read full width
@@ -1118,6 +1121,34 @@ def bibliography_checks() -> None:
           and doubts[0][3]["engineB"] == [ho.format(",")],
           f"N2: the engines' lines paired where engine A cuts an entry in two, written as one paragraph; the entry "
           f"they read apart left out as a doubt; the year on the line before woven ({text!r}, {kinds(doubts)})")
+    # The same, engine A reading T'ai-ho in the entry it cuts in two where
+    # engine B reads Tai-ho on one line, and an entry after the one read a
+    # mark apart (the bench copy of the modern book's bibliography page,
+    # 2026-11-18): the lines still pair to the end (line_pairs, close
+    # prints), the entry an apostrophe apart is written as engine A reads it
+    # (N7's slightly), the one a mark apart stays out and the entry after it
+    # goes in.  Before, the cut entry paired one with one and every line after
+    # it with the wrong one, and none of the lines was written.
+    watt = "Watt, J. R. The District Magistrate. New York: Columbia Press, 1972."
+    cut = (dardess[0].replace("Society:", "Society: T'ai-ho County,"), dardess[1])
+    a = f"麥田公司，1998）。\n{hsiao}\n{cut[0]}\n{cut[1]}\n{ho.format('.')}\n{watt}\n《岩波講座》"
+    b = (f"麥田公司，1998）。\n{hsiao}\nDardess, J. W. *A Ming Society: Tai-ho County, Fourteenth to Seventeenth "
+         f"Centuries*. Berkeley: California Press, 1996.\n{ho.format(',')}\n{watt}\n《岩波講座》")
+    text, records, doubts = run_page("麥田公司，）。\n\n《岩波講座》", a, b)
+    check(text == f"麥田公司，1998）。\n\n{hsiao}\n\n{' '.join(cut)}\n\n{watt}\n\n《岩波講座》"
+          and [r["rule"] for r in records] == ["N2"]
+          and kinds(doubts) == ["run-engines-differ: 1 whole line(s) apart in apostrophes, hyphens or case; written as engine A reads them",
+                                "run-engines-differ: 1 of 5 whole lines, left out"]
+          and doubts[0][3]["engineA"] == [" ".join(cut)] and "T'ai-ho" in doubts[0][3]["apart"][0],
+          f"N2: an entry engine A cuts in two and the engines read an apostrophe apart still pairs, written as engine "
+          f"A reads it; the entries after it are paired and written ({text!r}, {kinds(doubts)})")
+    # A figure apart is not slight: the entry stays out, the others go in.
+    b2 = b.replace("1996.", "1995.")
+    text, records, doubts = run_page("麥田公司，）。\n\n《岩波講座》", a, b2)
+    check(text == f"麥田公司，1998）。\n\n{hsiao}\n\n{watt}\n\n《岩波講座》"
+          and kinds(doubts) == ["run-engines-differ: 3 of 5 whole lines, left out"],
+          f"N2: an entry engine A cuts in two that the engines read a figure apart still pairs and stays out; the "
+          f"entries after it are written ({text!r}, {kinds(doubts)})")
 
 
 def note_call_checks() -> None:

@@ -194,6 +194,22 @@
    }
   },
   {
+   "id": "exact-583-r1",
+   "page": 583,
+   "type": "contains_exact",
+   "value": "Dardess, John W.",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench doukeoi-zingkeoi/s0583, issue #4 HF drafts, 2026-11-18): engine A cuts the Dardess entry in two and reads T'ai-ho where engine B reads Tai-ho on one line; line_pairs paired the cut entry one with one and every line after it with the wrong one, so N2 left all nine entries of the gap out (Qwen3.8-Flash-Next and Hy4-flash runs: 966 characters missing). Fixed in _repair_runs.line_pairs (close prints pair) and _whole_lines (lines apart in an apostrophe, a hyphen inside a word or case written as engine A reads them)."
+  },
+  {
+   "id": "exact-583-r2",
+   "page": 583,
+   "type": "contains_exact",
+   "value": "Watt, John R.",
+   "provenance": "regression",
+   "note": "bench copy of this page (jyut-ocr-bench doukeoi-zingkeoi/s0583, issue #4 HF drafts, 2026-11-18): engine A cuts the Dardess entry in two and reads T'ai-ho where engine B reads Tai-ho on one line; line_pairs paired the cut entry one with one and every line after it with the wrong one, so N2 left all nine entries of the gap out (Qwen3.8-Flash-Next and Hy4-flash runs: 966 characters missing). Fixed in _repair_runs.line_pairs (close prints pair) and _whole_lines (lines apart in an apostrophe, a hyphen inside a word or case written as engine A reads them)."
+  },
+  {
    "id": "golden-594-h9",
    "page": 594,
    "type": "golden_page",

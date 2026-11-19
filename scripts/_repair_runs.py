@@ -339,7 +339,18 @@ where the engines read a gap slightly apart):
   after the heading could be matched to an entry's own colon on the next
   line as well (the place was not unique).  The rule now writes 9 of them
   and the year; the entry the engines read a mark apart stays a doubt.  No
-  other page of that book or of three others holds such a gap.
+  other page of that book or of three others holds such a gap.  A bench
+  copy of the page (jyut-ocr-bench, 2026-11-18, drafts of its own) lost the
+  nine entries of the second gap again, 966 characters: engine B read
+  Dardess's T'ai-ho as Tai-ho in the entry engine A cuts in two, line_pairs
+  paired that entry one with one and every line after it with the wrong
+  one, and the lines did not pair to the end.  Lines now pair too where
+  their print is close (line_pairs), and lines apart only in an apostrophe
+  or a hyphen inside a word, or in case (N7's slightly, a letter never: a
+  Western note a letter apart stays a doubt), are written as engine A
+  reads them, the doubt naming the words.  Replayed on the sealed pages of
+  two model runs of the bench: 8 of the 9 entries written, the one read a
+  mark apart a doubt, 103 characters missing; no other case changed.
 Nothing both engines read is left out with nothing said: the runs both
 engines read in a gap that the page lacks there, that no edit of the gap
 writes and no doubt raised on it names, are a `run-no-place` doubt naming
@@ -400,6 +411,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import difflib
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -884,15 +896,16 @@ def _one_letter(x: str, y: str) -> bool:
     return len(x) == len(y) + 1 and any(x[:i] + x[i + 1:] == y for i in range(len(x)))
 
 
-def slightly(a: Sequence[Token], b: Sequence[Token]) -> str | None:
+def slightly(a: Sequence[Token], b: Sequence[Token], letter: bool = True) -> str | None:
     """N7: how two readings of Western text are apart, where they are only
     slightly apart - both hold Latin letters and, cut into _UNIT's units,
     they are the same unit for unit but for words of Latin letters alone,
     apart in case or in an apostrophe or hyphen inside the word, and at
     most one of them, SLIGHT_LETTERS or more letters in each, one letter
-    apart (_key).  The words as each engine spells them are named.  None
-    otherwise: a figure or a word that holds one, a mark (a quotation mark
-    too), a kana, or a unit more or less."""
+    apart (_key; none where not LETTER: N2's whole lines).  The words as
+    each engine spells them are named.  None otherwise: a figure or a word
+    that holds one, a mark (a quotation mark too), a kana, or a unit more
+    or less."""
     if not all(any(re.search(rf"[{LATIN}]", t.raw) for t in runs_of(toks)) for toks in (a, b)):
         return None
     ua, ub = _units(a), _units(b)
@@ -900,6 +913,8 @@ def slightly(a: Sequence[Token], b: Sequence[Token]) -> str | None:
     if len(ua) != len(ub) or not all(_LETTERS.fullmatch(x) and _LETTERS.fullmatch(y) for x, y in apart):
         return None
     letters = [(x, y) for x, y in apart if _key(x) != _key(y)]
+    if letters and not letter:
+        return None
     if len(letters) > 1 or letters and not (min(len(_key(w)) for w in letters[0]) >= SLIGHT_LETTERS
                                             and _one_letter(*map(_key, letters[0]))):
         return None
@@ -1940,6 +1955,30 @@ def _joined(lines: Sequence[Sequence[Token]], numbers: Sequence[int]) -> str:
     return "".join(fused(lines[n]) for n in numbers)
 
 
+# line_pairs: the least share of their characters two prints of one entry
+# hold in common (difflib's ratio), and the least ratio of their lengths, for
+# an entry the engines read slightly apart to pair as one entry when one
+# engine cuts it in two.
+PAIR_RATIO = 0.9
+
+
+def _same_print(x: str, y: str) -> bool:
+    return _LOOSE_HYPHEN.sub("", x) == _LOOSE_HYPHEN.sub("", y)
+
+
+def _close_print(x: str, y: str) -> bool:
+    """Whether two prints are one entry's, read slightly apart: the same
+    (_same_print), or of nearly one length with PAIR_RATIO of their
+    characters in common.  For pairing only: a pair whose prints differ is
+    still apart where its lines are judged (_whole_lines)."""
+    x, y = _LOOSE_HYPHEN.sub("", x), _LOOSE_HYPHEN.sub("", y)
+    if x == y:
+        return True
+    if not x or not y or min(len(x), len(y)) < PAIR_RATIO * max(len(x), len(y)):
+        return False
+    return difflib.SequenceMatcher(None, x, y, autojunk=False).ratio() >= PAIR_RATIO
+
+
 def line_pairs(a_lines: Sequence[Sequence[Token]],
                b_lines: Sequence[Sequence[Token]]) -> list[tuple[list[int], list[int]]] | None:
     """The engines' lines of a gap (_lines_of) paired in order: a line of
@@ -1947,29 +1986,36 @@ def line_pairs(a_lines: Sequence[Sequence[Token]],
     the one line of the other that holds their print (loose, the cut
     between the lines set aside as a space between two words is) - each
     engine cuts a long entry where it reads the print wrap, or not at all.
-    Lines whose print differs pair one with one.  Each pair as the numbers
-    of its lines in either engine; None where the lines do not pair to the
-    end of both."""
+    Where no lines joined hold the same print, lines joined whose print is
+    close to the other's (_close_print) pair the same way: one engine cuts
+    an entry in two that the engines read an apostrophe apart (a bench copy
+    of the modern book's bibliography page, 2026-11-18: engine A
+    T'ai-ho over two lines, engine B Tai-ho on one), and paired one with one
+    every line after it was paired with the wrong one, the lines did not
+    pair to the end and all nine entries of the gap were left out.  Lines
+    whose print differs otherwise pair one with one.  Each pair as the
+    numbers of its lines in either engine; None where the lines do not pair
+    to the end of both."""
     a_print, b_print = [fused(line) for line in a_lines], [fused(line) for line in b_lines]
 
-    def same(x: str, y: str) -> bool:
-        return _LOOSE_HYPHEN.sub("", x) == _LOOSE_HYPHEN.sub("", y)
+    def joined(i: int, j: int, test: Callable[[str, str], bool]) -> tuple[int, int] | None:
+        # The shorter line takes the lines after it while it is shorter.
+        di, dj, a, b = 1, 1, a_print[i], b_print[j]
+        while not test(a, b) and len(a) < len(b) and i + di < len(a_lines):
+            a += a_print[i + di]
+            di += 1
+        if test(a, b):
+            return di, dj
+        di, a = 1, a_print[i]
+        while not test(a, b) and len(b) < len(a) and j + dj < len(b_lines):
+            b += b_print[j + dj]
+            dj += 1
+        return (di, dj) if test(a, b) else None
 
     pairs: list[tuple[list[int], list[int]]] = []
     i = j = 0
     while i < len(a_lines) and j < len(b_lines):
-        # The shorter line takes the lines after it while it is shorter.
-        di, dj, a, b = 1, 1, a_print[i], b_print[j]
-        while not same(a, b) and len(a) < len(b) and i + di < len(a_lines):
-            a += a_print[i + di]
-            di += 1
-        if not same(a, b):
-            di, a = 1, a_print[i]
-            while not same(a, b) and len(b) < len(a) and j + dj < len(b_lines):
-                b += b_print[j + dj]
-                dj += 1
-            if not same(a, b):
-                dj = 1
+        di, dj = joined(i, j, _same_print) or joined(i, j, _close_print) or (1, 1)
         pairs.append((list(range(i, i + di)), list(range(j, j + dj))))
         i, j = i + di, j + dj
     return pairs if i == len(a_lines) and j == len(b_lines) else None
@@ -3211,10 +3257,29 @@ def _whole_lines(page: PageRuns, gap: Gap, lines: Sequence[Sequence[Token]], pla
         if pairs is not None:
             differ = [(ns, ms) for ns, ms in pairs
                       if _LOOSE_HYPHEN.sub("", _joined(a_lines, ns)) != _LOOSE_HYPHEN.sub("", _joined(b_lines, ms))]
+            # Lines apart in an apostrophe or a hyphen inside a word, or in
+            # case, as N7 reads a gap's Western text (slightly, but not a
+            # letter: a Western note a letter apart stays a doubt; never a
+            # figure or a mark) are written as engine A reads them, the
+            # doubt naming the words (the bench copy of the bibliography
+            # page: Dardess's T'ai-ho, which engine B reads Tai-ho).
+            slight = []
+            for ns, ms in differ:
+                why = slightly([t for n in ns for t in a_lines[n]], [t for m in ms for t in b_lines[m]], letter=False)
+                if why is not None:
+                    slight.append(((ns, ms), why))
+            differ = [pair for pair in differ if pair not in [p for p, _ in slight]]
             apart = [n for ns, _ in differ for n in ns]
+            if slight:
+                plan.doubts.append(("run-engines-differ", scan,
+                                    _gap_detail(page, gap, f"{len(slight)} whole line(s) apart in apostrophes, hyphens or case; "
+                                                           "written as engine A reads them"),
+                                    {**readings([p for p, _ in slight]), "written": "A",
+                                     "apart": [why for _, why in slight]}))
             # Lines that differ in hyphens or apostrophes only are written as
             # engine A reads them (nearly), the two readings on record.
-            near = [(ns, ms) for ns, ms in pairs if ns[0] not in apart and _joined(a_lines, ns) != _joined(b_lines, ms)]
+            near = [(ns, ms) for ns, ms in pairs if ns[0] not in apart and _joined(a_lines, ns) != _joined(b_lines, ms)
+                    and (ns, ms) not in [p for p, _ in slight]]
             if near:
                 plan.doubts.append(("run-engines-differ", scan,
                                     _gap_detail(page, gap, f"{len(near)} whole line(s) hyphens or apostrophes apart; "

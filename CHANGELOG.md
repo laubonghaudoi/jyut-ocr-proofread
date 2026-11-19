@@ -1,5 +1,13 @@
 # 更新摘要
 
+## Unreleased — 修書：一條西文書目斷開兩行又差一個撇號，唔再令成段西文行漏晒
+
+- 問題：jyut-ocr-bench 嘅書目頁 `doukeoi-zingkeoi/s0583`（即 609 頁現代書掃描 583 頁）用 HTTP 本機模型校對，Qwen3.8-Flash-Next 兩輪同 Hy4-flash 兩輪都漏咗第二段九條西文書目，缺 966 字；Gemini 4 Hydrogen 同 Claude Haiku 5.5 嗰幾輪淨係缺約 110 字。兩個引擎都讀到嗰啲行，修書亦知道（`run-no-place`：runs both engines read left out, no rule writes them），但冇寫返。
+- 原因：引擎 A 將 Dardess 嗰條斷做兩行，引擎 B 讀成一行，兩邊仲差一個撇號（引擎 A T'ai-ho，引擎 B Tai-ho）。`line_pairs` 要合埋嘅字完全一樣先肯將兩行配一行，於是嗰條一對一咁配，之後每一行都配錯，配唔到尾，N2 就成段放棄（`whole lines`）。2026-10-06 修過同一頁，嗰陣嘅底稿冇呢個撇號差異。引擎 B 將書名包喺 `*斜體*` 入面唔係原因：比較本身已經唔計 markup。
+- 改動（`scripts/_repair_runs.py`）：`line_pairs` 搵唔到字完全一樣嘅合法，就用「差唔多」再試一次（長度差唔過一成、九成字相同，`PAIR_RATIO`）；呢個淨係影響點配對，寫唔寫照舊逐對判。`_whole_lines`：一對行淨係差撇號、字入面嘅連字號或者大細楷（N7 `slightly` 嘅定義，但唔包差一個字母：差一個字母嘅西文註照舊係疑問），照引擎 A 寫，疑問寫低兩邊讀法同差咗邊個字（`run-engines-differ: N whole line(s) apart in apostrophes, hyphens or case; written as engine A reads them`）。差一個標點或者數字嘅照舊留做疑問。
+- 測試：`tests/check_repair_runs.py` 加兩個 case（一條斷兩行又差撇號：照引擎 A 寫，後面嘅條目照配照寫；一條斷兩行又差數字：嗰條唔寫，後面照寫）；`tests/cases/doukeoi-zingkeoi.json` 加兩條 `regression` assertion（583 頁要有 `Dardess, John W.` 同 `Watt, John R.`）。修書相關嘅測試全部過（9 個 check、1 個 unit test 檔），`check_benchmark_snapshot.py` 過。全套 `tests/run_all.py` 喺呢部 Mac 有 22 個檔失敗，改之前（1568019）一模一樣，同呢次改動無關（例如期望嘅暫存路徑係 `/var/…`，macOS 寫 `/private/var/…`）。
+- 驗證（重放，唔使模型）：將 Qwen3.8-Flash-Next 兩輪（技能 1568019，jyut-ocr-bench 28 案）嘅已封頁重新行 `finish_book.py`。用 1568019 重放，輸出同原本逐 byte 一樣；用今版重放，淨係 s0583 有變：缺字 966 → 103，九條寫返八條（Ho, Ping-ti 嗰條兩邊差一個標點，照舊係疑問）。CER 寬容（評分器 samples-4.0.0）28 案 18.76% → 16.03%、18.17% → 15.44%；唔計 11 頁嘅 seoi-cing-cyun 嘅 27 案 11.39% → 7.59%、10.60% → 6.80%；表格同註釋分數冇變。
+
 ## Unreleased — 派題唔空等；每個答題者攞幾多題按模型定（issue #7）
 
 - `ocr_batch.py --round` 有位即派。8 本書實測（2026-11-18）題目一直有得派嗰陣，一個 session 20 個位平均得 14 至 16 個做緊嘢，其餘係 script 自己等。改咗五樣：答案寫齊之後佔位由 30 秒減到 6 秒（279 個答題者量到中位數 2 秒就返回，99% 喺 6 秒內）；唔再等四分一嘅位空咗或者空咗 30 秒先補派（`--top-up-wait 秒` 可以加返）；冇人做緊嘢而有步驟行緊嗰陣唔再等 90 秒；每秒睇一次書（以前 5 秒），bundle 同答案檔讀過就記住；答題者自己個檔入面有齊 `references/packet-worker.md` 嗰頁指示，唔使再開，少行一輪。
