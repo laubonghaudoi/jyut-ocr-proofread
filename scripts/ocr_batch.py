@@ -83,6 +83,26 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
 - exit 0: every book is delivered; 1: every book is delivered or failed, and at least one failed
   (--retry-failed tries those again); 2: wrong arguments.
 
+Answerers the script starts itself
+----------------------------------
+--answerer-command CMD (or OCR_BATCH_ANSWERER_COMMAND in the machine's env.sh, which only its
+owner sets): the round does not end with exit 10.  It runs CMD once for every share, as a
+process of its own, and goes on handing out as their answers come in; the agent only runs the
+round again while it ends with 75.  In CMD, {prompt} is the answerer's whole instruction ("Read
+FILE and do exactly what it says."), {file} that file, {work} the folder the books are in (the
+process's working directory) and {batch} the batch folder; an answerer needs to read its file,
+the bundles and their crops, and to write the answers files.  A share whose process has ended
+without its answers is handed out again at once; ANSWERER_FAILURES of them in a row with none
+answered in between end the call with exit 5 and the last lines the command wrote
+(BATCH/plans/round-NNNN/worker-KK.log).
+
+Why: measured on eight sample books (2026-11-19, 384 answerers), a main agent that starts the
+answerers makes about one request for every answerer, each reading its whole context again -
+0.45 million tokens on average, over the size where that model's price is five times higher
+from its seventh request on.  It cost 1.9 cents an answerer, half of what the answerers cost.
+Started by the script, an answerer costs the main agent nothing, there is no platform limit of
+20 at once but --max-workers, and no wait for the agent's turn.
+
 With --backend http (the local model proofreads) there are no questions: the round starts each
 book's steps one book at a time on the model, once every book's OCR is over (the OCR window has
 the model stopped), and exits 75 until all are done.
@@ -173,6 +193,8 @@ SCHEMA = 1
 EXIT_QUESTIONS = 10
 EXIT_OCR_STOPPED = 4
 EXIT_PAUSED = 3
+EXIT_ANSWERERS_FAIL = 5
+ANSWERER_FAILURES = 3               # answerer processes ended without answers, in a row, that stop a round
 PAUSE_NAME = "PAUSED"               # BATCH/PAUSED: no question is handed out while it is there (--pause, --resume)
 PENDING = (10, 11)
 DEFAULT_WAIT = 540
@@ -863,6 +885,46 @@ def write_status(batch: Path, record: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def answerer_argv(template: str, file: Path, batch: Path, work: str) -> list[str]:
+    """--answerer-command's words with {prompt}, {file}, {batch} and {work} filled in."""
+    values = {"{prompt}": f"Read {file} and do exactly what it says.", "{file}": str(file),
+              "{batch}": str(batch), "{work}": work}
+    words = []
+    for word in shlex.split(template):
+        for key, value in values.items():
+            word = word.replace(key, value)
+        words.append(word)
+    return words
+
+
+def start_answerer(template: str, file: Path, batch: Path, work: str) -> int:
+    """Run the answerer command for the worker file FILE detached, its output in FILE's .log; its pid."""
+    with open(file.with_suffix(".log"), "ab") as log:
+        process = subprocess.Popen(answerer_argv(template, file, batch, work), stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=work)
+    STARTED.append(process)
+    return process.pid
+
+
+STARTED: list[subprocess.Popen] = []     # this call's answerer processes: polled, so that none stays a zombie
+
+
+def process_alive(pid: int) -> bool:
+    for process in STARTED:
+        if process.pid == pid:
+            return process.poll() is None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def answered(flight: dict[str, Any]) -> bool:
+    """Whether every bundle of FLIGHT that still exists has its answers file."""
+    return all(Path(answers).is_file() for bundle, answers in flight["bundles"] if Path(bundle).is_file())
+
+
 def unsettled(flight: dict[str, Any], now: float, settle: float) -> bool:
     """Whether the answerer of FLIGHT still has its place: a bundle of it has no answers file, or
     its last answers file was written less than SETTLE seconds ago."""
@@ -893,8 +955,21 @@ def at_work(record: dict[str, Any], grace: float, settle: float = 0.0) -> list[d
         record["flights"] = [{"t": last.get("t"), "round": last.get("round"), "bundles": [pair]}
                              for pair in last.get("bundles") or []]
     now = time.time()
-    record["flights"] = [flight for flight in record.get("flights") or []
-                         if now - float(flight.get("t") or 0) < grace and unsettled(flight, now, settle)]
+    kept = []
+    for flight in record.get("flights") or []:
+        if "pid" in flight:
+            # An answerer this script started: at work while its process runs and its answers
+            # are not all written.  Ended without them, its share goes out again at once.
+            if answered(flight):
+                record["answererFailures"] = 0
+            elif not process_alive(int(flight["pid"])):
+                record["answererFailures"] = int(record.get("answererFailures") or 0) + 1
+                record["answererLog"] = flight.get("log")
+            elif now - float(flight.get("t") or 0) < grace:
+                kept.append(flight)
+        elif now - float(flight.get("t") or 0) < grace and unsettled(flight, now, settle):
+            kept.append(flight)
+    record["flights"] = kept
     return record["flights"]
 
 
@@ -1018,6 +1093,15 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
         arguments.not_started = None
     flights = at_work(record, arguments.answer_grace, arguments.settle)
     write_json(batch / "batch.json", record)
+    if arguments.answerer_command and int(record.get("answererFailures") or 0) >= ANSWERER_FAILURES:
+        log = record.get("answererLog")
+        record["answererFailures"] = 0
+        write_json(batch / "batch.json", record)
+        say(f"[batch] RESULT exit={EXIT_ANSWERERS_FAIL} ANSWERERS FAIL - {ANSWERER_FAILURES} answerer processes in a row "
+            f"ended without writing their answers; the last one's output ({log}): "
+            f"{tail(Path(log), 6) if log else '-'} - tell the person: the command is --answerer-command's "
+            f"({arguments.answerer_command}); nothing is lost, and the same round command carries on once it works")
+        return EXIT_ANSWERERS_FAIL
     working = sum(1 for flight in flights if (flight.get("caller") or "") == caller)
     others = len(flights) - working
     free = places - working
@@ -1041,6 +1125,25 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
         if not hold or time.monotonic() >= deadline:
             out, answerers, handed, left = hand_out(batch, record, arguments, free, caller)
             if not answerers:
+                return None
+            if arguments.answerer_command:
+                # The answerers are this script's to start: one process a share, and the call goes on.
+                fresh = [flight for flight in record["flights"] if flight.get("round") == out.name
+                         and (flight.get("caller") or "") == caller]
+                try:
+                    for flight in fresh:
+                        file = out / f"worker-{flight['worker']:02d}.txt"
+                        flight["pid"] = start_answerer(arguments.answerer_command, file, batch, record["workRoot"])
+                        flight["log"] = str(file.with_suffix(".log"))
+                except OSError as error:
+                    record["flights"] = [flight for flight in record["flights"] if flight not in fresh or "pid" in flight]
+                    write_json(batch / "batch.json", record)
+                    say(f"[batch] RESULT exit=2 the answerer command could not be started ({error}): "
+                        f"{arguments.answerer_command}")
+                    return 2
+                write_json(batch / "batch.json", record)
+                memo["started"] = memo.get("started", 0) + answerers
+                memo["free_since"] = None
                 return None
             say(f"[batch] {status_line(rows)}")
             count = (record.get("handOuts") or {}).get(caller, 1)
@@ -1092,6 +1195,8 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
         idle = "ocr" in states and not is_held(mark(batch, "ocr.lock"))
         at = (f"{working} answerer(s) at work" + (f" (and {others} of another caller)" if others else "")
               + ", no place free or nothing more to hand out") if working or others else "nothing to answer yet"
+        if arguments.answerer_command:
+            at += f"; the script starts the answerers itself ({memo.get('started', 0)} started in this call): start none"
         say(f"[batch] RESULT exit={EXIT_INCOMPLETE} RUNNING - {status_line(rows)} - {at}"
             + ("; no --ocr call is reading right now (call 2)" if idle else "")
             + f" - run this command again: {again}")
@@ -1205,6 +1310,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-up-wait", type=float, default=TOP_UP_SECONDS, metavar="SECONDS",
                         help="--round: how long a free place may wait for more places to come free, so that one "
                              f"hand-out serves several (default {TOP_UP_SECONDS}: it is filled at once)")
+    parser.add_argument("--answerer-command", metavar="CMD", default=os.environ.get("OCR_BATCH_ANSWERER_COMMAND") or None,
+                        help="--round: a command the script runs itself for every share, in place of the agent "
+                             "starting an answerer; {prompt} is the instruction, {file} the worker file, {work} the "
+                             "books' folder, {batch} the batch folder (default: OCR_BATCH_ANSWERER_COMMAND; none: the "
+                             "round ends with exit 10 and the agent starts the answerers)")
     parser.add_argument("--not-started", action="append", metavar="FILE",
                         help="--round: a worker file whose answerer the platform refused to start; its share is "
                              "handed out again now (repeat for each)")

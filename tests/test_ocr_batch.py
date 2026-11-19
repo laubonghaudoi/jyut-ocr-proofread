@@ -995,6 +995,73 @@ class HttpBackendTests(BatchCase):
         self.assertLessEqual(max(spans[b.names[0]]), min(spans[b.names[1]]) + 0.2)
 
 
+ANSWERER = r'''
+import json, re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+if len(sys.argv) > 2:
+    print("I will not answer:", sys.argv[2])
+    sys.exit(1)
+for bundle in re.findall(r"^- (\S+bundle-\d+\.json) \(", text, flags=re.M):
+    data = json.loads(Path(bundle).read_text(encoding="utf-8"))
+    rows = [{"request_id": item["request_id"], "answer": "構件：略\\n定案：甲\\nRESEARCH: no"} for item in data["items"]]
+    Path(data["expected_answers_file"]).write_text(json.dumps({"answers": rows}, ensure_ascii=False), encoding="utf-8")
+print("answered", sys.argv[1])
+'''
+
+
+class ScriptAnswererTests(BatchCase):
+    """--answerer-command: the round starts the answerers itself and never ends with exit 10."""
+
+    def command(self, *more: str) -> str:
+        script = self.b.root / "answerer.py"
+        script.write_text(ANSWERER, encoding="utf-8")
+        return " ".join([PY, str(script), "{file}", *more])
+
+    def test_the_round_starts_an_answerer_for_every_share_and_delivers_the_books(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        codes = []
+        for _ in range(40):
+            code, out = b.round("--answerer-command", self.command(), "--answer-grace", "600", wait=8)
+            codes.append(code)
+            if code != 75:
+                break
+        self.assertEqual(code, 0, out)
+        self.assertNotIn(10, codes)
+        logs = sorted((b.batch / "plans").glob("round-*/worker-*.log"))
+        self.assertTrue(logs)
+        self.assertTrue(all("answered" in log.read_text(encoding="utf-8") for log in logs))
+        # Every share went to one process, and none is counted as at work at the end.
+        self.assertEqual(len(logs), len(list((b.batch / "plans").glob("round-*/worker-*.txt"))))
+        self.assertEqual(b.record().get("flights"), [])
+
+    def test_answerers_that_end_without_answers_stop_the_round_and_say_why(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        code, out = b.round("--answerer-command", self.command("today"), "--answer-grace", "600", wait=15)
+        self.assertEqual(code, 5, out)
+        self.assertIn("RESULT exit=5 ANSWERERS FAIL - 3 answerer processes in a row ended without writing their answers", out)
+        self.assertIn("I will not answer: today", out)
+        # Nothing is lost: with a command that answers, the same round carries on to the end.
+        for _ in range(40):
+            code, out = b.round("--answerer-command", self.command(), "--answer-grace", "600", wait=8)
+            if code != 75:
+                break
+        self.assertEqual(code, 0, out)
+
+    def test_a_command_that_cannot_be_started_is_said_at_once(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        code, out = b.round("--answerer-command", "/no/such/answerer {file}", "--answer-grace", "600", wait=15)
+        self.assertEqual(code, 2, out)
+        self.assertIn("the answerer command could not be started", out)
+        self.assertEqual(b.record().get("flights"), [])
+
+
 class SingleEngineTests(BatchCase):
     def test_a_single_engine_route_has_no_profile_and_keeps_its_work(self) -> None:
         b = self.b

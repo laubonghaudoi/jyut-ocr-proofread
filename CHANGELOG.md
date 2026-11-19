@@ -1,5 +1,14 @@
 # 更新摘要
 
+## Unreleased — 批量：答題者可以由 script 自己開（`--answerer-command`，issue #7）
+
+- `ocr_batch.py --round --answerer-command CMD`（或者用戶喺 `env.sh` 設 `OCR_BATCH_ANSWERER_COMMAND`）：`--round` 自己為每一份題行一次 CMD（獨立 process），答案寫好就補派，唔再以 exit 10 叫 agent 開答題者；agent 淨係喺 exit 75 再跑同一條。冇設就同以前一樣。
+- 點解：160 頁樣本實跑量到，主 agent 開答題者嗰陣每個答題者差唔多行一個請求，個個重讀成個 context（平均 45 萬 token），由第 7 個請求起一直喺嗰個模型貴五倍嘅線以上：每個答題者 1.9 美仙，係答題者本身成本嘅一半。呢個係結構問題，調等候時間改唔到。
+- Process 完咗而冇寫齊答案，嗰份即刻再派（唔使等 `--answer-grace`）；連續 3 個都冇答、中間冇一個答到，嗰個 call 以新嘅 exit 5 完，印條 command 最尾幾行。條 command 開唔到（冇呢個程式）係 exit 2。
+- `SKILL.md`：設咗嗰陣 agent 唔好自己開答題者；exit 5 照實話畀用戶知。`env.sh.example` 有例子。
+- 測試（`tests/test_ocr_batch.py`，3 個，替身答題者）：兩本書由頭到交付都冇出過 exit 10、每一份一個 process；唔答嘅 command 以 exit 5 完而且之後接得返；開唔到嘅 command 即刻講。
+- **未用真模型驗證**：寫嗰陣呢部機嘅 command line 未登入。用呢個方法答題嘅準確度、成本同速度都未量；要登入之後跑 28 案評測同一次樣本批先知。
+
 ## Unreleased — 現代印刷書少問標點：`--same-marks-any-form`；逐輪輸出精簡（issue #7）
 
 - `proofread_pages.py` 加 `--same-marks-any-form`（預設關；`ocr_batch.py` 對新書會加）：兩個引擎喺一個 block 讀到同一批字，標點同印刷字淨係形式唔同，就當一致，照用引擎 A 嘅標點唔問。摺埋比較嘅形式：半形同全形嘅 `,` `:` `;` `?` `!`、直引號同彎引號、方括號嘅三種寫法（`[`、〔、【）、「☐」同「□」，同引擎 B 喺標題行頭寫嘅 `#`。尖括號唔摺。

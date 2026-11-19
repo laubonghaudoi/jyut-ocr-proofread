@@ -60,9 +60,11 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
   - **0** 全部書交付晒：每本嘅 `[finish] RESULT` 行、交付檔同 `[clean] RESULT` 行都印咗，照九逐本講；
   - **1** 做完但有書失敗：`failed:` 行講邊本、點解，其餘嘅書照樣交付咗。照實話畀用戶知；原因改好先加 `--retry-failed` 再跑（OCR 失敗嘅仲要再開 OCR 嗰條）；
   - **3** 成批暫停咗（用戶落咗 `--pause BATCH`）：唔好再跑，用一兩行講去到邊就收工。用戶話繼續先跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --resume BATCH`，再照舊逐輪；
+  - **5** 答題者行唔到：`env.sh` 設咗 `OCR_BATCH_ANSWERER_COMMAND` 嗰陣，答題者由 script 自己開（見下面），連續三個冇寫答案就完咗。嗰行抄咗條 command 最尾印嘅字：照實話畀用戶知，唔好自己改條 command，亦唔好改為自己開答題者；用戶整好之後照舊逐輪。
   - **2** 參數錯。
 - 一批書嘅題可以過萬條，照做到全部書交付：成本、題量、時間、你自己 session 嘅 token 預算都唔係停低、暫停、問用戶或者改路線（本機模型、淨係交草稿）嘅理由，估算已經喺開批嗰陣講咗。撞到 rate limit 或者 API 錯誤：等一兩分鐘再跑同一條（答題者全部失敗就加一次 `--answerers-gone`），唔好收工。真係行唔落去（平台唔再畀你開答題者、你個 session 完咗）先算停，停之前講明停喺邊：之後任何 session 跑返逐輪嗰條就接得返，乜都唔使重做。`--pause` 係用戶嘅掣，你唔好自己落。
 - 用戶想快啲、叫你搵多個 session 幫手：另一個 session 跑同一條逐輪 command，加 `--caller 名`（每個 session 自己一個名，原本嗰個唔使加），兩邊各自有 `--max-workers` 個位，同一包唔會派畀兩邊。冇人叫就唔好自己開。
+- `env.sh` 有 `OCR_BATCH_ANSWERER_COMMAND`（淨係用戶設，你唔好自己設或者 export）：答題者由 script 自己逐個開，逐輪嗰條唔會再出 exit 10。你照舊重複跑逐輪嗰條，exit 75 就再跑，**唔好自己開答題者**；`--answered-by` 仍然要係條 command 用嘅模型。
 - 邊本書去到邊：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --status BATCH`。交付咗嘅書佢自己清走 `BOOK`（即第 6 步；加 `--keep-work` 就留），失敗嘅書留低。單引擎路線：開批嗰條加 `--engine apple-vision` 或者 `--engine hunyuan`，佢自己用上面兩段嘅單引擎 command。細節見 `references/long-book-workflow.md`〈幾個 PDF 一齊做（ocr_batch.py）〉。
 
 ## 五、長步驟同 GPU 交接
