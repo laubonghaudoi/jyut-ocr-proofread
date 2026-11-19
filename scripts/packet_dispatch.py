@@ -2,8 +2,8 @@
 """Share the packet bundles that wait for answers among as many answerers as there is work for.
 
 Usage: python3 scripts/packet_dispatch.py PACKETS_DIR [PACKETS_DIR ...]
-           [--max-workers N] [--items-per-worker N] [--out PLAN.json]
-           [--apply --answered-by MODEL]
+           [--max-workers N] [--items-per-worker N] [--share-tokens N] [--out PLAN.json]
+           [--answered-by MODEL] [--apply]
 
 Run it when a step stops with exit 10 or 11 (packet answers wait, --backend packet), and again
 when the answerers are back.  PACKETS_DIR is the packets folder the step named (one book's, or a
@@ -27,8 +27,30 @@ The main agent starts one subagent per assignment, all at once, as many as its p
 together (--max-workers, default 24: fewer assignments, each with more bundles, when the work is
 more than that many answerers' worth).  A platform with no subagents answers the bundles itself, in
 the plan's order, by the same references/packet-worker.md.  --items-per-worker (default 10) is how
-many questions one answerer is given: fewer finish a wave sooner and cost a little more, since
-every answerer reads its instruction once.
+many questions one answerer is given at most.
+
+How much one answerer is given
+------------------------------
+Every answerer pays for its start (its platform's prompt, this instruction, its return), so the
+more questions it is given, the less a question costs and the sooner a wave is answered: measured
+on eight books (2026-11-18), a question cost 0.60 cents with four an answerer and 0.43 with ten at
+one model's plain prices, and one session's 20 places answered 28 and 47 a minute.  So an answerer
+is given ten, the most this skill's accuracy was measured with.
+
+One thing reverses that: a model whose price steps up above a prompt size (PRICE_STEPS, from the
+official price pages; one model on 2026-11-18, five times the price above 100 thousand tokens,
+cache reads counted).  There ten questions cost 1.52 cents each and four 0.82, and four still
+sent 38 answerers in 100 over the step.  With --answered-by naming such a model, a share is filled
+by estimated tokens instead: bundle after bundle while the answerer's prompt is expected to stay
+under the step (share_tokens(): the step, less the 48 thousand tokens an answerer started at in
+two measured runs - OCR_ANSWERER_BASE_TOKENS for a platform that starts elsewhere - less an
+eighth of the step for the estimate's error), and never more than --max-workers shares a call:
+what is over waits for the next call rather than making the shares longer.  The estimate
+(bundle_facts()) is 0.9 token a byte of the bundle file plus 1.84 for every token its crops come
+to at width x height / 750; fitted on 148 answerers (2026-11-18), it was within 2.7 thousand
+tokens for half of them and 6.8 thousand for nine in ten.  --share-tokens N sets the size by
+hand (0: no limit by tokens).  A bundle is never split, so the step that writes the bundles has
+to keep them small for such a model (ocr_batch.py does: one question a bundle).
 
 Measured (2026-11-17, a small vision model on the benchmark's samples): 12 answerers given only
 their bundles and that one page of instruction answered 127 questions at 6.4 s and 62 thousand
@@ -43,9 +65,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import subprocess
 import sys
 from typing import Any, Sequence
@@ -61,8 +85,85 @@ PROMPT = ("Read {brief} and follow it exactly. It is all you need: load no other
           "you were unsure of.")
 
 
+# Models whose price steps up for a prompt above so many tokens: (a part of the model's id, the
+# step).  Every other model has one price whatever the prompt's size.
+PRICE_STEPS = (("haiku-5-5", 100_000),)
+ANSWERER_STARTS_AT = 48_000          # tokens in an answerer's prompt before it has read a thing (measured)
+BYTES_TO_TOKENS = 0.9                # what a bundle file adds to its answerer's prompt by the time it is
+IMAGE_TO_TOKENS = 1.84               # answered, questions and answers together (fitted, see the docstring)
+_FACTS: dict[tuple[str, int, int], tuple[list[str], int]] = {}
+_ANSWERED: dict[tuple[str, int, int], list[str] | None] = {}
+
+
+OWN_FILE = ("Follow the instruction at the end of this file exactly. It is all you need: load no other "
+            "instructions and run none of the skill's scripts. Answer these packet bundles and nothing else:\n{bundles}\n"
+            "Write each bundle's answers into the answers file that bundle names, never into your reply. "
+            "When every bundle is written, reply with one line: how many questions you answered, and any "
+            "you were unsure of.\n\n===== the instruction ({brief}: it is all here, do not open it) =====\n\n{text}")
+
+
 class DispatchError(RuntimeError):
     """A packets folder with no wave to share out."""
+
+
+def bundle_lines(run: Sequence[dict[str, Any]]) -> str:
+    return "\n".join(f"- {bundle['bundle']} ({bundle['items']} question{'s' if bundle['items'] != 1 else ''})"
+                     for bundle in run)
+
+
+def worker_file(run: Sequence[dict[str, Any]]) -> str:
+    """What an answerer's own file holds (ocr_batch.py): the prompt of an assignment with the
+    instruction itself in it, not its path, so the answerer has one file to read and not two."""
+    return OWN_FILE.format(bundles=bundle_lines(run), brief=BRIEF.name, text=BRIEF.read_text(encoding="utf-8").strip()) + "\n"
+
+
+def price_step(model: str | None) -> int | None:
+    """The prompt size above which MODEL costs more, or None: it has one price, or is not known."""
+    name = re.sub(r"[^a-z0-9]+", "-", (model or "").lower())
+    for part, step in PRICE_STEPS:
+        if part in name:
+            return step
+    return None
+
+
+def share_tokens(model: str | None) -> int | None:
+    """About how many tokens of bundles one answerer of MODEL is given, or None for no limit."""
+    step = price_step(model)
+    if step is None:
+        return None
+    try:
+        base = int(os.environ.get("OCR_ANSWERER_BASE_TOKENS") or ANSWERER_STARTS_AT)
+    except ValueError:
+        base = ANSWERER_STARTS_AT
+    return max(1, step - base - max(8_000, step // 8))
+
+
+def image_tokens(path: str) -> float:
+    """About what a crop costs to look at: width x height / 750 once its long side is 1568 px at
+    most, and no more than 1600.  A file that is not a PNG counts as a middling crop."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(24)
+    except OSError:
+        return 0.0
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return 800.0
+    width, height = struct.unpack(">II", head[16:24])
+    scale = min(1.0, 1568 / max(width, height, 1))
+    return min(1600.0, width * scale * height * scale / 750)
+
+
+def bundle_facts(bundle: Path) -> tuple[list[str], int]:
+    """(the request ids of a bundle file, about how many tokens it adds to its answerer's prompt).
+    A sealed bundle never changes, so a file is read once a process."""
+    stat = bundle.stat()
+    key = (str(bundle), stat.st_mtime_ns, stat.st_size)
+    if key not in _FACTS:
+        items = json.loads(bundle.read_text(encoding="utf-8"))["items"]
+        ids = [str(item["request_id"]) for item in items]
+        crops = sum(image_tokens(str(item["image_path"])) for item in items if item.get("image_path"))
+        _FACTS[key] = (ids, round(BYTES_TO_TOKENS * stat.st_size + IMAGE_TO_TOKENS * crops))
+    return _FACTS[key]
 
 
 def newest_wave(packets_dir: Path) -> tuple[Path, dict[str, Any]]:
@@ -83,7 +184,19 @@ def newest_wave(packets_dir: Path) -> tuple[Path, dict[str, Any]]:
 
 def answered_ids(answers_path: Path) -> list[str] | None:
     """The request ids an answers file answers, in any form apply_packet_answers.py takes; None
-    when it is not written or not JSON of such a form."""
+    when it is not written or not JSON of such a form.  A file is read again only when its time
+    or size has changed: a round looks at every answers file of a wave on every pass."""
+    try:
+        stat = answers_path.stat()
+    except OSError:
+        return None
+    key = (str(answers_path), stat.st_mtime_ns, stat.st_size)
+    if key not in _ANSWERED:
+        _ANSWERED[key] = read_answered_ids(answers_path)
+    return _ANSWERED[key]
+
+
+def read_answered_ids(answers_path: Path) -> list[str] | None:
     try:
         data = json.loads(answers_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -102,8 +215,8 @@ def bundle_state(summary: dict[str, Any]) -> tuple[str, int]:
     file does not hold every request of the bundle exactly once) - and how many questions it holds."""
     bundle = Path(summary["bundle"])
     try:
-        wanted = [str(item["request_id"]) for item in json.loads(bundle.read_text(encoding="utf-8"))["items"]]
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        wanted = bundle_facts(bundle)[0]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise DispatchError(f"cannot read {bundle}: {error}") from error
     answers = Path(summary["expectedAnswers"])
     if not answers.is_file():
@@ -130,24 +243,34 @@ def applied(manifest: dict[str, Any]) -> bool:
     return wanted <= have
 
 
-def share(bundles: Sequence[dict[str, Any]], items_per_worker: int, max_workers: int) -> list[list[dict[str, Any]]]:
+def share(bundles: Sequence[dict[str, Any]], items_per_worker: int, max_workers: int,
+          tokens_per_worker: int | None = None) -> list[list[dict[str, Any]]]:
     """BUNDLES, in order, in runs of about ITEMS_PER_WORKER questions (a bundle is never split, so
     a larger one is a run of its own), and in at most MAX_WORKERS runs: where that many answerers
-    are not enough for runs that short, the runs are as much longer as it takes."""
+    are not enough for runs that short, the runs are as much longer as it takes.
+
+    TOKENS_PER_WORKER (a model whose price steps up): a run also ends before its bundles'
+    estimated tokens pass it, and the runs are never made longer: there may be more than
+    MAX_WORKERS of them, and the caller takes the first."""
     def runs(target: int) -> list[list[dict[str, Any]]]:
         out: list[list[dict[str, Any]]] = []
-        held = 0
+        held = weight = 0
         for bundle in bundles:
-            if out and held + bundle["items"] <= target:
+            tokens = bundle.get("tokens") or 0
+            fits = held + bundle["items"] <= target and (not tokens_per_worker or weight + tokens <= tokens_per_worker)
+            if out and fits:
                 out[-1].append(bundle)
                 held += bundle["items"]
+                weight += tokens
             else:
                 out.append([bundle])
-                held = bundle["items"]
+                held, weight = bundle["items"], tokens
         return out
 
     target = max(1, items_per_worker)
     found = runs(target)
+    if tokens_per_worker:
+        return found
     total = sum(bundle["items"] for bundle in bundles)
     while len(found) > max(1, max_workers) and target < total:
         target += 1
@@ -156,10 +279,12 @@ def share(bundles: Sequence[dict[str, Any]], items_per_worker: int, max_workers:
 
 
 def plan(packets_dirs: Sequence[Path], max_workers: int = DEFAULT_MAX_WORKERS,
-         items_per_worker: int = DEFAULT_ITEMS_PER_WORKER, skip: Sequence[str] = ()) -> dict[str, Any]:
+         items_per_worker: int = DEFAULT_ITEMS_PER_WORKER, skip: Sequence[str] = (),
+         tokens_per_worker: int | None = None) -> dict[str, Any]:
     """The plan for PACKETS_DIRS (the module's docstring).  SKIP: bundle files an answerer has
     already been given and is still at work on (ocr_batch.py): they count as waiting, and no
-    assignment holds them."""
+    assignment holds them.  TOKENS_PER_WORKER: share() with it, and at most MAX_WORKERS
+    assignments; the bundles over that wait for the next plan."""
     waiting: list[dict[str, Any]] = []
     apply: list[dict[str, Any]] = []
     rerun: list[dict[str, Any]] = []
@@ -169,6 +294,7 @@ def plan(packets_dirs: Sequence[Path], max_workers: int = DEFAULT_MAX_WORKERS,
         wave_dir, manifest = newest_wave(packets_dir)
         states = [(summary, *bundle_state(summary)) for summary in manifest["bundles"]]
         left = [{"bundle": summary["bundle"], "answers": summary["expectedAnswers"], "items": items,
+                 "tokens": bundle_facts(Path(summary["bundle"]))[1],
                  "kinds": summary.get("kinds") or [], "state": state}
                 for summary, state, items in states if state != "answered"]
         waiting += left
@@ -180,12 +306,14 @@ def plan(packets_dirs: Sequence[Path], max_workers: int = DEFAULT_MAX_WORKERS,
             apply.append({"packets": str(packets_dir), "wave": wave_dir.name, "command": manifest["apply_command"]})
     assignments = []
     taken = set(skip)
-    for number, run in enumerate(share([row for row in waiting if row["bundle"] not in taken],
-                                       items_per_worker, max_workers), start=1):
-        lines = "\n".join(f"- {bundle['bundle']} ({bundle['items']} question{'s' if bundle['items'] != 1 else ''})"
-                          for bundle in run)
+    shares = share([row for row in waiting if row["bundle"] not in taken], items_per_worker, max_workers,
+                   tokens_per_worker)
+    if tokens_per_worker:
+        shares = shares[:max(1, max_workers)]
+    for number, run in enumerate(shares, start=1):
         assignments.append({"worker": number, "questions": sum(bundle["items"] for bundle in run),
-                            "bundles": run, "prompt": PROMPT.format(brief=BRIEF, bundles=lines)})
+                            "tokens": sum(bundle["tokens"] for bundle in run),
+                            "bundles": run, "prompt": PROMPT.format(brief=BRIEF, bundles=bundle_lines(run))})
     return {
         "schema": 1,
         "workerInstructions": str(BRIEF),
@@ -229,13 +357,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
                         help=f"the most answerers to plan for: what the platform runs at once (default {DEFAULT_MAX_WORKERS})")
     parser.add_argument("--items-per-worker", type=int, default=DEFAULT_ITEMS_PER_WORKER,
-                        help=f"about how many questions one answerer is given (default {DEFAULT_ITEMS_PER_WORKER})")
+                        help=f"the most questions one answerer is given (default {DEFAULT_ITEMS_PER_WORKER})")
+    parser.add_argument("--share-tokens", type=int, metavar="N",
+                        help="about how many tokens of bundles one answerer is given (default: by --answered-by - a "
+                             "limit for a model whose price steps up above a prompt size, none otherwise; 0: none)")
     parser.add_argument("--out", type=Path, help="also write the plan to this file")
     parser.add_argument("--apply", action="store_true",
                         help="run the apply command of every folder whose wave is answered in full "
                              "(needs --answered-by)")
     parser.add_argument("--answered-by", metavar="MODEL",
-                        help="with --apply: the exact id of the model that answered, recorded with every answer")
+                        help="the exact id of the model that answers: it sizes the shares, and with --apply it is "
+                             "recorded with every answer")
     return parser
 
 
@@ -245,7 +377,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.apply and not arguments.answered_by:
         parser.error("--apply needs --answered-by MODEL, the exact id of the model that answered")
     try:
-        found = plan(arguments.packets_dirs, arguments.max_workers, arguments.items_per_worker)
+        tokens = share_tokens(arguments.answered_by) if arguments.share_tokens is None else arguments.share_tokens
+        found = plan(arguments.packets_dirs, arguments.max_workers, arguments.items_per_worker,
+                     tokens_per_worker=tokens or None)
     except DispatchError as error:
         print(f"ERROR {error}", file=sys.stderr)
         return 2

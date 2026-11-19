@@ -52,8 +52,8 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 
 - **開批**（前景，即刻返回；render 佢自己喺背景做）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py A.pdf B.pdf ...`。每個 PDF 一個普通嘅 `BOOK`，開喺 `JYUT_OCR_WORK_ROOT` 之下，名佢自己起。佢印 `[batch] BATCH 路徑`，同埋後面兩條寫成嘅 command（`NEXT 1`、`NEXT 2`）：照抄嚟用。有 `[batch] ESTIMATE` 行（估計要答幾多題、用幾多 token）就用一行話畀用戶知，然後即刻做落去，唔使等佢回覆。
 - **OCR**（一個 call 讀晒全部書）：照 `NEXT 1`。冇 `OCR_PHASE_RELEASE_CMD` 就背景跑 `"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --ocr BATCH > BATCH/ocr.log 2>&1`；有就照五包 `run_ocr_phase.py`：你唔係用嗰部本機模型諗嘢就加 `--background` 放背景，你係（一 B）就前景分輪，exit 75 再叫。放咗背景就唔使等佢：即刻去逐輪嗰條。
-- **逐輪**（前景，tool call timeout 開到最大；一個 call 最多等 540 秒，淨係印幾行）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL`（`MODEL` 照六第 4 步；佢當你同時開到 20 個答題者，平台開唔到咁多先加 `--max-workers N`；B 套改為 `--round BATCH --backend http`，全部書 OCR 完先開始校對）。佢自己行每本書嘅第 3 至 6 步：步驟喺背景行，唔使你開、唔使 `wait_for_run.py`；派工同交答案都係佢做，唔使照六跑 `packet_dispatch.py`。照最尾 `[batch] RESULT exit=N`：
-  - **10** 有題要派：`ANSWERERS K` 行講幾多個、喺邊個目錄。每個 `worker-KK.txt` 開一個答題者，**一次過開晒**，prompt 淨係一句 `Read <嗰個檔嘅完整路徑> and do exactly what it says.`；**開晒就即刻再跑同一條，唔使等佢哋返嚟**（亦唔好中途停佢哋）：位滿咗佢自己會等，邊個答題者寫好答案佢就補派新嘅檔，唔會將同一包派兩次。冇 subagent：你自己就係唯一嘅答題者，逐個檔順序照做，全部寫好先再跑同一條。
+- **逐輪**（前景，tool call timeout 開到最大；一個 call 最多等 540 秒，淨係印幾行）：`"$JYUT_OCR_PYTHON" scripts/ocr_batch.py --round BATCH --answered-by MODEL`（`MODEL` 照六第 4 步；佢當你同時開到 20 個答題者，平台開唔到咁多先加 `--max-workers N`；每個答題者攞幾多題佢按 `MODEL` 自己定，所以 `MODEL` 要係真正答題嗰個模型；B 套改為 `--round BATCH --backend http`，全部書 OCR 完先開始校對）。佢自己行每本書嘅第 3 至 6 步：步驟喺背景行，唔使你開、唔使 `wait_for_run.py`；派工同交答案都係佢做，唔使照六跑 `packet_dispatch.py`。照最尾 `[batch] RESULT exit=N`：
+  - **10** 有題要派：`ANSWERERS K` 行講幾多個、喺邊個目錄。每個 `worker-KK.txt` 開一個答題者，**一次過開晒**，prompt 淨係一句 `Read <嗰個檔嘅完整路徑> and do exactly what it says.`；**開晒就即刻再跑同一條，唔使等佢哋返嚟**（亦唔好中途停佢哋）：位滿咗佢自己會等，邊個答題者寫好答案佢就補派新嘅檔，唔會將同一包派兩次。平台一個 message 出得幾個 tool call，就同開答題者同一個 message 再跑。平台話開唔到嘅答題者（同時太多）：再跑嗰條加 `--not-started 嗰個檔嘅路徑`，每個檔加一次，嗰份即刻再派。冇 subagent：你自己就係唯一嘅答題者，逐個檔順序照做，全部寫好先再跑同一條。
   - **75** 未有新題要派（仲讀緊書、行緊步驟，或者答題者未答完）：即刻再跑同一條，description 寫第幾次；
   - 開答題者嗰陣平台話已經滿（concurrent limit），或者個別答題者失敗：唔使理嗰個檔，照舊再跑同一條，佢嗰份遲啲會再派。**全部**答題者都冇咗（平台通知佢哋 failed，例如斷線）：下一次加 `--answerers-gone`（一次就夠），未答嘅即刻再派；
   - **4** 仲有書未讀，但 OCR 嗰個 call 已經完咗：嗰行抄咗佢最尾嘅 RESULT，照五嘅 exit 碼處理，再開 OCR 嗰條；
@@ -85,7 +85,7 @@ description: 將歷史中文 PDF（或者掃描圖資料夾）忠實轉成 Markd
 題目等緊答（exit `10` 或者 `11`）就行呢個循環，直到嗰步 exit `0`：
 
 1. **攞派工單**：`"$JYUT_OCR_PYTHON" scripts/packet_dispatch.py PACKETS_DIR`，stdout 最尾嗰行 `[packets]` 有寫成條 command（PACKETS_DIR 係 `[packets] PENDING` 行嗰個 wave 目錄嘅上一層）。幾本書同時停咗，就將佢哋嘅 packets 目錄一次過列晒，一輪答題者服務晒所有書。佢印出 JSON：`assignments` 每份係一個答題者嘅工作，連一段現成嘅 `prompt`。
-2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles N` 決定（四；冇加就係 8）。開咗就等齊佢哋返嚟：未返晒唔好行第 4 步，亦唔好中途停佢哋（早咗行只會多一輪）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
+2. **派工**：平台有 subagent 就每份 assignment 開一個，`prompt` 原文照貼，**一次過開晒**，唔好逐個等。平台同時開到幾多個就加 `--max-workers N`（預設 24）；想每個答題者少啲題、快啲答完就調細 `--items-per-worker`（預設 10）。加 `--answered-by MODEL` 佢會按答題模型定每份幾大（`references/subagent-orchestration.md`〈每個答題者攞幾多〉）。一個 wave 最多分到幾多份，由行步驟嗰陣嘅 `--max-bundles N` 決定（四；冇加就係 8）。開咗就等齊佢哋返嚟：未返晒唔好行第 4 步，亦唔好中途停佢哋（早咗行只會多一輪）。答題者淨係讀 `references/packet-worker.md` 同自己嗰幾包，唔載入技能、唔跑 script。預設用返你同一個模型；用戶指定先用其他模型。
 3. **冇 subagent**：自己照 `references/packet-worker.md` 逐包答：每題睇佢嘅 `image_path`（裁圖或者整頁），照 `system`、`user_text` 嘅格式答，寫入 `expected_answers_file`：`{"answers": [{"request_id": "...", "answer": "..."}]}`，每個 `request_id` 一次；冇量度到嘅用量唔好寫。每題都要答，睇唔清唔係停低嘅理由：照嗰題自己嘅指示答（裁決題影唔到個位就寫 `定案：睇唔到`）。
 4. **收工**：答題者返晒之後再跑第 1 步嗰條 command。仲有 `assignments` 就再派（有人冇寫齊）；冇就加 `--apply --answered-by` 你確實嘅答題 model ID 再跑一次，佢會交晒答案。 `--model` 只係 packet 標籤，唔會揀答題 agent；要指定模型及 effort，喺實際啟動 agent 嗰度設，並保留啟動記錄。唔可以靠標籤聲稱用咗某個模型；未量度到嘅 provider tokens 留空。
 5. **重跑同一條步驟 command**。又 exit `10` 就返去第 1 步；一本書通常三四輪。

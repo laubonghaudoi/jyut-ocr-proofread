@@ -59,14 +59,13 @@ finish_book.py has delivered it removes the book folder (clean_book.py --all; --
 
 - exit 10: questions to hand out.  BATCH/plans/round-NNNN/ holds one worker-KK.txt per new
   answerer.  Start them all at once, each told only to read its file and do what it says, and
-  run the round again at once, without waiting for them.  At most --max-workers answerers are
-  at work at a time (default 20), each with about --items-per-worker questions: the call keeps
-  count of what it handed out, takes an answerer as done when its answers files are written (or
-  --answer-grace seconds have passed, default 600), and hands out more as places come free - a
-  quarter of them, or one that has stood free for 30 s.  While every place is taken it waits.
-  Measured on eight books (2026-11-18): waiting for all 20 answerers of a round before the next
-  round went out took over 7 minutes for 200 questions, 27 a minute, where the two engines'
-  reading made about 45 a minute to answer;
+  run the round again at once, without waiting for them (in the same message, where the
+  platform takes several calls in one).  At most --max-workers answerers are at work at a time
+  (default 20): the call keeps count of what it handed out, takes an answerer as done when its
+  answers files are written (or --answer-grace seconds have passed, default 600), and hands out
+  the next share the moment a place is free.  While every place is taken it waits.  See "No
+  place stands empty".  An answerer the platform refused to start (too many at once) is named
+  with --not-started FILE at the next call, once for each: its share goes out again at once;
 - exit 75: nothing to hand out yet - books are still being read or worked on, or the answerers
   are still at work: run it again.  When the answerers failed (the platform says so) or were
   started by a session that is gone, say so once with --answerers-gone: their unanswered shares
@@ -90,24 +89,47 @@ the model stopped), and exits 75 until all are done.
 
 How many questions an answerer is given
 ---------------------------------------
-Four (--items-per-worker), and the proofreading call is given --max-items-per-bundle with the
-same number, since a bundle is never split between two answerers.  Why four: an answerer reads
-its whole context again on every turn, and the context grows with every question it reads (the
-crop, the question, its own answer).  Measured on eight books with a small vision model
-(2026-11-18, 1,505 answerers of 10 questions): an answerer began at 47 thousand tokens and ended
-at 144 thousand, about 10 thousand more a question, in 8 turns.  That model's price is five times
-higher for a prompt of more than 100 thousand tokens; 98 in 100 answerers crossed that line, 39
-in 100 of all their requests were over it, and a question cost 1.5 cents where the same tokens
-under the line would have cost 0.44.  Measured in the same run with four (2,122 answerers): 98
-thousand tokens at the end, 40 in 100 over the line, 6.5 turns, and 0.85 cents a question
-against 1.55 with ten.  With about 38 questions an answerer (one 639-page book, 2026-11-17) a
-question took 85 thousand input tokens; with 10, 80 thousand.
+As many as give the most for the money with the model that answers (--answered-by), by
+packet_dispatch.py's rule ("How much one answerer is given" there): ten for a model with one
+price, and for a model whose price steps up above a prompt size as many as its prompt is
+expected to hold under the step.  --items-per-worker N and --share-tokens N set either by hand.
+A bundle is never split between two answerers, so the proofreading call is given
+--max-items-per-bundle to match: the share's size for a model with one price, one question a
+bundle where the share is filled by tokens.
 
-What four cost in time: every answerer has its start and its return to pay, and the agent
-starts only so many a minute.  One session's 20 places answered about 48 questions a minute
-with ten an answerer and 26 to 36 with four; two sessions (--caller) with four, 60 to 90.  So
-four is the cheaper setting and ten the faster one for a single session; a second session buys
-the time back at the same price a question.
+Why: an answerer pays for its start whatever it is given - its platform's prompt, its
+instruction, its return - and reads its whole context again on every turn, while the context
+grows with every question (the crop, the question, its own answer).  Measured on eight books
+with a small vision model (2026-11-18): an answerer began at 48 thousand tokens; with ten
+questions (1,505 answerers) it ended at 141 thousand after 8 turns and 203 s, with four (2,122)
+at 96 thousand after 6.5 turns and 110 s.  At that model's plain prices a question costs 0.43
+cents with ten and 0.60 with four, and one session's 20 places answered 47 and 28 a minute.
+But that model's price is five times higher for a prompt of more than 100 thousand tokens: with
+ten, every answerer crossed the step and a question cost 1.52 cents; with four, 38 in 100 did
+and it cost 0.82.  A model with no such step (the price pages of 2026-11-18 list it for one
+model in ten) is simply cheaper and faster with ten.
+
+No place stands empty
+---------------------
+A free place with a question waiting is filled at once.  Measured on eight books (2026-11-18),
+with questions always waiting, 14 to 16 of one session's 20 places were at work on average:
+the rest of the time was this script's.  Where it went, and what is done about each part:
+
+- an answerer kept its place for 30 s after its last answers file (--settle), so that it had
+  returned before another was started in its place: but it returns 2 s after that file (the
+  median of 279 answerers; 6 s for 99 in 100, 18 s the longest).  Now 6 s.  The rare answerer
+  the platform then refuses is named with --not-started and its share goes out again at once;
+  without that it goes out when its time is over;
+- a free place waited until a quarter of the places were free, or 30 s: now it does not wait
+  (--top-up-wait SECONDS brings a wait back: each hand-out costs the main agent a turn, and a
+  wait of a few seconds lets several places share one);
+- with nobody at work, questions waited up to 90 s for a step about to ask more: no longer;
+- the call looked at the books every 5 s: now every second, and it reads a bundle or an
+  answers file once, not on every look (packet_dispatch.py keeps what it read);
+- an answerer read its own file and then the instruction that file named: the instruction is
+  in its file now, one turn less of about six.
+
+What is left is the answerers' own: about 48 s to start and return, 15 s a question.
 
 The estimate
 ------------
@@ -155,7 +177,6 @@ PAUSE_NAME = "PAUSED"               # BATCH/PAUSED: no question is handed out wh
 PENDING = (10, 11)
 DEFAULT_WAIT = 540
 DEFAULT_MAX_WORKERS = 20
-DEFAULT_ITEMS_PER_WORKER = 4        # see "How many questions an answerer is given" in the docstring
 # What a batch is likely to need, for the estimate the first call prints.  Measured with a small
 # vision model answering (2026-11-17 and -18): one 639-page book asked 2.6 questions a page, the
 # eight volumes of one set 6.3 to 8.8 (32,969 questions on 4,244 pages); a question took 85 to
@@ -165,9 +186,9 @@ QUESTIONS_A_PAGE = (2.6, 8.8)
 INPUT_TOKENS_A_QUESTION = (60_000, 110_000)
 OUTPUT_TOKENS_A_QUESTION = (2_300, 5_200)
 DEFAULT_JOBS = 4                    # steps of different books that run at once (packet backend)
-GATHER_SECONDS = 90                 # nobody at work, questions waiting: how long to wait for a step about to ask more
-TOP_UP_SECONDS = 30                 # answerers at work: how long a free place waits for more places to come free
-SETTLE_SECONDS = 30                 # an answerer keeps its place this long after its last answers file is written
+TOP_UP_SECONDS = 0                  # how long a free place waits for more places to come free ("No place stands empty")
+SETTLE_SECONDS = 6                  # an answerer keeps its place this long after its last answers file is written
+DEFAULT_POLL = 1.0                  # how often a waiting round looks again
 STARTING_SECONDS = 20               # a detached step counts as running for this long before it holds its lock
 MAX_HANDOUTS = 4                    # a bundle handed out this often and never answered fails its book
 MAX_LOST = 3                        # a step killed this often before it ended fails its book
@@ -373,7 +394,8 @@ def step_command(step: str, entry: dict[str, Any], record: dict[str, Any], backe
     asking = ["--backend", "http"] if backend == "http" else ["--max-bundles", str(bundles)]
     # A bundle is never split between answerers, so none may hold more than one answerer is given.
     # It only packs the questions of the wave this call writes: it may differ from call to call.
-    sized = [] if backend == "http" else ["--max-items-per-bundle", str(entry.get("bundleItems") or DEFAULT_ITEMS_PER_WORKER)]
+    sized = [] if backend == "http" else ["--max-items-per-bundle",
+                                           str(entry.get("bundleItems") or packet_dispatch.DEFAULT_ITEMS_PER_WORKER)]
     if step == "render":
         return [PY, script("survey_pdf.py"), entry["pdf"], str(book)]
     if step == "ocr":
@@ -392,6 +414,15 @@ def step_command(step: str, entry: dict[str, Any], record: dict[str, Any], backe
         return [PY, script("finish_book.py"), str(book),
                 *(["--single-engine", "--ocr-a", str(book / SINGLE_DRAFTS[route])] if single else [])]
     raise ValueError(step)
+
+
+def share_size(arguments: argparse.Namespace) -> tuple[int, int | None]:
+    """(the most questions, about how many tokens of bundles or None) one answerer is given:
+    packet_dispatch.py's rule for the model that answers, unless set by hand."""
+    tokens = arguments.share_tokens
+    if tokens is None:
+        tokens = packet_dispatch.share_tokens(arguments.answered_by)
+    return max(1, arguments.items_per_worker or packet_dispatch.DEFAULT_ITEMS_PER_WORKER), (tokens or None)
 
 
 def needs_profile(book: Path, route: str) -> bool:
@@ -672,7 +703,10 @@ class Round:
             fresh = self.backend != "http" and not count(Path(entry["book"]) / "proofread")
             entry["switches"] = list(NEW_BOOK_SWITCHES) if fresh else []
         if step == "proofread":
-            entry["bundleItems"] = max(1, self.arguments.items_per_worker)
+            # A bundle is never split: as large as a share where a share is so many questions,
+            # one question each where a share is filled by tokens.
+            items, tokens = share_size(self.arguments)
+            entry["bundleItems"] = 1 if tokens else items
         start_step(self.batch, entry["name"], step, step_command(step, entry, self.record, self.backend, self.bundles))
         self.running += 1
         entry["state"] = "finishing" if step == "finish" else step
@@ -731,7 +765,7 @@ class Round:
                 if self.backend == "http":
                     return self.fail(entry, f"{step} asked packet questions under --backend http: {tail(log, 2)}")
                 try:
-                    found = packet_dispatch.plan([book / "packets"], 10 ** 6, self.arguments.items_per_worker)
+                    found = packet_dispatch.plan([book / "packets"], 10 ** 6, share_size(self.arguments)[0])
                 except packet_dispatch.DispatchError as error:
                     return self.fail(entry, f"{step} stopped for answers, but {error}")
                 if found["assignments"]:
@@ -874,8 +908,9 @@ def to_hand_out(record: dict[str, Any], arguments: argparse.Namespace) -> tuple[
                      key=lambda entry: entry.get("questions") or 0)
     busy = [bundle for flight in record.get("flights") or [] for bundle, answers in flight["bundles"]
             if not Path(answers).is_file()]
+    items, tokens = share_size(arguments)
     found = packet_dispatch.plan([Path(entry["book"]) / "packets" for entry in waiting], 10 ** 6,
-                                 arguments.items_per_worker, skip=busy)
+                                 items, skip=busy, tokens_per_worker=tokens)
     return found["assignments"], found["waiting"]
 
 
@@ -905,7 +940,7 @@ def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace,
     now = time.time()
     for number, assignment in enumerate(chosen, start=1):
         assignment["worker"] = number
-        (out / f"worker-{number:02d}.txt").write_text(assignment["prompt"] + "\n", encoding="utf-8")
+        (out / f"worker-{number:02d}.txt").write_text(packet_dispatch.worker_file(assignment["bundles"]), encoding="utf-8")
         for bundle in assignment["bundles"]:
             handouts[bundle["bundle"]] = handouts.get(bundle["bundle"], 0) + 1
         record.setdefault("flights", []).append({
@@ -963,6 +998,21 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
         # The agent says none of its answerers is running any more: their shares go out again.
         record["flights"] = [flight for flight in record.get("flights") or [] if (flight.get("caller") or "") != caller]
         arguments.answerers_gone = False
+    if arguments.not_started:
+        # The platform refused these answerers: their shares were never begun, and go out again now.
+        named = {(found.group(1), int(found.group(2))) for found in
+                 (re.search(r"(round-\d+)[/\\]worker-(\d+)", item) for item in arguments.not_started) if found}
+        handouts = record.setdefault("handouts", {})
+        kept = []
+        for flight in record.get("flights") or []:
+            mine = (flight.get("caller") or "") == caller and (flight.get("round"), flight.get("worker")) in named
+            if mine and not any(Path(answers).is_file() for bundle, answers in flight["bundles"]):
+                for bundle, answers in flight["bundles"]:
+                    handouts[bundle] = max(0, handouts.get(bundle, 1) - 1)
+            else:
+                kept.append(flight)
+        record["flights"] = kept
+        arguments.not_started = None
     flights = at_work(record, arguments.answer_grace, arguments.settle)
     write_json(batch / "batch.json", record)
     working = sum(1 for flight in flights if (flight.get("caller") or "") == caller)
@@ -982,13 +1032,9 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
     if shares:
         memo["free_since"] = memo.get("free_since") or time.monotonic()
         held_for = time.monotonic() - memo["free_since"]
-        if working:
-            # Answerers are at work: top them up once a quarter of the places are free, or a
-            # place has stood free for TOP_UP_SECONDS.
-            hold = min(free, len(shares)) < max(1, places // 4) and held_for < TOP_UP_SECONDS
-        else:
-            # None of this caller's is at work: a step that is about to ask more is waited for a little.
-            hold = any(state in ("profile", "proofread") for state in states) and held_for < GATHER_SECONDS
+        # A free place is filled at once (--top-up-wait 0).  With a wait, answerers at work are
+        # topped up once every free place has a share or the first has stood free that long.
+        hold = bool(working) and len(shares) > free and held_for < arguments.top_up_wait
         if not hold or time.monotonic() >= deadline:
             out, answerers, handed, left = hand_out(batch, record, arguments, free, caller)
             if not answerers:
@@ -997,8 +1043,11 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
             say(f"[batch] ANSWERERS {answerers}: start them now, all at once, one per file "
                 f"{out}/worker-01.txt .. worker-{answerers:02d}.txt, each with only this prompt (its own "
                 "file's path in it): Read FILE and do exactly what it says.")
-            say(f"[batch] then run this command again AT ONCE, without waiting for the answerers: it waits by "
-                f"itself while every place is taken, and names the next files as answers come in: {again}")
+            say(f"[batch] then run this command again AT ONCE, without waiting for the answerers - in the same "
+                f"message as starting them, where your platform takes several calls in one: it waits by itself "
+                f"while every place is taken, and names the next files as answers come in: {again}")
+            say("[batch] an answerer the platform refuses to start (too many at once): add --not-started FILE to "
+                "that command, once for each such file")
             say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} new "
                 f"answerer(s) in {out}; {working + answerers} of {places} at work"
                 + (f"; {left} more question(s) wait for a free place" if left else ""))
@@ -1042,7 +1091,13 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
             "(what the platform shows when it does not tell you the id)")
         return 2
     deadline = time.monotonic() + max(0, arguments.wait)
-    again = shlex.join(this(*(item for item in sys.argv[1:] if item not in ("--retry-failed", "--answerers-gone"))))
+    kept, skip = [], False
+    for item in sys.argv[1:]:
+        if skip or item in ("--retry-failed", "--answerers-gone", "--not-started") or item.startswith("--not-started="):
+            skip = item == "--not-started"       # and the file it names
+            continue
+        kept.append(item)
+    again = shlex.join(this(*kept))
     memo: dict[str, Any] = {}
     while True:
         # The lock is held for one pass, not for the wait: another caller's round takes its
@@ -1117,15 +1172,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS,
                         help=f"--round: the answerers the platform runs at once; no more than that many are at "
                              f"work at a time (default {DEFAULT_MAX_WORKERS})")
-    parser.add_argument("--items-per-worker", type=int, default=DEFAULT_ITEMS_PER_WORKER,
-                        help=f"--round: about how many questions one answerer is given (default {DEFAULT_ITEMS_PER_WORKER})")
+    parser.add_argument("--items-per-worker", type=int, metavar="N",
+                        help="--round: the most questions one answerer is given (default "
+                             f"{packet_dispatch.DEFAULT_ITEMS_PER_WORKER})")
+    parser.add_argument("--share-tokens", type=int, metavar="N",
+                        help="--round: about how many tokens of questions one answerer is given (default: by "
+                             "--answered-by - a limit for a model whose price steps up above a prompt size, none "
+                             "otherwise; 0: none)")
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS,
                         help=f"--round: steps of different books that run at once (default {DEFAULT_JOBS}; "
                              "--backend http: always 1)")
     parser.add_argument("--wait", type=int, default=DEFAULT_WAIT, metavar="SECONDS",
                         help=f"--round: the longest one call waits for something to do (default {DEFAULT_WAIT})")
-    parser.add_argument("--poll", type=float, default=5.0, metavar="SECONDS",
-                        help="--round: how often the call looks at the books again while it waits (default 5)")
+    parser.add_argument("--poll", type=float, default=DEFAULT_POLL, metavar="SECONDS",
+                        help=f"--round: how often the call looks at the books again while it waits (default {DEFAULT_POLL:g})")
+    parser.add_argument("--top-up-wait", type=float, default=TOP_UP_SECONDS, metavar="SECONDS",
+                        help="--round: how long a free place may wait for more places to come free, so that one "
+                             f"hand-out serves several (default {TOP_UP_SECONDS}: it is filled at once)")
+    parser.add_argument("--not-started", action="append", metavar="FILE",
+                        help="--round: a worker file whose answerer the platform refused to start; its share is "
+                             "handed out again now (repeat for each)")
     parser.add_argument("--answer-grace", type=float, default=DEFAULT_ANSWER_GRACE, metavar="SECONDS",
                         help="--round: how long an answerer is taken to be at work on what it was handed, while its "
                              f"answers files are not written; after that they are handed out again (default {DEFAULT_ANSWER_GRACE})")

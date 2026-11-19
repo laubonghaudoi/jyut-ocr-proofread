@@ -1,5 +1,15 @@
 # 更新摘要
 
+## Unreleased — 派題唔空等；每個答題者攞幾多題按模型定（issue #7）
+
+- `ocr_batch.py --round` 有位即派。8 本書實測（2026-11-18）題目一直有得派嗰陣，一個 session 20 個位平均得 14 至 16 個做緊嘢，其餘係 script 自己等。改咗五樣：答案寫齊之後佔位由 30 秒減到 6 秒（279 個答題者量到中位數 2 秒就返回，99% 喺 6 秒內）；唔再等四分一嘅位空咗或者空咗 30 秒先補派（`--top-up-wait 秒` 可以加返）；冇人做緊嘢而有步驟行緊嗰陣唔再等 90 秒；每秒睇一次書（以前 5 秒），bundle 同答案檔讀過就記住；答題者自己個檔入面有齊 `references/packet-worker.md` 嗰頁指示，唔使再開，少行一輪。
+- 新 `--not-started FILE`：平台拒絕開嘅答題者（同時太多），下一次 `--round` 講明係邊個 worker 檔，嗰份即刻再派，唔計入派咗幾多次。佔位減到 6 秒之後偶然會撞到，以前要等 `--answer-grace`（600 秒）先再派。
+- 每個答題者攞幾多題唔再係固定 4 條，按 `--answered-by` 嘅模型定（`packet_dispatch.py` 嘅 `share_tokens()`）：冇加價線嘅模型一份最多 10 條；prompt 過咗某個大細就加價嘅模型（`PRICE_STEPS`，而家得一個，過 10 萬 token 貴五倍）按估計 token 裝，校對嗰步一條題一個 bundle。點解：答題者每開一個都有固定開銷，題越多每條題越平越快；8 本書嘅實數照未加價單價計，10 條每條題 0.43 美仙、4 條 0.60 美仙，一個 session 每分鐘答 47 條同 28 條。之前嘅 4 條係為有加價線嗰個模型定嘅，其他模型用佢係又貴又慢。`--items-per-worker N`、`--share-tokens N` 可以人手定。
+- `packet_dispatch.py`：`--answered-by` 而家亦用嚟定每份幾大（以前淨係 `--apply` 用）；新 `--share-tokens N`。按 token 裝嗰陣唔會為咗遷就 `--max-workers` 而將一份加長，一次最多派咁多份，其餘下次再派。計劃入面每份同每個 bundle 多一個 `tokens`（估計）。
+- 估算：bundle 檔每 byte 0.9 token，加裁圖每個 token（闊乘高除 750）計 1.84；用回歸評測 148 個答題者嘅實數擬合，一半喺 2,700 token 之內、九成喺 6,800 之內。現代書嘅題冇得驗（嗰批 bundle 已經清走）。
+- 未用真模型量過改咗之後嘅速度同成本，亦冇重跑 28 案評測：改嘅係幾時派、每份幾大同答題者由邊個檔讀指示，題目同指示嘅內容冇變。按 8 本書嘅實數推算，每個位每次交替嘅等候由約 45 秒減到 10 秒左右。
+- 測試：`tests/test_ocr_batch.py` 加三個（平台拒絕嘅答題者即刻再派而且唔計次數；一份唔超過畀佢嘅 token、worker 檔有齊指示；有加價線嘅模型一條題一個 bundle），`tests/test_packet_dispatch.py` 加一個（模型名點認、按 token 裝、超過 `--max-workers` 嘅留返下次）。
+
 ## Unreleased — 幾個 PDF 一齊做：`ocr_batch.py`（issue #5）
 
 - 新 script `scripts/ocr_batch.py`，三條 command 做晒一批書：`ocr_batch.py A.pdf B.pdf ...` 開批（每個 PDF 一個普通嘅 `BOOK`，render 喺背景做，即刻返回）；`--ocr BATCH` 一個 call 逐本讀晒所有書；`--round BATCH` 逐輪行每本書嘅 profile、校對、定稿同清走，直到全部交付。

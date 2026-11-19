@@ -182,6 +182,9 @@ class Batch:
         self.scripts.mkdir(parents=True)
         for name in REAL:
             shutil.copy(SCRIPTS / name, self.scripts / name)
+        # An answerer's own file holds the instruction itself: the real page, as an install has it.
+        (self.root / "skill" / "references").mkdir(parents=True, exist_ok=True)
+        shutil.copy(SCRIPTS.parent / "references" / "packet-worker.md", self.root / "skill" / "references" / "packet-worker.md")
         for name in STEPS:
             (self.scripts / name).write_text(STEP, encoding="utf-8")
         self.knobs = self.root / "knobs"
@@ -352,7 +355,7 @@ class WholeBatchTests(BatchCase):
             self.assertEqual(first[:5], [str(b.work / name / "renders"), str(b.work / name / "ocr-paddle"),
                                          str(b.work / name / "proofread"), "--draft2-directory",
                                          str(b.work / name / "ocr-hunyuan")])
-            self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "4", "--same-print-marks",
+            self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "10", "--same-print-marks",
                                          "--unmarked-page-sample"])
             self.assertTrue(all(call["argv"] == first for call in b.calls("proofread_pages.py", name)))
             self.assertEqual(b.calls("book_profile.py", name)[0]["argv"][4:], ["--max-bundles", "20"])
@@ -611,10 +614,70 @@ class RoundSizeTests(BatchCase):
         self.assertEqual({Path(bundle["bundle"]).parents[2].name for a in first["assignments"] for bundle in a["bundles"]},
                          {b.names[1]})
         # Answered in full, the second book goes on to its pages while the first is still at its profile.
-        code, out = b.round("--max-workers", "1", "--items-per-worker", "2")
+        # The free place is filled at once, with the first book's questions: the call does not wait
+        # for the second book's step.  That step goes on in the calls that follow.
+        held = ("--max-workers", "1", "--items-per-worker", "2", "--answer-grace", "600")
+        code, out = b.round(*held)
         self.assertEqual(code, 10, out)
+        for _ in range(20):
+            if b.calls("proofread_pages.py", b.names[1]):
+                break
+            b.settle()
+            code, out = b.round(*held, wait=1)
+            self.assertEqual(code, 75, out)                   # the one place is taken by the first book's share
         self.assertTrue(b.calls("proofread_pages.py", b.names[1]))
         self.assertEqual(b.calls("proofread_pages.py", b.names[0]), [])
+
+    def test_an_answerer_the_platform_refused_has_its_share_handed_out_again_at_once(self) -> None:
+        b = self.b
+        b.begin()
+        for name in b.names:
+            b.knob(name, "profile-questions", 6)             # three shares of two a book
+        self.assertEqual(b.ocr()[0], 0)
+        sized = ("--max-workers", "2", "--items-per-worker", "2", "--answer-grace", "600")
+        code, out = b.round(*sized)
+        self.assertEqual(code, 10, out)
+        self.assertIn("add --not-started FILE to that command, once for each such file", out)
+        first = json.loads((b.batch / "plans" / "round-0001" / "plan.json").read_text())
+        refused = b.batch / "plans" / "round-0001" / "worker-02.txt"
+        # The first answerer is at work, the second was never started: its place and its share are free again.
+        code, out = b.round(*sized, "--not-started", str(refused))
+        self.assertEqual(code, 10, out)
+        self.assertIn("RESULT exit=10 QUESTIONS - 2 question(s) for 1 new answerer(s)", out)
+        second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
+        self.assertEqual([bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]],
+                         [bundle["bundle"] for bundle in first["assignments"][1]["bundles"]])
+        self.assertNotIn("--not-started", out.split("run this command again AT ONCE")[1].splitlines()[0])
+        # A share that was never begun does not count against the bundle.
+        record = json.loads((b.batch / "batch.json").read_text())
+        self.assertEqual({record["handouts"][bundle["bundle"]] for bundle in first["assignments"][1]["bundles"]}, {1})
+
+    def test_a_share_holds_no_more_tokens_than_it_is_given_and_its_file_holds_the_instruction(self) -> None:
+        b = self.b
+        b.begin()
+        for name in b.names:
+            b.knob(name, "profile-questions", 6)             # six bundles of one a book
+        self.assertEqual(b.ocr()[0], 0)
+        code, out = b.round("--share-tokens", "1")            # every bundle is over that: one bundle an answerer
+        self.assertEqual(code, 10, out)
+        plan = json.loads((b.batch / "plans" / "round-0001" / "plan.json").read_text())
+        self.assertEqual([len(a["bundles"]) for a in plan["assignments"]], [1] * 12)
+        self.assertTrue(all(a["tokens"] > 1 for a in plan["assignments"]))
+        text = (b.batch / "plans" / "round-0001" / "worker-01.txt").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("Follow the instruction at the end of this file exactly."))
+        self.assertIn(plan["assignments"][0]["bundles"][0]["bundle"], text)
+        page = (SCRIPTS.parent / "references" / "packet-worker.md").read_text(encoding="utf-8").strip()
+        self.assertTrue(text.rstrip().endswith(page))
+
+    def test_a_model_whose_price_steps_up_gets_one_question_a_bundle(self) -> None:
+        b = self.b
+        b.begin()
+        self.assertEqual(b.ocr()[0], 0)
+        code, out, _ = b.until_done("--answered-by", "claude-haiku-5-5")
+        self.assertEqual(code, 0, out)
+        # One question a bundle, so that a share can be filled to what its answerer's prompt has room for.
+        sizes = {call["argv"][call["argv"].index("--max-items-per-bundle") + 1] for call in b.calls("proofread_pages.py")}
+        self.assertEqual(sizes, {"1"})
 
     def test_an_answerer_that_wrote_nothing_has_its_bundles_handed_out_again(self) -> None:
         b = self.b
@@ -942,7 +1005,7 @@ class SingleEngineTests(BatchCase):
         self.assertEqual(b.calls("proofread_pages.py", name)[0]["argv"],
                          [str(b.work / name / "renders"), str(b.work / name / "ocr-hunyuan"),
                           str(b.work / name / "proofread"), "--single-engine", "--max-bundles", "20",
-                          "--max-items-per-bundle", "4"])
+                          "--max-items-per-bundle", "10"])
         self.assertEqual(b.calls("finish_book.py", name)[0]["argv"],
                          [str(b.work / name), "--single-engine", "--ocr-a", str(b.work / name / "ocr-hunyuan")])
         self.assertEqual(b.calls("clean_book.py"), [])

@@ -27,7 +27,8 @@ B 套（本機模型校對）唔用 packet：題目由腳本經 http 問本機�
 - **LLM subagent**：答 bundle、分段轉錄或者覆核有範圍嘅頁。只有主 agent 可以開同協調；子 agent 唔准再開子 agent。
 - **OCR 程序**：主 agent 跑 `ocr_book.py`（HunyuanOCR、PaddleOCR-VL、補讀）。Apple Vision 用獨立嘅 bounded 本機 process pool，唔係 LLM agent。OCR 程序冇推理設定，底稿永遠唔係文字依據。唔好用 LLM slot 去包相同嘅 OCR 程序；子 agent 唔准自己開 OCR 或者停共用推理服務（見 `local-ocr.md`）。
 - **答 packet bundle 嘅子 agent**：照 `scripts/packet_dispatch.py` 嘅派工單，有幾多份 assignment 就開幾多個，一次過開晒，但永遠唔超過平台實際有嘅 slot（用 `--max-workers` 講畀派工單知）。撞到限流就減少並行、按服務要求冷卻，最少 60 秒冇再限流先逐步加返；未答嘅包再跑派工單就會再列出嚟。
-- **一批書嘅答題者**（`ocr_batch.py --round`，SKILL.md 四〈幾個 PDF 一齊做〉）：唔使自己跑派工單，佢將所有書等緊嘅 bundle 夾埋，寫成 `BATCH/plans/round-NN/worker-KK.txt`，每個檔就係一個答題者嘅成段指示（同派工單嘅 `prompt` 一樣）。一輪最多 `--max-workers` 個、每個大約 `--items-per-worker` 條題；一輪派唔晒嘅下一輪再派，唔好叫一個答題者讀幾個檔。
+- **一批書嘅答題者**（`ocr_batch.py --round`，SKILL.md 四〈幾個 PDF 一齊做〉）：唔使自己跑派工單，佢將所有書等緊嘅 bundle 夾埋，寫成 `BATCH/plans/round-NN/worker-KK.txt`，每個檔就係一個答題者嘅成段指示（同派工單嘅 `prompt` 一樣）。同一時間最多 `--max-workers` 個，每個攞幾多題按答題模型定（下面〈每個答題者攞幾多〉）；一輪派唔晒嘅下一輪再派，唔好叫一個答題者讀幾個檔。
+- **每個答題者攞幾多**：答題者每開一個都有固定開銷，所以一份越大，每條題越平越快，預設一份最多 10 條題（技能量過準確度嘅最大份量）。例外係 prompt 過咗某個大細就加價嘅模型（`packet_dispatch.py` 嘅 `PRICE_STEPS`）：一份要細到答題者嘅 prompt 留喺條線以下。`ocr_batch.py --round` 按 `--answered-by` 自己做晒。單本書自己跑派工單嗰陣：派工單加 `--answered-by MODEL`，佢就按估計 token 裝每一份，一次最多 `--max-workers` 份，裝唔晒嘅下次再派；但 bundle 唔會拆開，所以呢類模型行校對嗰步要加 `--max-items-per-bundle 1`，否則一個 bundle 已經大過一份。數字同估算方法喺 `references/long-book-workflow.md`〈每個答題者攞幾多題〉。
 - **分段 writer 同 auditor**（人手分段轉錄）：同時運行嘅 LLM 子 agent 預設最多 8 個，用戶明確要求可以去到 16 個，由 2 個開始。唔好為咗填滿 slot 排重疊嘅 writer。
 
 ## Packet bundle 點答

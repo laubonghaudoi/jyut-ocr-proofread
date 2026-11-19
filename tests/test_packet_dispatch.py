@@ -125,6 +125,32 @@ class PacketDispatchTests(unittest.TestCase):
             self.assertEqual((status, after["assignments"], after["apply"], len(after["rerun"])), (0, [], [], 1))
             self.assertTrue(after["next"].startswith("every wave is applied"))
 
+    def test_a_model_whose_price_steps_up_has_its_shares_filled_by_tokens(self) -> None:
+        self.assertEqual(dispatch.price_step("claude-haiku-5-5"), 100_000)
+        self.assertEqual(dispatch.price_step("Claude Haiku 5.5"), 100_000)
+        self.assertIsNone(dispatch.price_step("some-other-model"))
+        self.assertIsNone(dispatch.share_tokens(None))
+        self.assertEqual(dispatch.share_tokens("claude-haiku-5-5"), 100_000 - 48_000 - 12_500)
+        with tempfile.TemporaryDirectory() as tmp:
+            packets = Path(tmp) / "packets"
+            wave(packets, 12, max_bundles=12, per_bundle=1)   # twelve bundles of one
+            whole = dispatch.plan([packets])
+            self.assertEqual([a["questions"] for a in whole["assignments"]], [10, 2])
+            one = max(bundle["tokens"] for a in whole["assignments"] for bundle in a["bundles"])
+            self.assertGreater(one, 0)
+            self.assertEqual(whole["assignments"][1]["tokens"], sum(b["tokens"] for b in whole["assignments"][1]["bundles"]))
+            # Two bundles fit a share and a third does not; three answerers, and the rest waits for the next plan.
+            plan = dispatch.plan([packets], max_workers=3, tokens_per_worker=2 * one)
+            self.assertEqual([len(a["bundles"]) for a in plan["assignments"]], [2, 2, 2])
+            self.assertEqual(plan["waiting"], {"questions": 12, "bundles": 12, "answerers": 3})
+            # A bundle larger than a share is a share of its own; the model's name sizes the shares.
+            status, found = run(str(packets), "--share-tokens", "1")
+            self.assertEqual((status, [a["questions"] for a in found["assignments"]]), (0, [1] * 12))
+            status, found = run(str(packets), "--answered-by", "claude-haiku-5-5")
+            self.assertEqual((status, [a["questions"] for a in found["assignments"]]), (0, [10, 2]))
+            status, found = run(str(packets), "--answered-by", "claude-haiku-5-5", "--share-tokens", "0")
+            self.assertEqual((status, [a["questions"] for a in found["assignments"]]), (0, [10, 2]))
+
     def test_several_books_are_shared_out_together(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             first, second, third = (Path(tmp) / name / "packets" for name in ("one", "two", "three"))
