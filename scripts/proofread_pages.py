@@ -9078,6 +9078,8 @@ OPTIONAL_PROVENANCE += ("learnedHeads",)
 OPTIONAL_PROVENANCE += ("engineAConfirmsFirstAnswer", "censusSkipOverCeiling")
 # Switch --same-print-marks (agreed_marks, same_print).
 OPTIONAL_PROVENANCE += ("samePrintMarks",)
+# Switch --same-marks-any-form (agreed_marks, FORM_FOLD).
+OPTIONAL_PROVENANCE += ("sameMarksAnyForm",)
 OPTIONAL_PROVENANCE += ("unmarkedPageSample",)
 # The round-4 fixes, on by default since the user's decision of 2026-09-30
 # (after the round-4 benchmark), each with the provenance key it seals when
@@ -9237,6 +9239,9 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # Switch --same-print-marks: the engines' marks also for a block whose
         # print both engines read alike (agreed_marks, same_print).  Only when on.
         **({"samePrintMarks": "on"} if getattr(arguments, "same_print_marks", False) else {}),
+        # Switch --same-marks-any-form: the engines' marks also where the two
+        # wrote one mark in two forms (agreed_marks with FORM_FOLD).  Only when on.
+        **({"sameMarksAnyForm": "on"} if getattr(arguments, "same_marks_any_form", False) else {}),
         # Switch --unmarked-page-sample: on a page neither engine read marks
         # on, a sample of the blocks is asked and the rest are taken as
         # unmarked when the sample is (unmarked_candidates).  Only when on.
@@ -9897,9 +9902,61 @@ def gap_print(gap: str) -> str:
     return NOTE_MARKER_PRINT.sub("", "".join(GAP_MARKUP.sub("", gap).translate(MARK_FORMS).split()))
 
 
+# Switch --same-marks-any-form: the forms in which the two engines write one
+# mark or one piece of print, made one before their readings are compared
+# (agreed_marks; the page is written in engine A's own forms).  ASCII marks
+# for the full-width ones, straight quotation marks for the curly ones, and
+# the square bracket in its three shapes.  Measured on 160 pages of eight
+# modern books set in horizontal lines (2026-11-19): of 921 body blocks whose
+# characters both engines read alike, 393 had the same marks as written, and
+# 472 more once these forms were made one - engine B wrote "[" for 870 of 881
+# brackets engine A wrote 〔 or 【, and ASCII commas, colons and quotation
+# marks where engine A wrote the full-width ones.  All 472 were asked about;
+# the answers of 491 of 558 such questions were the engines' own marks, and
+# the rest mostly left out what both engines had read (97 square brackets).
+# Angle brackets are not folded: "<" and ">" are an engine's markup too, and
+# where one engine wrote 《》 and the other 〈〉 the page decides.  "#" goes:
+# engine B writes a heading's line as Markdown ("## （一）"), which is no
+# print (on one book's 20 pages it kept 20 blocks out).
+FORM_FOLD = str.maketrans({",": "，", ";": "；", ":": "：", "?": "？", "!": "！",
+                           "“": '"', "”": '"', "＂": '"', "‘": "'", "’": "'", "＇": "'",
+                           "[": "〔", "]": "〕", "［": "〔", "］": "〕", "【": "〔", "】": "〕",
+                           "☐": "□", "#": None})
+
+
+# What --same-marks-any-form writes of engine A's gaps besides the marks the
+# step counts (PUNCT_MARKS): the print a punctuator copies off the crop when
+# it is asked - quotation marks, square brackets, a dash, a middle dot.
+# Without them a block the switch takes would lose them: measured on 15 pages
+# of one of those books, the sealed pages held 96 square brackets and 102
+# curly quotation marks, and the marks alone left 14 and 18.  Figures, Latin
+# text, 「□」 and note markers stay with the rules that write them later, as
+# for a block that is asked about.
+KEPT_PRINT = frozenset("“”‘’\"'〔〕【】［］[]—·")
+
+
+# --same-marks-any-form takes a block with a single place holding a mark (the
+# rule's own minimum is AGREED_MARKS_MINIMUM) on a page where the blocks it
+# took hold this many such places.  Measured on those 160 pages: of 55 such
+# blocks the two engines read alike, every answer wrote the engines' mark.
+# A block with no mark in either engine stays asked: on older print the
+# proofreader wrote marks in 15 of 62 such blocks (unmarked_candidates).
+ANY_FORM_PAGE_PLACES = 20
+
+
+def gap_as_written(gap: str) -> str:
+    """One of engine A's gaps as --same-marks-any-form writes it: its marks
+    (MARK_FORMS) and its KEPT_PRINT, in the order it wrote them; markup, note
+    markers, figures, other print and white space left out."""
+    gap = NOTE_MARKER_PRINT.sub("", GAP_MARKUP.sub("", gap)).translate(MARK_FORMS)
+    return "".join(c for c in gap if c in PUNCT_MARKS or c in KEPT_PRINT)
+
+
 def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None], str, list[str],
                                                                  tuple[list[str], list[str]]] | None],
-                 *, same_print: bool = False) -> str | None:
+                 *, same_print: bool = False,
+                 write: tuple[list[int | None], str, list[str], tuple[list[str], list[str]]] | None = None,
+                 minimum: int = AGREED_MARKS_MINIMUM) -> str | None:
     """SPAN, a block's stretch of the merged text from START, with the marks
     both engines printed there, when the rule agreedMarks takes it: in each
     of the two READINGS (engine_reading) SPAN is an exact stretch - every
@@ -9909,6 +9966,13 @@ def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None
     SPAN's gaps the two engines wrote the same marks (gap_marks: the three
     bullets one shape, a run of leader dots one), at least
     AGREED_MARKS_MINIMUM places (mark_places).  Engine A's marks are written.
+    WRITE (--same-marks-any-form): READINGS are the two engines' texts with
+    their forms made one (FORM_FOLD), and what is written is WRITE's, engine
+    A's reading as it wrote it: its marks and, with them, its quotation
+    marks, square brackets, dashes and middle dots (gap_as_written), which
+    both engines read - but only where that text, its marks alone, is the
+    text the marks tied to the characters give; None where it is not (a mark
+    engine A wrote in a form the step does not count).
     None otherwise: the block is counted and punctuated, and the punctuator
     writes off the crop the print the merged text leaves out (it holds
     characters alone) - a year, a page number, a Western name, a note marker.
@@ -9947,8 +10011,20 @@ def agreed_marks(span: str, start: int, readings: Sequence[tuple[list[int | None
         return None
     if any(gap_marks(x) != gap_marks(y) for x, y in zip(*gaps)):
         return None
-    text = "".join(gap + char for gap, char in zip(gaps[0], span)) + gaps[0][-1]
-    return text if mark_places(text) >= AGREED_MARKS_MINIMUM else None
+    out = gaps[0] if write is None else gaps_of(write[3], start, len(span))
+    text = "".join(gap + char for gap, char in zip(out, span)) + out[-1]
+    if mark_places(text) < minimum:
+        return None
+    if write is None:
+        return text
+    own, _, written, _ = write
+    first = own[start]
+    inner = [gap_as_written(gap) for gap in written[first + 1:first + len(span)]]
+    full = (gap_as_written(TEXT_SEAMS.split(written[first])[-1]) + span[0]
+            + "".join(gap + char for gap, char in zip(inner, span[1:]))
+            + gap_as_written(TEXT_SEAMS.split(written[first + len(span)])[0]))
+    marks_only = lambda value: gap_marks("".join(c for c in value if c in PUNCT_MARKS or CJK(c)))
+    return full if marks_only(full) == marks_only(text) else None
 
 
 # Switch --unmarked-page-sample: a page neither engine read more than
@@ -15705,19 +15781,44 @@ def _proofread_page_inner(
             agreed: dict[int, str] = {}
             # The blocks taken only with --same-print-marks (agreed_marks, same_print).
             agreed_print: set[int] = set()
+            # The blocks taken only with --same-marks-any-form (agreed_marks, FORM_FOLD).
+            agreed_form: set[int] = set()
             if draft2 is not None and not (notation.get("doubled") or notation.get("emphasis")):
                 found_a = engine_places(engine_gaps(draft)[0], segments, pieces, blocks)
                 readings = [engine_reading(draft, found_a[0] if found_a else None, span_starts[-1]),
                             engine_reading(draft2, engine_b_places(engine_gaps(draft2)[0], segments, pieces),
                                            span_starts[-1])]
+                # Switch --same-marks-any-form: the two readings again, their forms made one.
+                # The fold maps one character to one, so the characters' places are the same.
+                folded = None
+                if getattr(arguments, "same_marks_any_form", False):
+                    folded = [engine_reading(draft.translate(FORM_FOLD), found_a[0] if found_a else None, span_starts[-1]),
+                              engine_reading(draft2.translate(FORM_FOLD),
+                                             engine_b_places(engine_gaps(draft2)[0], segments, pieces), span_starts[-1])]
                 for index in to_punctuate:
                     text = agreed_marks(spans[index], span_starts[index], readings)
                     if text is None and getattr(arguments, "same_print_marks", False):
                         text = agreed_marks(spans[index], span_starts[index], readings, same_print=True)
                         if text is not None:
                             agreed_print.add(index)
+                    if text is None and folded is not None:
+                        text = agreed_marks(spans[index], span_starts[index], folded, same_print=True, write=readings[0])
+                        if text is not None:
+                            agreed_form.add(index)
                     if text is not None:
                         agreed[index] = text
+                # A block with one place holding a mark, both engines' the same: taken too on a
+                # page whose other blocks show the two engines read its marks alike
+                # (ANY_FORM_PAGE_PLACES places in the blocks taken).  A block neither engine read
+                # a mark in is still asked about.
+                if folded is not None and sum(mark_places(text) for text in agreed.values()) >= ANY_FORM_PAGE_PLACES:
+                    for index in to_punctuate:
+                        if index not in agreed:
+                            text = agreed_marks(spans[index], span_starts[index], folded, same_print=True,
+                                                write=readings[0], minimum=1)
+                            if text is not None:
+                                agreed[index] = text
+                                agreed_form.add(index)
             # Switch --unmarked-page-sample: on a page neither engine read
             # marks on, the longest UNMARKED_SAMPLE of the blocks engine A read
             # as characters alone are asked with the page's other blocks, and
@@ -15759,6 +15860,7 @@ def _proofread_page_inner(
                     out = agreed[index]
                     return out, {"ok": True, "census": None, "reason": "",
                                  "censusNotAsked": {"rule": "engines-agree-print" if index in agreed_print
+                                                    else "engines-agree-form" if index in agreed_form
                                                     else "page-unmarked-sample" if index in unmarked
                                                     else "engines-agree"},
                                  "marks": sum(punctuation_counts(out).values()), "doubled": out.count("。。"),
@@ -17258,6 +17360,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also take the engines' marks, with no punctuation question, for a block whose "
                              "gaps hold print (figures, Latin text, note markers) that both engines read alike; "
                              "off by default")
+    parser.add_argument("--same-marks-any-form", action="store_true", dest="same_marks_any_form", default=False,
+                        help="also take the engines' marks, with no punctuation question, for a block where the two "
+                             "engines differ only in the form of a mark or of print: ASCII for full-width marks, "
+                             "straight for curly quotation marks, the square bracket's three shapes; off by default")
     parser.add_argument("--unmarked-page-sample", action="store_true", dest="unmarked_page_sample", default=False,
                         help=f"on a page neither engine read more than {UNMARKED_PAGE_MARKS} punctuation marks on, "
                              f"ask the punctuation question for the {UNMARKED_SAMPLE} longest blocks first and, "

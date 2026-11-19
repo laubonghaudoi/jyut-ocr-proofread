@@ -356,7 +356,7 @@ class WholeBatchTests(BatchCase):
                                          str(b.work / name / "proofread"), "--draft2-directory",
                                          str(b.work / name / "ocr-hunyuan")])
             self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "10", "--same-print-marks",
-                                         "--unmarked-page-sample"])
+                                         "--unmarked-page-sample", "--same-marks-any-form"])
             self.assertTrue(all(call["argv"] == first for call in b.calls("proofread_pages.py", name)))
             self.assertEqual(b.calls("book_profile.py", name)[0]["argv"][4:], ["--max-bundles", "20"])
             self.assertEqual(b.calls("finish_book.py", name)[0]["argv"], [str(b.work / name)])
@@ -708,6 +708,12 @@ class RoundSizeTests(BatchCase):
         self.assertEqual(code, 10, out)
         self.assertIn("RESULT exit=10 QUESTIONS - 2 question(s) for 1 new answerer(s)", out)
         self.assertIn("; 2 of 2 at work; 6 more question(s) wait for a free place", out)
+        # A later hand-out says it in two short lines: the instruction and the command were given once.
+        self.assertIn("worker-01.txt .. worker-01.txt - start them as before, one per file, and in the same message "
+                      "run the same command again", out)
+        self.assertNotIn("Read FILE and do exactly what it says.", out)
+        self.assertNotIn("AT ONCE", out)
+        self.assertLess(len(out), 700)
         second = json.loads((b.batch / "plans" / "round-0002" / "plan.json").read_text())
         handed = {bundle["bundle"] for a in first["assignments"] for bundle in a["bundles"]}
         self.assertFalse(handed & {bundle["bundle"] for a in second["assignments"] for bundle in a["bundles"]})

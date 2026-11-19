@@ -191,13 +191,14 @@ SETTLE_SECONDS = 6                  # an answerer keeps its place this long afte
 DEFAULT_POLL = 1.0                  # how often a waiting round looks again
 STARTING_SECONDS = 20               # a detached step counts as running for this long before it holds its lock
 MAX_HANDOUTS = 4                    # a bundle handed out this often and never answered fails its book
+SPELL_OUT_EVERY = 25                # a hand-out's instruction is printed in full the first time and every so often
 MAX_LOST = 3                        # a step killed this often before it ended fails its book
 DEFAULT_ANSWER_GRACE = 600          # how long an answerer is given before its unwritten bundles are handed out again
 PROFILE_MIN_PAGES = 5               # book_profile.py is left out for a file of four pages or fewer (SKILL.md, step 3)
 SINGLE_DRAFTS = {"apple-vision": "ocr-vision", "hunyuan": "ocr-hunyuan"}
 OVER = ("delivered", "failed")
 # What proofread_pages.py is given for a book with no sealed page under the packet backend (SKILL.md, step 4).
-NEW_BOOK_SWITCHES = ["--same-print-marks", "--unmarked-page-sample"]
+NEW_BOOK_SWITCHES = ["--same-print-marks", "--unmarked-page-sample", "--same-marks-any-form"]
 RESULT_LINE = re.compile(r"RESULT exit=(\d+)")
 
 
@@ -948,6 +949,8 @@ def hand_out(batch: Path, record: dict[str, Any], arguments: argparse.Namespace,
             "bundles": [[bundle["bundle"], bundle["answers"]] for bundle in assignment["bundles"]]})
     handed = sum(assignment["questions"] for assignment in chosen)
     left = sum(assignment["questions"] for assignment in shares[len(chosen):])
+    told = record.setdefault("handOuts", {})
+    told[caller] = told.get(caller, 0) + 1
     write_json(out / "plan.json", {"schema": SCHEMA, "answerers": len(chosen), "questions": handed,
                                    "leftForLater": left, "assignments": chosen})
     write_json(batch / "batch.json", record)
@@ -1040,6 +1043,18 @@ def one_pass(batch: Path, arguments: argparse.Namespace, deadline: float, again:
             if not answerers:
                 return None
             say(f"[batch] {status_line(rows)}")
+            count = (record.get("handOuts") or {}).get(caller, 1)
+            if count % SPELL_OUT_EVERY != 1 and not memo.get("spelled"):
+                # The agent has the instruction and the command from an earlier hand-out: two short
+                # lines.  On eight sample books (2026-11-19) these lines, 1,300 characters a
+                # hand-out, were 35% of what the main agent's context grew by, and every request
+                # of its reads the whole context again.
+                say(f"[batch] ANSWERERS {answerers}: {out}/worker-01.txt .. worker-{answerers:02d}.txt - start them "
+                    "as before, one per file, and in the same message run the same command again")
+                say(f"[batch] RESULT exit={EXIT_QUESTIONS} QUESTIONS - {handed} question(s) for {answerers} new "
+                    f"answerer(s) in {out.name}; {working + answerers} of {places} at work"
+                    + (f"; {left} more question(s) wait for a free place" if left else ""))
+                return EXIT_QUESTIONS
             say(f"[batch] ANSWERERS {answerers}: start them now, all at once, one per file "
                 f"{out}/worker-01.txt .. worker-{answerers:02d}.txt, each with only this prompt (its own "
                 "file's path in it): Read FILE and do exactly what it says.")
@@ -1098,7 +1113,8 @@ def round_(batch: Path, arguments: argparse.Namespace) -> int:
             continue
         kept.append(item)
     again = shlex.join(this(*kept))
-    memo: dict[str, Any] = {}
+    # A call with a one-off option is told the command to run next in full: it is not the one typed.
+    memo: dict[str, Any] = {"spelled": len(kept) != len(sys.argv) - 1}
     while True:
         # The lock is held for one pass, not for the wait: another caller's round takes its
         # passes in between.

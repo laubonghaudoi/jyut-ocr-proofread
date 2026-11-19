@@ -129,6 +129,48 @@ check("same_print page: no census, no punctuate call, the pass named engines-agr
       (False, False, [(0, "engines-agree-print")], {"engines-agree-print": 1}, "on"))
 check("same_print page: the engines' marks, no digits", any(c.isdigit() for c in markdown), False)
 
+# --same-marks-any-form: the two engines write one mark in two forms - ASCII for
+# full-width, straight for curly quotation marks, "[" for 〔 - and engine B a
+# heading's line as Markdown.  Off, the block is asked about; on, it is written in
+# engine A's forms, with the brackets and quotation marks both engines read.
+FORM_A = "他说：“敌人进〔从〕四面八方包围上来，我们就上山。”后来又打了三次，都没有打下来。"
+FORM_B = '## 他说:"敌人进[从]四面八方包围上来,我们就上山。"后来又打了三次,都没有打下来。'
+record, markdown, kinds, _ = page([stand_in.block(FORM_A, BODY)], FORM_B,
+                                  stand_in.StandIn(census=7, punctuate=lambda span: FORM_A), extra=["--same-print-marks"])
+check("forms differ, switch off: census and punctuate", ("census" in kinds, "punctuate" in kinds, rules(record)),
+      (True, True, [(0, None)]))
+record, markdown, kinds, report = page([stand_in.block(FORM_A, BODY)], FORM_B, stand_in.StandIn(census=7),
+                                       extra=["--same-marks-any-form"])
+check("forms differ, switch on: no call, the pass named engines-agree-form",
+      ("census" in kinds, "punctuate" in kinds, rules(record), report["censusNotAsked"],
+       record["provenance"].get("sameMarksAnyForm")),
+      (False, False, [(0, "engines-agree-form")], {"engines-agree-form": 1}, "on"))
+check("forms differ, switch on: engine A's own forms, brackets and quotation marks with them", markdown.strip(), FORM_A)
+# A bracket only one engine read is no difference of form: asked about, switch or no switch.
+ONLY_A = FORM_B.replace("[从]", "从")
+record, markdown, kinds, _ = page([stand_in.block(FORM_A, BODY)], ONLY_A,
+                                  stand_in.StandIn(census=7, punctuate=lambda span: FORM_A), extra=["--same-marks-any-form"])
+check("a bracket only engine A read: census and punctuate", ("census" in kinds, "punctuate" in kinds, rules(record)),
+      (True, True, [(0, None)]))
+# Angle brackets are not folded: engine B's "<" may be 〈 or 《.
+ANGLE_A, ANGLE_B = FORM_A.replace("〔从〕", "〈从〉"), FORM_B.replace("[从]", "<从>")
+record, markdown, kinds, _ = page([stand_in.block(ANGLE_A, BODY)], ANGLE_B,
+                                  stand_in.StandIn(census=7, punctuate=lambda span: ANGLE_A), extra=["--same-marks-any-form"])
+check("an angle bracket engine B wrote in ASCII: census and punctuate", ("census" in kinds, "punctuate" in kinds, rules(record)),
+      (True, True, [(0, None)]))
+# A block with one place holding a mark: asked about by itself, taken on a page whose other
+# blocks hold twenty places the two engines read alike.
+LONG_A = "一九二九年，红军到了这里，成立了乡政府、区政府、县政府，分了田，打了土豪，办了学校，开了大会，后来敌人来了，我们上了山，过了三年，才又回来，房子烧了，田也荒了，人也少了，只好从头做起，一直到解放，男的、女的、老的、少的都来了。"
+LONG_B = LONG_A.replace("，", ",")
+record, _, kinds, _ = page([stand_in.block(ONE, BODY)], ONE, stand_in.StandIn(census=1, punctuate=lambda s: ONE),
+                           extra=["--same-marks-any-form"])
+check("one place with a mark, alone on its page: census and punctuate", ("census" in kinds, rules(record)), (True, [(0, None)]))
+record, markdown, kinds, _ = page([stand_in.block(LONG_A, BODY), stand_in.block(ONE, NOTE)], LONG_B + "\n" + ONE,
+                                  stand_in.StandIn(census=1), extra=["--same-marks-any-form"])
+check("one place with a mark, on a page with twenty agreed: both blocks taken, no call",
+      ("census" in kinds, "punctuate" in kinds, rules(record)),
+      (False, False, [(0, "engines-agree-form"), (1, "engines-agree-form")]))
+
 
 
 def agreed(text_a: str, text_b: str, start: int = 0, length: int | None = None,
