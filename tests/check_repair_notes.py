@@ -23,7 +23,13 @@ book numbers its notes on from page to page.
   marked, and finalize writes it a blockquote;
 - issue #8, item 4: a call no engine read, given by the answerer's
   note-numbers reading by the characters before it, is written with its
-  note and paired; without the answer the page is left.
+  note and paired; without the answer the page is left;
+- the bench's page 315: notes 193 and 194 at the foot, calls 194 and 195
+  that both engines read 19 (a run that fits 193-194 as well), the answer
+  pairing the calls with the notes in order (193, 194): left;
+- the bench's page 327: the page holds ㉔ at a call where 240 is printed,
+  engine A reads ⑳, the answer 240, the note ⑳ and \textcircled{240}: the
+  held ㉔ written over, ②④⓪ at both.
 
 No model, no GPU, no corpus: made-up books (tests/repair_fixture.py), each
 page changed only where a case is set up.
@@ -123,6 +129,24 @@ def spec_of() -> dict:
         spec[scan]["sealedEdits"] = [("云⑨⑨", "云"), ("⑨⑨〔明〕", "〔明〕")]
     spec[12]["recordExtra"] = {"noteNumbers": {"reason": "made up", "parsed": True, "notes": [
         {"number": "99", "note": "〔明〕田園雜記", "before": "春山居士云"}]}}
+    # Scan 9, the bench's page 315: the page's first note (193) is called on
+    # the page before; its calls are 194 and 195, which both engines read 19.
+    spec[9]["items"][1:1] = [("line", "分爭者也①⑨④崇禎帝更"), ("line", "致垂政體①⑨⑤兩廣總督"),
+                             ("line", "①⑨③〔明〕陳玉輝鑑鬚集"), ("line", "①⑨④萬曆廣東通志")]
+    spec[9]["aEdits"] = [("也①⑨④", "也⑲"), ("體①⑨⑤", "體⑲"), ("①⑨③〔明〕", "⑲〔明〕"), ("①⑨④萬曆", "⑲萬曆")]
+    spec[9]["bEdits"] = [("也①⑨④", "也$ ^{19} $"), ("體①⑨⑤", "體$ ^{19} $"), ("①⑨③〔明〕", "〔明〕"),
+                         ("①⑨④萬曆", "萬曆")]
+    spec[9]["sealedEdits"] = [("也①⑨④", "也"), ("體①⑨⑤", "體"), ("①⑨③〔明〕", "〔明〕"), ("①⑨④萬曆", "萬曆")]
+    spec[9]["recordExtra"] = {"noteNumbers": {"reason": "made up", "parsed": True, "notes": [
+        {"number": "193", "note": "〔明〕陳玉輝鑑鬚集", "before": "分爭者也"},
+        {"number": "194", "note": "萬曆廣東通志", "before": "致垂政體"}]}}
+    # Scan 10, the bench's page 327: the page holds ㉔ where 240 is printed.
+    spec[10]["items"][1:1] = [("line", "造營房一百間②④⓪依據前表"), ("line", "②④⓪《明清史料》辛編")]
+    spec[10]["aEdits"] = [("間②④⓪", "間⑳"), ("②④⓪《", "⑳《")]
+    spec[10]["bEdits"] = [("間②④⓪", "間"), ("②④⓪《", "$\\textcircled {240}$《")]
+    spec[10]["sealedEdits"] = [("間②④⓪", "間㉔"), ("②④⓪《", "《")]
+    spec[10]["recordExtra"] = {"noteNumbers": {"reason": "made up", "parsed": True, "notes": [
+        {"number": "240", "note": "《明清史料》辛編", "before": "造營房一百間"}]}}
     for scan, text in ((20, "原文如此"), (13, "編者案此處原缺")):
         spec[scan].setdefault("extraSealed", []).append(text)
         spec[scan].setdefault("extraBlocks", []).append({"text": text, "boundingBox": fx.box_of(300, 900, 16, 200),
@@ -163,6 +187,16 @@ def main_checks(tmp: Path) -> None:
     check("云[^99]甲" in text and "[^99]: 〔明〕" in text, f"issue #8 item 4: finalize pairs them ({text[-50:]!r})")
     check("N9" not in rules(log, 11) and "云甲" in pages[11],
           f"without the answer, a note whose call no engine read is left: it would pair with nothing ({rules(log, 11)})")
+    p = pages[9]
+    check("N9" not in rules(log, 9) and "也崇" in p and "體兩" in p and "①⑨③" not in p,
+          f"N9 on the bench's page 315: calls both engines read 19, which fit a run shifted by one as well, are left "
+          f"though the answer pairs them with the notes in order ({rules(log, 9)}, {p[p.find('分爭'):p.find('分爭') + 40]!r})")
+    p = pages[10]
+    check("間②④⓪依" in p and "②④⓪《明清史料》" in p and "㉔" not in p and "N9" in rules(log, 10),
+          f"N9 on the bench's page 327: the page's ㉔ (240 printed, the answer 240, engine A ⑳) is written over "
+          f"({rules(log, 10)}, {p[p.find('造營'):p.find('造營') + 40]!r})")
+    text, _ = _footnotes.convert(f"<!-- page_010 -->\n{p}")
+    check("間[^240]依" in text and "[^240]: 《明清史料》" in text, f"page 327: finalize pairs them ({text[-50:]!r})")
     p = pages[19]
     check("云⑧②甲" in p and "⑧②〔清〕秋夜雜記" in p,
           f"N9: one note the engines read 82 and 85 takes the number after the previous page's last note (81) "

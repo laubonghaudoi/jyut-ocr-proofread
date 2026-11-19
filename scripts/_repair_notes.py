@@ -375,6 +375,42 @@ def settle(slots: Sequence[Slot], prefer: int | None = None) -> tuple[int | None
     return None, [None] * len(slots)
 
 
+def _engine_fit(slots: Sequence[Slot], start: int) -> tuple[int, int] | None:
+    """How the readings other than the answerer's (the page's own marker and
+    the engines') give the run from START: (slots read exactly, readings that
+    give the number exactly or truncated); None where a slot so read has no
+    reading that gives its number."""
+    exact = support = 0
+    for i, slot in enumerate(slots):
+        want = str(start + i)
+        values = [v for k, v in slot.readings.items() if v and k != "m"]
+        good = [v for v in values if v == want or _truncation(v, want)]
+        if values and not good:
+            return None
+        exact += want in values
+        support += len(good)
+    return exact, support
+
+
+def _shifted(calls: Sequence[Slot], start: int) -> bool:
+    """Whether the page's and the engines' readings of CALLS give the run
+    from START - 1 or START + 1 as well as the run from START: then which
+    the page prints is not given.  A page's first note may be called on the
+    page before and its last call's note stand on the next: the bench's page
+    315 holds notes 193-196 and calls 194-198, each call read 19 by an
+    engine, which fits 193-197 as well.  The answerer's reading does not
+    tell them apart: it pairs the page's calls with its notes in order (it
+    gave the calls 193-196 there).  Calls no engine read are not judged
+    here: the answer is all there is of them (issue #8, item 4)."""
+    if not any(k != "m" and v for s in calls for k, v in s.readings.items()):
+        return False
+    here = _engine_fit(calls, start)
+    if here is None:
+        return False
+    return any(alt is not None and alt >= here
+               for alt in (_engine_fit(calls, s) for s in (start - 1, start + 1) if s >= 1))
+
+
 def _assign(notes: Sequence[Slot], calls: Sequence[Slot], n0: int, c0: int | None,
             nhow: Sequence[str | None], chow: Sequence[str | None]) -> dict[str, list] | None:
     """What each slot will hold, as (start, end, text, slot, how) in its gap's
@@ -382,7 +418,10 @@ def _assign(notes: Sequence[Slot], calls: Sequence[Slot], n0: int, c0: int | Non
     numbered from N0 and calls from C0 (None: no calls written); None where a
     note would stay without its number, or no note would find its call.  A
     marker the page holds that N9 reads as the number but marker_key does
-    not (⑦3, ⑦⁴) is written over."""
+    not (⑦3, ⑦⁴) is written over, and so is one that marker_key reads as
+    the number with a digit left out where another reading at the slot gives
+    the number (the bench's page 327: the page holds ㉔ where 240 is printed,
+    the answerer reads 240 there and engine A ⑳)."""
     writes: dict[str, list] = {"note": [], "call": []}
     for kind, group, start, how in (("note", notes, n0, nhow), ("call", calls, c0, chow)):
         if start is None:
@@ -392,7 +431,9 @@ def _assign(notes: Sequence[Slot], calls: Sequence[Slot], n0: int, c0: int | Non
             if slot.held is not None:
                 if marker_key(slot.held[2]) == number:
                     continue
-                if slot.readings.get("page") == number:
+                if slot.readings.get("page") == number or (
+                        _truncation(marker_key(slot.held[2]), number)
+                        and any(v == number for k, v in slot.readings.items() if k != "page")):
                     writes[kind].append((slot.held[0], slot.held[1], written(start + i), slot, "held"))
                     continue
                 if kind == "note":
@@ -427,6 +468,8 @@ def _by_readings(notes: Sequence[Slot], calls: Sequence[Slot], prior: int | None
     if n0 is None:
         return None
     c0, chow = settle(calls, n0) if calls else (None, [])
+    if c0 is not None and _shifted(calls, c0):
+        c0, chow = None, [None] * len(calls)
     if c0 is not None and (n0 + len(notes) <= c0 or c0 + len(calls) <= n0):
         # The calls and the notes settled on numbers that share none: one of
         # them is misread, and which is not given.
@@ -517,16 +560,18 @@ def _layout(notes: Sequence[Slot], calls: Sequence[Slot], prior: int | None) -> 
     """The page's notes numbered by its calls (issue #8, item 2): as many calls
     as notes, every call read exactly by an engine as one run of consecutive
     numbers (one engine is enough: the note it calls stands at the page's
-    foot), no note read otherwise than its number (exactly or truncated);
+    foot; the answerer's reading is not one, as it pairs calls with notes in
+    order: _shifted), no note read otherwise than its number (exactly or truncated);
     PRIOR, the number after the previous page's last note, first."""
     if not notes or len(calls) != len(notes):
         return None
-    starts = ([prior] if prior else []) + sorted({int(v) - i for i, c in enumerate(calls)
-                                                 for v in c.readings.values() if v and v.isdigit()})
+    read = [[v for k, v in c.readings.items() if v and k != "m"] for c in calls]
+    starts = ([prior] if prior else []) + sorted({int(v) - i for i, values in enumerate(read)
+                                                 for v in values if v.isdigit()})
     for start in starts:
         if start < 1:
             continue
-        if all(str(start + i) in [v for v in c.readings.values() if v] for i, c in enumerate(calls)) and all(
+        if all(str(start + i) in values for i, values in enumerate(read)) and all(
                 not n.readings or any(v == str(start + i) or _truncation(v, str(start + i))
                                       for v in n.readings.values() if v) for i, n in enumerate(notes)):
             return start
