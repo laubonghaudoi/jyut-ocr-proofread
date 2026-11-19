@@ -11,6 +11,12 @@
 - `ocr_batch.py --round`：第二次派題開始淨係印兩行短嘅（邊幾個 worker 檔、RESULT），成段指示同 command 喺每個 caller 第一次、之後每 25 次、同帶一次性選項（`--answerers-gone`、`--retry-failed`、`--not-started`）嗰次先印。160 頁實跑量到，呢啲輸出每次 1,300 字，佔主 agent context 增長嘅 35%，而主 agent 每個請求都要重讀成個 context：佢嘅成本去到每條題 0.46 美仙，係答題者嘅一半。
 - 同一次實跑量到 `c6e84fc` 嘅效果：題目排緊隊嗰陣 20 個位平均用到 18.2 個（之前 14.2），每分鐘答 38.8 條（之前同樣份量 27.5）；主 agent 冇因為成本自己停；384 個答題者有 1 個俾平台拒絕、之後重派。按 token 裝份量嘅估算喺現代書偏低（估 3.6 萬、實際 5.0 萬），45% 嘅答題者仍然過咗加價線，未改。
 - 未做：快路仲未由 book profile 量度一致率嚟開關，亦未有抽查；有出入嘅 block 仍然成段問；排版題仍然每頁一條。
+## Unreleased — 安裝：預編嘅 llama.cpp 喺舊 Linux 行唔到，就用源碼建置同一個 commit
+
+- 問題（M1 叢集，Ubuntu 22.04，glibc 2.35，driver 570）：安裝器淨睇 driver 揀預編嘅 `llama-b10969-bin-ubuntu-cuda-12.8-x64`，但呢個二進制要 glibc 2.38（`GLIBC_2.38`、`GLIBCXX_3.4.32`），`llama-server --version` 一行就失敗，安裝停喺度，冇行文件講嘅源碼後備。
+- 改動：預編二進制核驗失敗而原因係載入器搵唔到 C 函式庫版本或者共享庫（`version ... not found`、`cannot open shared object file`），就印一行講缺乜，改行同一個 pinned commit 嘅源碼建置（要 `nvcc`、`cmake`、C++ 編譯器，同之前一樣）；其他核驗失敗（例如報錯 commit）照舊停低。新函數 `unrunnable_reason()`。
+- 測試：`tests/test_setup_dual_engine.py` 加三個：行唔到嘅預編檔轉去源碼建置；行到但 commit 唔啱嘅照停；讀載入器訊息。成個檔嘅失敗同改之前一樣（11 個環境問題）。
+- 實機：M1 一個 H200 節點（CUDA 12.8 toolkit、gcc 11、cmake 3.31）由源碼建置成功，HunyuanOCR 試跑通過。
 
 ## Unreleased — 修書 N9：正文註號同頁底註錯開一個就唔寫；頁面寫漏一位嘅註號寫返成個數
 

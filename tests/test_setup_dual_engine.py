@@ -1094,6 +1094,51 @@ class RuntimeTests(Case):
             self.assertEqual((again, len(server.requests)), (path, 2))
             dependencies.assert_not_called()
 
+    def test_a_release_binary_this_system_cannot_run_falls_back_to_a_source_build(self):
+        # b10969's Ubuntu CUDA builds need glibc 2.38; Ubuntu 22.04 (M1's nodes) has 2.35.
+        archives = self.base / "archives"
+        archives.mkdir()
+        loader = (b"#!/bin/sh\necho \"llama-server: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.38' not found "
+                  b"(required by llama-server)\" >&2\nexit 1\n")
+        binary = release_archive(archives / "llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz", "llama-b10969",
+                                 {"llama-server": loader}, {})
+        bundle = release_archive(archives / "cudart-llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                                 "cudart-llama-b10969-bin-ubuntu-cuda-12.8-x64", {"libcublasLt.so.12": b"cublas"})
+        asset = dict(binary, system="Linux", machine="x86_64", device="cuda", min_driver="570.26", runtime_bundle=bundle)
+        lock = json.loads(json.dumps(LOCK))
+        out = io.StringIO()
+        with FileServer({"/" + item["name"]: (archives / item["name"]).read_bytes() for item in (binary, bundle)}) as server:
+            lock["runtime"]["release_url"] = server.base + "/"
+            with patch.object(setup, "nvcc_path", return_value=None), contextlib.redirect_stdout(out):
+                # No toolkit here: the source build it falls back to says so.
+                with self.assertRaisesRegex(setup.SetupError, "nvcc"):
+                    setup.ensure_runtime(self.options, {}, lock, "cuda", release=asset)
+        self.assertIn("does not run on this system (needs GLIBC_2.38)", out.getvalue())
+
+    def test_a_release_binary_that_runs_but_fails_verification_still_stops_setup(self):
+        archives = self.base / "archives"
+        archives.mkdir()
+        binary = release_archive(archives / "llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz", "llama-b10969",
+                                 {"llama-server": b"#!/bin/sh\nprintf 'version: 1 (0000000)\\n'\n"}, {})
+        bundle = release_archive(archives / "cudart-llama-b10969-bin-ubuntu-cuda-12.8-x64.tar.gz",
+                                 "cudart-llama-b10969-bin-ubuntu-cuda-12.8-x64", {"libcublasLt.so.12": b"cublas"})
+        asset = dict(binary, system="Linux", machine="x86_64", device="cuda", min_driver="570.26", runtime_bundle=bundle)
+        lock = json.loads(json.dumps(LOCK))
+        with FileServer({"/" + item["name"]: (archives / item["name"]).read_bytes() for item in (binary, bundle)}) as server:
+            lock["runtime"]["release_url"] = server.base + "/"
+            with patch.object(setup, "nvcc_path") as nvcc:
+                with self.assertRaisesRegex(setup.SetupError, "pinned llama.cpp commit"):
+                    setup.ensure_runtime(self.options, {}, lock, "cuda", release=asset)
+            nvcc.assert_not_called()
+
+    def test_unrunnable_reason_reads_the_loader_messages(self):
+        self.assertEqual(setup.unrunnable_reason("x: /lib/libm.so.6: version `GLIBC_2.38' not found (required by y)\n"
+                                                 "x: /lib/libstdc++.so.6: version `GLIBCXX_3.4.32' not found"),
+                         "needs GLIBCXX_3.4.32, GLIBC_2.38")
+        self.assertEqual(setup.unrunnable_reason("error while loading shared libraries: libcuda.so.1: cannot open shared "
+                                                 "object file: No such file or directory"), "needs libcuda.so.1")
+        self.assertIsNone(setup.unrunnable_reason("Existing runtime does not report the pinned llama.cpp commit."))
+
     def test_archive_members_cannot_escape(self):
         for files, links in (({"../evil": b"x"}, {}), ({}, {"lib.so": "../../etc/passwd"}), ({}, {"lib.so": "/etc/passwd"})):
             with self.subTest(files=files, links=links):

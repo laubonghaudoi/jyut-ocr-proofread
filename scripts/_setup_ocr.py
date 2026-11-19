@@ -1737,6 +1737,18 @@ def reusable_runtime(options: SetupOptions, existing: Mapping[str, str], lock: M
     return None
 
 
+_UNRUNNABLE = re.compile(r"version `((?:GLIBC|GLIBCXX|CXXABI)_[0-9.]+)' not found|"
+                         r"([A-Za-z0-9_.+-]+\.so[0-9.]*): cannot open shared object file")
+
+
+def unrunnable_reason(message: str) -> str | None:
+    """What the system lacks, where a binary failed to start for want of a C
+    library version or a shared library (the loader's messages); None for any
+    other failure."""
+    found = sorted({a or b for a, b in _UNRUNNABLE.findall(message)})
+    return ("needs " + ", ".join(found)) if found else None
+
+
 def ensure_runtime(options: SetupOptions, existing: dict[str, str], lock: dict[str, Any], device: str, *,
                    release: Mapping[str, Any] | None = None) -> tuple[Path, dict[str, Any]]:
     """A verified pinned llama-server: reuse one, else the release binary
@@ -1748,7 +1760,17 @@ def ensure_runtime(options: SetupOptions, existing: dict[str, str], lock: dict[s
         return reused
     if release is not None:
         installed = install_release_binary(options, lock, release)
-        return installed, runtime_identity(installed, lock, device)
+        try:
+            return installed, runtime_identity(installed, lock, device)
+        except SetupError as error:
+            missing = unrunnable_reason(str(error))
+            if missing is None:
+                raise
+            # The release binaries are built on a newer Linux than some hosts
+            # run (b10969's Ubuntu builds need glibc 2.38; Ubuntu 22.04 has
+            # 2.35): the documented fallback, the same commit from source.
+            print(f"The pinned release binary {release['name']} does not run on this system ({missing}); "
+                  "building the same pinned commit from source instead.", flush=True)
     # A verified runtime needs no compiler/CMake installation. Only a fresh or
     # resumed build requires the build toolchain; PDF tools were checked above.
     nvcc = nvcc_path() if device == "cuda" else None
