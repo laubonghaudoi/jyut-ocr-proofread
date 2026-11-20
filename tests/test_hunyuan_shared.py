@@ -44,7 +44,8 @@ def stop(*args):
     log('stop')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
-log('start', slots=a.parallel, ctx=a.ctx_size, args=__import__('sys').argv[1:])
+log('start', slots=a.parallel, ctx=a.ctx_size, args=__import__('sys').argv[1:],
+    graphs_off=os.environ.get('GGML_CUDA_DISABLE_GRAPHS'))
 (root / 'server.pid').write_text(str(os.getpid()))
 if (root / 'fail-start').exists():
     raise SystemExit(17)
@@ -66,6 +67,10 @@ class Handler(BaseHTTPRequestHandler):
         page = base64.b64decode(body['messages'][0]['content'][0]['image_url']['url'].split(',')[1]).decode()
         log('begin', page=page)
         crash = root / 'crash-times'
+        if page == 'crash' and (root / 'crash-with-graphs').exists() and 'GGML_CUDA_DISABLE_GRAPHS' not in os.environ:
+            # The M1 abort: llama.cpp's CUDA graphs on, and off it reads the page.
+            log('crash', page=page)
+            os._exit(134)
         if page == 'crash' and crash.exists() and int(crash.read_text()) > 0:
             # llama.cpp aborting mid-request (M1, 2026-11-20): the process is gone at once.
             crash.write_text(str(int(crash.read_text()) - 1))
@@ -410,6 +415,17 @@ finally:
         self.assertEqual(self.starts(), 2)
         self.assertEqual(second.ocr(self.page("after"), 100, 10)["choices"][0]["message"]["content"], "after")
 
+    def test_a_server_that_dies_with_cuda_graphs_on_starts_again_with_them_off(self):
+        # On by default; the restart after a crash turns them off, and the page reads.
+        (self.root / "crash-with-graphs").touch()
+        first, second = self.client(queue_timeout=5), self.client(queue_timeout=5)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pages = [(first, "p0"), (first, "crash"), (second, "p2"), (second, "p3")]
+            futures = [pool.submit(client.ocr, self.page(text), 100, 30) for client, text in pages]
+            self.assertEqual([f.result()["choices"][0]["message"]["content"] for f in futures],
+                             [text for _, text in pages])
+        self.assertEqual([row["graphs_off"] for row in self.events() if row["event"] == "start"], [None, "1"])
+
     def test_a_server_that_keeps_dying_is_given_up_and_its_page_fails(self):
         (self.root / "crash-times").write_text("99")
         client = self.client(queue_timeout=5)
@@ -441,6 +457,7 @@ finally:
             self.assertEqual(server.ocr(self.page("crash"), 100, 30)["choices"][0]["message"]["content"], "crash")
             self.assertNotEqual(server.process.pid, first)
             self.assertEqual((server.generation, len(server.restarts)), (1, 1))
+            self.assertEqual([row["graphs_off"] for row in self.events() if row["event"] == "start"], [None, "1"])
         finally:
             server.close()
 

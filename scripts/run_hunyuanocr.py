@@ -85,6 +85,12 @@ READY_TIMEOUT = 600.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 600.0
 CRASH_WAIT = 15.0
+# llama.cpp's CUDA graphs: a speed-up that replays the recorded GPU steps of the last page.  On
+# M1 (2026-11-20, llama.cpp 391fac1) one server reading pages of very different sizes
+# (MH1408's 5306x7643 renders beside MH1442's 1410x2079) aborted with them on ("CUDA error: an
+# illegal instruction was encountered") and read the same pages cleanly with them off, about
+# 15-20% slower.  So a server starts with them on, and one that died starts again with them off.
+NO_GRAPHS = "GGML_CUDA_DISABLE_GRAPHS"
 DEVICE_CHOICES = ("auto", "cpu", "cuda", "metal")
 DEVICE_ENVIRONMENT = (
     "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
@@ -372,6 +378,7 @@ class HunyuanServer:
         self.generation = 0
         self.restarts: list[float] = []
         self._restart_lock = threading.Lock()
+        self._extra_env: dict[str, str] = {}   # set for the starts after a crash (NO_GRAPHS)
         self.port = port
         self.execution_profile = device_profile(device, endpoint=bool(endpoint))
         self.model_id = model_id
@@ -409,7 +416,8 @@ class HunyuanServer:
                 self.process = subprocess.Popen(
                     parent_bound_command(self._command), stdout=log_handle or subprocess.DEVNULL,
                     stderr=log_handle or subprocess.DEVNULL,
-                    pass_fds=self._lease_fds)
+                    pass_fds=self._lease_fds,
+                    env={**os.environ, **self._extra_env} if self._extra_env else None)
             finally:
                 if log_handle is not None:
                     log_handle.close()
@@ -446,8 +454,10 @@ class HunyuanServer:
         Only a server this object started is started again: llama.cpp b10969 on M1's H200s
         sometimes aborted in its image encoder under load ("CUDA error: an illegal instruction
         was encountered", 2026-11-20, two nodes; the same pages read cleanly alone), and every
-        page left on that server failed with it.  MAX_RESTARTS starts within RESTART_WINDOW
-        seconds and it stays down: a server that cannot stay up is not restarted for ever."""
+        page left on that server failed with it.  The first start after a crash turns llama.cpp's
+        CUDA graphs off (NO_GRAPHS), which that crash needed, for the rest of this server's life.
+        MAX_RESTARTS starts within RESTART_WINDOW seconds and it stays down: a server that cannot
+        stay up is not restarted for ever."""
         if self.process is None:
             return False
         with self._restart_lock:
@@ -469,9 +479,12 @@ class HunyuanServer:
                 print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
                       f"{len(recent)} restarts in the last {RESTART_WINDOW:.0f}s, not starting it again", flush=True)
                 return False
+            graphs_off = "" if NO_GRAPHS in os.environ or NO_GRAPHS in self._extra_env else \
+                f", with CUDA graphs off ({NO_GRAPHS}=1)"
+            self._extra_env[NO_GRAPHS] = "1"   # llama.cpp reads any value as off
             print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
-                  f"starting it again (restart {len(recent) + 1} of {MAX_RESTARTS} allowed in {RESTART_WINDOW:.0f}s)",
-                  flush=True)
+                  f"starting it again{graphs_off} (restart {len(recent) + 1} of {MAX_RESTARTS} allowed in "
+                  f"{RESTART_WINDOW:.0f}s)", flush=True)
             self.close()
             self.restarts.append(now)
             try:

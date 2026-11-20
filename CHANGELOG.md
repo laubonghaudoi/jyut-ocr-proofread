@@ -1,5 +1,11 @@
 # 更新摘要
 
+## Unreleased — HunyuanOCR：死過一次嘅 llama-server 熄咗 CUDA graphs 先重開
+
+- 問題（M1，llama.cpp 391fac1）：查清咗上一項嘅 abort 點嚟。一個服務讀兩種大小差好遠嘅頁，例如 MH1408 嘅 5306×7643 同 MH1442 嘅 1410×2079，就會 abort；兩本書各自讀（1 個 slot 或者 16 個）都冇事，兩本嘅頁交叉送入同一個服務，76 頁一頁都讀唔到。熄咗 llama.cpp 嘅 CUDA graphs（`GGML_CUDA_DISABLE_GRAPHS=1`）就兩次都讀齊。CUDA graphs 係將上一頁 GPU 做過嘅步驟錄低再重播嘅加速；熄咗喺一個細測試慢大約 15–20%（MH1442，40 頁，16 個 slot：64 秒對 55 秒，連開服務），40 頁讀出嚟有 38 頁一模一樣，兩頁差一個字。單係重開救唔到：M1 上面重開三次都喺幾秒內再 abort。
+- 改動：`HunyuanServer.recover`：死咗之後第一次重開就設 `GGML_CUDA_DISABLE_GRAPHS=1`，嗰個服務之後一直熄住；預設照開。用戶自己設咗就唔郁。
+- 測試：`tests/test_hunyuan_shared.py` 加一個：假服務開住 graphs 讀到某頁就死、熄咗就讀得到；兩個 client 四頁全部讀到，第二次開服務嗰陣 graphs 熄咗。dedicated 嘅例子亦檢查第二次開係熄咗。改之前唔過。
+
 ## Unreleased — HunyuanOCR：llama-server 中途死咗就重新開，冇答案嘅頁再讀
 
 - 問題（M1 大批 OCR，llama.cpp b10969、H200）：llama-server 間中喺讀圖嗰步 abort（「CUDA error: an illegal instruction was encountered」，backtrace 喺 `clip_image_batch_encode`），兩個節點都有。Shared broker 一見服務死咗就連自己一齊收工，嗰條線上面兩本書未讀嘅頁全部 failed：MH1408（1,155 頁）同 MH1442（40 頁），driver 重試兩次都喺服務開咗 7 至 20 秒之後再 abort，兩本都失敗。嗰兩本可疑嘅頁（MH1408 第 125–160 頁、MH1442 全本）喺另一張卡上面 1 個 slot 同 16 個 slot 單獨讀都冇事，所以唔係頁嘅問題。
