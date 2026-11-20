@@ -1,5 +1,11 @@
 # 更新摘要
 
+## Unreleased — 共用 HunyuanOCR：答案送出之前先放返個位（`_hunyuan_shared.py`）
+
+- 問題（M1 大批 OCR，每條線兩本書共用一個 Hunyuan 服務，16 個 slot，每個 client 16 個 worker）：broker 送出一頁嘅答案之後，先將嗰個 membership 未完成嘅頁數減一。client 一收到答案就即刻送下一頁，broker 有時仲未減，就拒絕新嗰頁（「too many outstanding pages for one shared OCR membership」）。嗰頁當 failed，成本書嘅 Hunyuan exit 1（MH0925：870 頁有 1 頁）。續跑淨係重讀嗰頁，所以讀得返；冇人續跑，本書就停喺度。
+- 改動：`_Broker._page` 先清走個請求同減數，再送答案；等答案嘅部分搬咗去新嘅 `_await_page`，三種答案（讀到、過咗期限、服務停咗）都喺放返個位之後先送。
+- 測試：`tests/test_hunyuan_shared.py` 加 `PageSlotTest`：一個 slot，client 一收到答案就送下一頁，兩頁都要讀到；改之前第二頁被拒，錯誤同 M1 一樣。
+
 ## Unreleased — PaddleOCR-VL 用 GPU 可以排自己一條隊（`OCR_PADDLE_GPU_RESOURCE`）
 
 - 問題（M1，H200）：兩個引擎排同一個 GPU 隊 resource（`OCR_GPU_RESOURCE`），一本書行 Paddle 嗰陣，同一張卡嘅 Hunyuan 要停低等佢。但 Hunyuan 16 個 slot 得 28 GB，Paddle 嘅 VL 識別又交咗外部伺服器，本卡淨係版面偵測，張卡其實夠位兩個一齊行。

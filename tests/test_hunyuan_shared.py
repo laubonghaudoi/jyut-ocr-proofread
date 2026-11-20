@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -377,6 +379,55 @@ finally:
         self.assertEqual(peak, 4)
         self.assertEqual(active, 0)
         self.assertEqual(sum(event["event"] == "start" for event in self.events()), 1)
+
+
+class PageSlotTest(unittest.TestCase):
+    """A member's page slot is free before its answer goes out.  Found on M1 (2026-11-20, a mass
+    OCR run with two books on each lane's server, 16 slots, each client 16 workers): a client sent
+    its next page the moment an answer arrived, the broker freed the slot only after sending it,
+    and the page was refused ("too many outstanding pages for one shared OCR membership"), which
+    failed the book's HunyuanOCR run (MH0925, page 183 of 870)."""
+
+    def test_a_page_sent_the_moment_the_last_answer_arrives_finds_its_slot(self):
+        import _hunyuan_shared as shared
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            render = root / "page.png"
+            render.write_bytes(b"page")
+            body = {"config": {"slots": 1}, "queue_root": str(root / "queue"), "resource": "unit-test",
+                    "digest": "unit-test"}
+            broker = shared._Broker(body, root, root / "broker.sock")
+            broker.ready = True
+            broker.members["s"] = None
+            broker.request_counts["s"] = 0
+
+            class Server:
+                def ocr(self, render, max_tokens, left):
+                    return {"text": "page"}
+            broker.server = Server()
+            worker = threading.Thread(target=broker._worker, daemon=True)
+            worker.start()
+            here, there = socket.socketpair()
+            page = lambda: {"session": "s", "deadline": time.time() + 10, "max_tokens": 100, "render": str(render)}
+            seen = []
+
+            def send(connection, payload):
+                seen.append(payload["status"])
+                if len(seen) == 1:   # the client's next page goes out as soon as it reads this answer
+                    try:
+                        broker._page(here, page())
+                    except shared.GPUQueueError as error:
+                        seen.append(str(error))
+            try:
+                with patch.object(shared, "_send", send):
+                    broker._page(here, page())
+            finally:
+                broker.cancel.set()
+                worker.join(2)
+                here.close()
+                there.close()
+            self.assertEqual(seen, ["complete", "complete"])
+            self.assertEqual(broker.request_counts["s"], 0)
 
 
 class _lease:

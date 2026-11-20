@@ -699,21 +699,7 @@ class _Broker:
             self.pending[session].append(request)
             self.condition.notify_all()
         try:
-            while not request.event.wait(0.05):
-                if time.time() >= deadline:
-                    request.cancelled = True
-                    _send(connection, {"status": "error", "error": "shared OCR page deadline reached"})
-                    return
-                readable, _, _ = select.select([connection], [], [], 0)
-                if readable:
-                    # Peer EOF (or unexpected extra bytes) cancels queued work.
-                    connection.recv(1)
-                    request.cancelled = True
-                    return
-            if request.response is not None:
-                _send(connection, request.response)
-            elif not request.cancelled:
-                _send(connection, {"status": "error", "error": "shared OCR stopped before page completed"})
+            answer = self._await_page(connection, request, deadline)
         finally:
             with self.condition:
                 queued = self.pending.get(session)
@@ -725,6 +711,29 @@ class _Broker:
                         del self.pending[session]
                         self.turns = deque(item for item in self.turns if item != session)
                 self.request_counts[session] = max(0, self.request_counts.get(session, 1) - 1)
+        # The slot is free before the answer goes out: a client with as many workers as slots
+        # sends its next page the moment it reads this one, and freeing the slot after sending
+        # refused that page (M1, 2026-11-20: tests/test_hunyuan_shared.py PageSlotTest).
+        if answer is not None:
+            _send(connection, answer)
+
+    def _await_page(self, connection: socket.socket, request: _Request, deadline: float) -> dict | None:
+        """The answer for REQUEST once the worker has it; None when the client went away."""
+        while not request.event.wait(0.05):
+            if time.time() >= deadline:
+                request.cancelled = True
+                return {"status": "error", "error": "shared OCR page deadline reached"}
+            readable, _, _ = select.select([connection], [], [], 0)
+            if readable:
+                # Peer EOF (or unexpected extra bytes) cancels queued work.
+                connection.recv(1)
+                request.cancelled = True
+                return None
+        if request.response is not None:
+            return request.response
+        if not request.cancelled:
+            return {"status": "error", "error": "shared OCR stopped before page completed"}
+        return None
 
     def _connection(self, connection: socket.socket) -> None:
         try:
