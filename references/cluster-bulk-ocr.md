@@ -41,6 +41,7 @@
 
 - `ocr_batch.py` 用 `--backend http` 嗰陣一次淨校一本，仲要等晒全部書 OCR 完先開始：佢假設部機嘅本機模型要讓 GPU 畀 OCR。叢集上校對模型喺第二啲節點，所以要自己將每本書嘅單本 command（SKILL.md 四）並排咁行：render、`ocr_book.py`、`book_profile.py`、`proofread_pages.py --backend http`、`finish_book.py`。一本書 OCR 完即刻校對，OCR 線同時讀下一本。
 - 每條 OCR 線：`CUDA_VISIBLE_DEVICES` 係佢張卡，自己一個 `XDG_STATE_HOME`（技能嘅 GPU 隊同 Hunyuan broker 放喺本機盤），等幾條線唔會互相排隊；`OCR_PADDLE_DEVICE=gpu:0`、`OCR_PADDLE_WORKERS=8`，連埋 `OCR_PADDLE_VL_*` 指去伺服器。
+- 每條線同時兩本書，再設 `OCR_PADDLE_GPU_RESOURCE`（例如 `paddle-gpu`）：一本行緊 Paddle，另一本嘅 Hunyuan 照讀，唔使排同一條隊。14 本 4,420 頁實測，一個節點（7 條線）每粒鐘 7,124 頁；一條線一本書、共用一條隊嗰陣約 6,300 至 6,700 頁。
 - 設定同環境（`XDG_CONFIG_HOME`、`XDG_DATA_HOME`）放共用盤，所有節點用同一份；本書目錄放節點本機盤：成批書嘅 render 好大，共用盤嘅配額裝唔落，交付完先抄定稿出去。
 - 校對經一個 router 分畀所有 replica（揀手頭最少請求嗰個），每本書 `--max-inflight` 開大啲，令同時做嘅書加埋夠請求。
 

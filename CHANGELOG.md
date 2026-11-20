@@ -1,5 +1,12 @@
 # 更新摘要
 
+## Unreleased — PaddleOCR-VL 用 GPU 可以排自己一條隊（`OCR_PADDLE_GPU_RESOURCE`）
+
+- 問題（M1，H200）：兩個引擎排同一個 GPU 隊 resource（`OCR_GPU_RESOURCE`），一本書行 Paddle 嗰陣，同一張卡嘅 Hunyuan 要停低等佢。但 Hunyuan 16 個 slot 得 28 GB，Paddle 嘅 VL 識別又交咗外部伺服器，本卡淨係版面偵測，張卡其實夠位兩個一齊行。
+- 改動：`run_paddleocr_vl.py`：設咗 `OCR_PADDLE_GPU_RESOURCE`，Paddle 用 GPU 就排呢個 resource，唔再同 Hunyuan 爭；`--gpu-resource` 照樣蓋過佢。冇設就同以前一樣。`references/local-ocr.md` 講幾時先好設（張卡要裝得落兩個引擎），`references/cluster-bulk-ocr.md` 加入配方。
+- 實測：M1 一個 OCR 節點（7 條線），每條線同時兩本書，14 本 4,420 頁 OCR 37.2 分鐘，每粒鐘 7,124 頁；之前一條隊嗰陣約 6,300 至 6,700 頁，快咗約 9%。
+- 測試：`tests/test_local_ocr_runners.py` 加一個例：Hunyuan 佔住張卡嗰陣，用自己 resource 嘅 Paddle 照行；第二個 Paddle 等第一個。
+
 ## Unreleased — `--answerer-command`：用真模型量過；唔完嘅答題者會停（issue #7）
 
 - `ocr_batch.py`：script 自己開嘅答題者，過咗 `--answer-grace` 仲行緊又未寫齊答案，先停咗佢（連埋佢開嘅 process）再派嗰份，當一次失敗，log 最尾寫明。寫齊答案之後 60 秒（`ENDING_SECONDS`）仲未完嘅 process 一樣停，成批完咗就即刻停；答案照計。停之前會認返個 process 係唔係當初開嗰個（開始時間），唔會停錯同號嘅另一個 process。

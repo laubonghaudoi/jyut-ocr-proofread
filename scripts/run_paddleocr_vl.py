@@ -1046,11 +1046,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     add_queue_arguments(parser)
+    # OCR_PADDLE_GPU_RESOURCE: a queue resource of PaddleOCR-VL's own, apart from HunyuanOCR's
+    # (OCR_GPU_RESOURCE).  On a card with room for both (an H200: HunyuanOCR's 16 slots take
+    # 28 GB, layout detection a few GB), one book's PaddleOCR-VL then runs while the next
+    # book's HunyuanOCR reads, instead of the card's HunyuanOCR waiting for it.
+    if os.environ.get("OCR_PADDLE_GPU_RESOURCE"):
+        parser.set_defaults(gpu_resource=_resource_name(os.environ["OCR_PADDLE_GPU_RESOURCE"]))
     return parser
 
 
 from _gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
-                        add_queue_arguments)
+                        _resource_name, add_queue_arguments)
 
 from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
     EXIT_INCOMPLETE, Budget, die_with_parent, exit_on_sigterm)

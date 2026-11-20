@@ -165,7 +165,8 @@ class LocalOCRTestBase(unittest.TestCase):
                     'PADDLEOCR_PYTHON', 'PADDLEOCR_MODEL_REVISION', 'OCR_HUNYUAN_DEVICE',
                     'OCR_PHASE_RELEASE_CMD', 'OCR_PHASE_WINDOW', 'OCR_PHASE_SWAP',
                     'OCR_PHASE_STARTUP_SECONDS', 'OCR_PHASE_CHILDREN',
-                    'OCR_PADDLE_DEVICE', 'OCR_CPU_RESOURCE', 'CUDA_VISIBLE_DEVICES'):
+                    'OCR_PADDLE_DEVICE', 'OCR_CPU_RESOURCE', 'OCR_PADDLE_GPU_RESOURCE',
+                    'CUDA_VISIBLE_DEVICES'):
             self.env.pop(key, None)
         self.queue_dir = self.base / 'gpu-queue'
         self.env['OCR_GPU_QUEUE_DIR'] = str(self.queue_dir)
@@ -657,6 +658,25 @@ class GPUQueueRunnerTest(LocalOCRTestBase):
         self.finish(first)
         self.finish(second)
         self.assertLess(self.events().index('A:stopped'), self.events().index('B:started:v1.6'))
+
+    def test_paddle_with_a_resource_of_its_own_runs_beside_hunyuan(self):
+        # OCR_PADDLE_GPU_RESOURCE (a card with room for both, an H200 on M1): Paddle queues on
+        # its own resource, so it neither waits for HunyuanOCR nor holds it up; two Paddle runs
+        # still take turns on theirs.
+        first = self.launch('hunyuan', 'A', hold=True)
+        self.wait_event('A:page:1')
+        own = {'OCR_PADDLE_GPU_RESOURCE': 'offline-test-paddle-gpu'}
+        held = self.launch('paddle', 'B', hold=True, env=own, extra=['--gpu-queue-timeout', '0'])
+        self.wait_event('B:page:1')
+        report_path = self.base / 'report-C.json'
+        waiting = self.launch('paddle', 'C', env=own, extra=['--gpu-queue-timeout', '0.1'])
+        self.finish(waiting, 75)
+        self.assertEqual(json.loads(report_path.read_text())['gpuQueue']['resource'], 'offline-test-paddle-gpu')
+        self.release('B')
+        self.finish(held)
+        self.assertIsNone(first.poll())
+        self.release('A')
+        self.finish(first)
 
     def test_paddle_on_cpu_does_not_hold_or_wait_for_the_gpu_queue(self):
         first = self.launch('hunyuan', 'A', hold=True)
