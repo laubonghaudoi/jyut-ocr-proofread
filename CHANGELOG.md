@@ -1,5 +1,11 @@
 # 更新摘要
 
+## Unreleased — HunyuanOCR：llama-server 中途死咗就重新開，冇答案嘅頁再讀
+
+- 問題（M1 大批 OCR，llama.cpp b10969、H200）：llama-server 間中喺讀圖嗰步 abort（「CUDA error: an illegal instruction was encountered」，backtrace 喺 `clip_image_batch_encode`），兩個節點都有。Shared broker 一見服務死咗就連自己一齊收工，嗰條線上面兩本書未讀嘅頁全部 failed：MH1408（1,155 頁）同 MH1442（40 頁），driver 重試兩次都喺服務開咗 7 至 20 秒之後再 abort，兩本都失敗。嗰兩本可疑嘅頁（MH1408 第 125–160 頁、MH1442 全本）喺另一張卡上面 1 個 slot 同 16 個 slot 單獨讀都冇事，所以唔係頁嘅問題。
+- 改動：`run_hunyuanocr.py` 嘅 `HunyuanServer`：自己開嘅服務死咗（或者唔答又唔走，等 `CRASH_WAIT` 15 秒），就喺同一個 port 同 GPU lease 下重開，請求再送一次；600 秒內最多 3 次（`MAX_RESTARTS`、`RESTART_WINDOW`），之後照舊報失敗。服務仲答緊而嗰頁自己失敗（例如 HTTP 500）就唔重開。`_hunyuan_shared.py`：broker 見服務死咗先試重開，重開唔到先收工。Dedicated runner 用同一個 class，一樣會重開。外部 `--endpoint` 唔郁。
+- 測試：`tests/test_hunyuan_shared.py` 加四個：假服務讀到某頁就即刻死，兩個 client 共四頁全部讀到、服務開咗兩次；一直死嘅服務開到第四次就放棄，嗰頁失敗；服務仲答緊嘅失敗頁唔重開；dedicated 嘅 `HunyuanServer` 一樣重開。改之前三個唔過。
+
 ## Unreleased — 共用 HunyuanOCR：答案送出之前先放返個位（`_hunyuan_shared.py`）
 
 - 問題（M1 大批 OCR，每條線兩本書共用一個 Hunyuan 服務，16 個 slot，每個 client 16 個 worker）：broker 送出一頁嘅答案之後，先將嗰個 membership 未完成嘅頁數減一。client 一收到答案就即刻送下一頁，broker 有時仲未減，就拒絕新嗰頁（「too many outstanding pages for one shared OCR membership」）。嗰頁當 failed，成本書嘅 Hunyuan exit 1（MH0925：870 頁有 1 頁）。續跑淨係重讀嗰頁，所以讀得返；冇人續跑，本書就停喺度。

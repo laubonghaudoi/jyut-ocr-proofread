@@ -876,7 +876,11 @@ class _Broker:
                 worker.start()
                 workers.append(worker)
             while not self.cancel.wait(0.1):
-                if self.server.process.poll() is not None:
+                # A server that died is started again (HunyuanServer.recover, which a request
+                # that failed with it may be doing already) and its lost pages sent again; the
+                # broker ends only when the server is not started again.
+                generation = self.server.generation
+                if self.server.process.poll() is not None and not self.server.recover(generation):
                     raise GPUQueueError(f"shared llama-server exited with code {self.server.process.returncode}")
         except BaseException as error:
             self.error = f"shared Hunyuan broker failed: {error}; inspect {self.directory / (self.body['digest'][:32] + '.log')}"

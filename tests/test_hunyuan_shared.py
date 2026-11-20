@@ -65,6 +65,15 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         page = base64.b64decode(body['messages'][0]['content'][0]['image_url']['url'].split(',')[1]).decode()
         log('begin', page=page)
+        crash = root / 'crash-times'
+        if page == 'crash' and crash.exists() and int(crash.read_text()) > 0:
+            # llama.cpp aborting mid-request (M1, 2026-11-20): the process is gone at once.
+            crash.write_text(str(int(crash.read_text()) - 1))
+            log('crash', page=page)
+            os._exit(134)
+        if page == 'bad':
+            self.send_error(500, 'this page fails on its own')
+            return
         time.sleep(2 if page == 'slow' else 0.15)
         log('end', page=page)
         self.send({'model': a.alias, 'choices': [{'finish_reason': 'stop', 'message': {'content': page}}]})
@@ -379,6 +388,61 @@ finally:
         self.assertEqual(peak, 4)
         self.assertEqual(active, 0)
         self.assertEqual(sum(event["event"] == "start" for event in self.events()), 1)
+
+
+    # A llama-server that dies under the broker is started again and the pages it lost are read.
+    # Found on M1 (2026-11-20): llama.cpp aborted in its image encoder under load ("CUDA error:
+    # an illegal instruction was encountered") on two nodes; the broker ended with it, every page
+    # left on that lane failed, and both books on the lane failed (MH1408, MH1442).  The same
+    # pages read cleanly on their own.
+    def starts(self):
+        return sum(row["event"] == "start" for row in self.events())
+
+    def test_a_server_that_dies_mid_book_is_started_again_and_its_pages_read(self):
+        # Two books on one server, as on M1's lanes; each has as many pages out as the server has slots.
+        (self.root / "crash-times").write_text("1")
+        first, second = self.client(queue_timeout=5), self.client(queue_timeout=5)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            pages = [(first, "p0"), (first, "crash"), (second, "p2"), (second, "p3")]
+            futures = [pool.submit(client.ocr, self.page(text), 100, 30) for client, text in pages]
+            self.assertEqual([f.result()["choices"][0]["message"]["content"] for f in futures],
+                             [text for _, text in pages])
+        self.assertEqual(self.starts(), 2)
+        self.assertEqual(second.ocr(self.page("after"), 100, 10)["choices"][0]["message"]["content"], "after")
+
+    def test_a_server_that_keeps_dying_is_given_up_and_its_page_fails(self):
+        (self.root / "crash-times").write_text("99")
+        client = self.client(queue_timeout=5)
+        with self.assertRaises(self.module.SharedHunyuanError):
+            client.ocr(self.page("crash"), 100, 60)
+        # The first start and MAX_RESTARTS more, then no more.
+        wait_until(lambda: self.starts() == 4)
+        time.sleep(0.5)
+        self.assertEqual(self.starts(), 4)
+
+    def test_a_page_that_fails_on_a_server_still_answering_starts_nothing(self):
+        client = self.client(queue_timeout=5)
+        started = time.monotonic()
+        with self.assertRaises(self.module.SharedHunyuanError):
+            client.ocr(self.page("bad"), 100, 30)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(client.ocr(self.page("fine"), 100, 10)["choices"][0]["message"]["content"], "fine")
+        self.assertEqual(self.starts(), 1)
+
+    def test_a_dedicated_server_is_started_again_too(self):
+        run = importlib.import_module("run_hunyuanocr")
+        (self.root / "crash-times").write_text("1")
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = run.HunyuanServer(None, self.binary, self.root / "model", self.root / "mmproj", port, 4096)
+        try:
+            first = server.process.pid
+            self.assertEqual(server.ocr(self.page("crash"), 100, 30)["choices"][0]["message"]["content"], "crash")
+            self.assertNotEqual(server.process.pid, first)
+            self.assertEqual((server.generation, len(server.restarts)), (1, 1))
+        finally:
+            server.close()
 
 
 class PageSlotTest(unittest.TestCase):

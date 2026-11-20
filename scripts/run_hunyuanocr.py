@@ -30,6 +30,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Mapping, Sequence
 import urllib.error
@@ -78,6 +79,12 @@ LEGACY_RECORDED_PENALTY = 1.08
 
 PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 READY_TIMEOUT = 600.0
+# A server this runner started that dies is started again (HunyuanServer.recover): at most
+# MAX_RESTARTS times within RESTART_WINDOW seconds; CRASH_WAIT: how long a failed request waits
+# for a server that stopped answering to exit before it counts as gone.
+MAX_RESTARTS = 3
+RESTART_WINDOW = 600.0
+CRASH_WAIT = 15.0
 DEVICE_CHOICES = ("auto", "cpu", "cuda", "metal")
 DEVICE_ENVIRONMENT = (
     "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
@@ -359,6 +366,13 @@ class HunyuanServer:
         """READY_DEADLINE: the phase deadline (time.time()); a server still
         loading then raises StartupExpired instead of waiting out READY_TIMEOUT."""
         self.process: subprocess.Popen[bytes] | None = None
+        # A server this object started and that died (llama.cpp aborting on a CUDA error) is
+        # started again, under the same GPU lease, and the pages it lost are sent again: see
+        # recover().  generation counts the starts; restarts keeps when each one was.
+        self.generation = 0
+        self.restarts: list[float] = []
+        self._restart_lock = threading.Lock()
+        self.port = port
         self.execution_profile = device_profile(device, endpoint=bool(endpoint))
         self.model_id = model_id
         self.base = endpoint.rstrip("/") if endpoint else f"http://127.0.0.1:{port}"
@@ -379,23 +393,29 @@ class HunyuanServer:
                 probe.bind(("127.0.0.1", port))
         except OSError as error:
             raise ConfigurationError(f"owned server port {port} is unavailable: {error}") from error
+        self._command = [str(binary), "--model", str(model), "--mmproj", str(mmproj),
+                         "--host", "127.0.0.1", "--port", str(port), "--alias", model_id,
+                         "--ctx-size", str(ctx), "--parallel", str(parallel),
+                         "--no-kv-unified", "--cont-batching", "--no-cache-prompt",
+                         *server_memory_arguments(binary), *device_arguments(device)]
+        self._lease_fds, self._log_path, self._cancel_event = lease_fds, log_path, cancel_event
+        self._ready_deadline = ready_deadline
+        self._start()
+
+    def _start(self) -> None:
         try:
-            command = [str(binary), "--model", str(model), "--mmproj", str(mmproj),
-                 "--host", "127.0.0.1", "--port", str(port), "--alias", model_id,
-                 "--ctx-size", str(ctx), "--parallel", str(parallel),
-                 "--no-kv-unified", "--cont-batching", "--no-cache-prompt",
-                 *server_memory_arguments(binary), *device_arguments(device)]
-            log_handle = log_path.open("ab") if log_path else None
+            log_handle = self._log_path.open("ab") if self._log_path else None
             try:
                 self.process = subprocess.Popen(
-                    parent_bound_command(command), stdout=log_handle or subprocess.DEVNULL,
+                    parent_bound_command(self._command), stdout=log_handle or subprocess.DEVNULL,
                     stderr=log_handle or subprocess.DEVNULL,
-                    pass_fds=lease_fds)
+                    pass_fds=self._lease_fds)
             finally:
                 if log_handle is not None:
                     log_handle.close()
             began = time.monotonic()
             deadline = began + READY_TIMEOUT
+            ready_deadline, cancel_event = self._ready_deadline, self._cancel_event
             capped = ready_deadline is not None and began + max(0.0, ready_deadline - time.time()) < deadline
             if capped:
                 deadline = began + max(0.0, ready_deadline - time.time())
@@ -418,6 +438,57 @@ class HunyuanServer:
             self.close()
             raise
 
+    def recover(self, generation: int) -> bool:
+        """After a request to the server of start GENERATION failed: True when the server runs
+        again and the page is worth sending once more, False when the failure was the page's
+        own (the server still answers) or the server is not started again.
+
+        Only a server this object started is started again: llama.cpp b10969 on M1's H200s
+        sometimes aborted in its image encoder under load ("CUDA error: an illegal instruction
+        was encountered", 2026-11-20, two nodes; the same pages read cleanly alone), and every
+        page left on that server failed with it.  MAX_RESTARTS starts within RESTART_WINDOW
+        seconds and it stays down: a server that cannot stay up is not restarted for ever."""
+        if self.process is None:
+            return False
+        with self._restart_lock:
+            if self.generation != generation:
+                return self.process.poll() is None   # another request started it again
+            if self.process.poll() is None:
+                if self._healthy():
+                    return False
+                # An aborting llama.cpp drops its connections before the process is gone.
+                end = time.monotonic() + CRASH_WAIT
+                while self.process.poll() is None and time.monotonic() < end:
+                    time.sleep(0.1)
+                if self.process.poll() is None and self._healthy():
+                    return False
+            now = time.monotonic()
+            recent = [t for t in self.restarts if now - t < RESTART_WINDOW]
+            code = self.process.poll()
+            if len(recent) >= MAX_RESTARTS or (self._cancel_event is not None and self._cancel_event.is_set()):
+                print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
+                      f"{len(recent)} restarts in the last {RESTART_WINDOW:.0f}s, not starting it again", flush=True)
+                return False
+            print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
+                  f"starting it again (restart {len(recent) + 1} of {MAX_RESTARTS} allowed in {RESTART_WINDOW:.0f}s)",
+                  flush=True)
+            self.close()
+            self.restarts.append(now)
+            try:
+                with socket.socket() as probe:   # never start on a port someone else took meanwhile
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    probe.bind(("127.0.0.1", self.port))
+            except OSError as error:
+                print(f"[hunyuan] llama-server's port {self.port} is taken ({error}); not starting it again", flush=True)
+                return False
+            try:
+                self._start()
+            except (ConfigurationError, StartupExpired) as error:
+                print(f"[hunyuan] llama-server did not start again: {error}", flush=True)
+                return False
+            self.generation += 1
+            return True
+
     def _healthy(self) -> bool:
         try:
             with urllib.request.urlopen(self.base + "/v1/models", timeout=5) as response:
@@ -428,6 +499,18 @@ class HunyuanServer:
             return False
 
     def ocr(self, render: Path, max_tokens: int, timeout: float) -> dict[str, Any]:
+        """The server's reading of RENDER; a server that died on the way is started again
+        and the page sent once more (recover), within TIMEOUT."""
+        deadline = time.monotonic() + timeout
+        while True:
+            generation = self.generation
+            try:
+                return self._ocr_once(render, max_tokens, max(0.001, deadline - time.monotonic()))
+            except PageOCRFailure:
+                if time.monotonic() >= deadline or not self.recover(generation):
+                    raise
+
+    def _ocr_once(self, render: Path, max_tokens: int, timeout: float) -> dict[str, Any]:
         b64 = base64.b64encode(render.read_bytes()).decode()
         body = {
             "model": self.model_id, "max_tokens": max_tokens,
