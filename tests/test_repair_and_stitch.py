@@ -24,6 +24,7 @@ import audit_ocr_markdown  # noqa: E402
 import finalize_page_markers  # noqa: E402
 import finish_book  # noqa: E402
 import proofread_pages as pp  # noqa: E402
+import repair_book  # noqa: E402
 import stitch_tables  # noqa: E402
 import survey_pdf  # noqa: E402
 
@@ -303,6 +304,56 @@ class RepairAndStitchTests(unittest.TestCase):
                 all(not item["written"] and item["path"] is None for item in report["delivered"])
             )
             self.assertIn("1 pages in final.md", report["result"])
+
+    def test_repair_forms_stage_withholds_boundary_breaking_k12_edit(self) -> None:
+        p1_text = "前頁未完之文句"
+        p2_text = "**1. 條文繼續**\n\n中段**附：**說明。"
+        p1_engine = "前頁未完之文句"
+        p2_engine = "1. 條文繼續\n中段附：說明。"
+        pages = {
+            1: types.SimpleNamespace(
+                engine_a_text=lambda: p1_engine,
+                engine_b_text=lambda: p1_engine,
+                engine_a_blocks=lambda: [{"text": p1_engine, "label": "text", "index": 0}],
+                record={},
+            ),
+            2: types.SimpleNamespace(
+                engine_a_text=lambda: p2_engine,
+                engine_b_text=lambda: p2_engine,
+                engine_a_blocks=lambda: [{"text": p2_engine, "label": "text", "index": 0}],
+                record={},
+            ),
+        }
+        assembly = types.SimpleNamespace(
+            order=[1, 2],
+            compose=lambda texts: "".join(
+                f"<!-- page_{k:03d} -->\n\n{texts[k].strip()}\n\n" for k in (1, 2)
+            ),
+        )
+        book = types.SimpleNamespace(pages=pages, assembly=assembly)
+        model = {
+            "pages": {
+                "1": {"stems": [], "folio": None},
+                "2": {"stems": [], "folio": None},
+            }
+        }
+        ledger = re_.Ledger({1: p1_text, 2: p2_text})
+        ctx = repair_book.Context(
+            book=book,
+            model=model,
+            ledger=ledger,
+            arguments=types.SimpleNamespace(),
+            stage="forms",
+            boundaries={1: "start", 2: "join"},
+        )
+        result = repair_book.forms_stage(ctx)
+        ledger.apply("forms", result.edits)
+
+        # Boundary K12 bold-stripping on page 2 line 1 would flip kind_of prose -> list across a join,
+        # so edge_safe withholds it and records a run-no-place doubt while interior K12 still applies.
+        self.assertTrue(ledger.texts[2].startswith("**1. 條文繼續**"))
+        self.assertIn("中段附：說明。", ledger.texts[2])
+        self.assertTrue(any(d[0] == "run-no-place" and d[1] == 2 for d in result.doubts))
 
 
 if __name__ == "__main__":

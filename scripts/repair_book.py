@@ -252,8 +252,11 @@ def notes_stage(context: Context) -> StageResult:
 def forms_stage(context: Context) -> StageResult:
     """The marks' forms, on the text every other stage has written: ASCII
     marks of Chinese text full width, emphasis runs no engine read out
-    (_repair_rules K9, K12)."""
+    (_repair_rules K9, K12); its edits pass the page-edge check as the runs
+    and notes stages' do."""
     plan = rr.forms(context.book, context.model, context.ledger.texts, context.order())
+    plan.edits = rn.edge_safe(context.book, context.ledger.texts, context.order(), context.boundaries, plan.edits,
+                              plan)
     return StageResult(plan.edits, plan.doubts)
 
 
