@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import subprocess
 import sys
@@ -176,7 +177,8 @@ class LocalOCRTestBase(unittest.TestCase):
         self.env['OCR_HUNYUAN_MODE'] = 'dedicated'
         self.env['OCR_HUNYUAN_SLOTS'] = '1'
         self.binary = self.base / 'fake-llama-server'
-        self.binary.write_text('#!' + sys.executable + '\n' + textwrap.dedent(FAKE_SERVER))
+        self.binary.with_suffix('.py').write_text(textwrap.dedent(FAKE_SERVER), encoding='utf-8')
+        self.binary.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding='utf-8')
         self.binary.chmod(0o755)
         self.model = self.base / 'model.gguf'
         self.proj = self.base / 'mmproj.gguf'
@@ -458,8 +460,8 @@ class LocalOCRCLITest(LocalOCRTestBase):
         plain = json.loads(argv_file.read_text())
         self.assertNotIn('--cache-ram', plain)
         self.assertNotIn('--ctx-checkpoints', plain)
-        source = self.binary.read_text()
-        self.binary.write_text(source.replace("parser.add_argument('--alias')",
+        source = self.binary.with_suffix('.py').read_text()
+        self.binary.with_suffix('.py').write_text(source.replace("parser.add_argument('--alias')",
                                "parser.add_argument('--alias')\nparser.add_argument('--cache-ram', help='prompt cache')"
                                "\nparser.add_argument('--ctx-checkpoints', help='checkpoints a slot')"))
         result, _ = self.run_cli('hunyuan', ['--pages', '1', '--overwrite'], env=env)

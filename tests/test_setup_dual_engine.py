@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -773,7 +774,6 @@ class PythonTests(Case):
                 setup.uv_python(replace(self.options, offline=True), Path("/tools/uv"))
 
     FAKE_UV = textwrap.dedent("""\
-        #!{python}
         # Stands in for uv's `python find` / `python install`: the install writes the
         # Python into UV_PYTHON_INSTALL_DIR and, as uv 0.8+ does unless --no-bin is
         # given, links pythonX.Y into the bin directory (UV_PYTHON_BIN_DIR, else
@@ -828,6 +828,11 @@ class PythonTests(Case):
             sys.exit(2)
         """)
 
+    def write_fake_uv(self, uv: Path, old: bool) -> None:
+        uv.with_suffix(".py").write_text(self.FAKE_UV.format(old=old), encoding="utf-8")
+        uv.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding="utf-8")
+        uv.chmod(0o755)
+
     def test_a_python_from_uv_writes_nothing_outside_the_config_and_data_folders(self):
         home = self.base / "home"
         for old in (False, True):
@@ -836,8 +841,7 @@ class PythonTests(Case):
                 shutil.rmtree(home, ignore_errors=True)
                 home.mkdir()
                 uv = self.base / ("uv-old" if old else "uv")
-                uv.write_text(self.FAKE_UV.format(python=sys.executable, old=old))
-                uv.chmod(0o755)
+                self.write_fake_uv(uv, old)
                 environment = {key: value for key, value in os.environ.items()
                                if not key.startswith("UV_") and key != "XDG_BIN_HOME"}
                 environment["HOME"] = str(home)
@@ -846,7 +850,9 @@ class PythonTests(Case):
                 self.assertTrue(python.is_file())
                 self.assertTrue(python.is_relative_to(self.options.data_dir / "python-runtimes"), python)
                 self.assertEqual(sorted(home.rglob("*")), [], "uv wrote under HOME, outside --data-dir")
-                written = {path for path in self.base.rglob("*") if path.is_file()} - {self.base / "uv", self.base / "uv-old"}
+                written = {path for path in self.base.rglob("*") if path.is_file()} - {
+                    self.base / "uv", self.base / "uv.py", self.base / "uv-old", self.base / "uv-old.py",
+                }
                 outside = [path for path in written if not (path.is_relative_to(self.options.data_dir)
                                                            or path.is_relative_to(self.options.config_dir))]
                 self.assertEqual(outside, [])
@@ -868,8 +874,7 @@ class PythonTests(Case):
         previous = os.getcwd()
         for old in (False, True):
             uv = self.base / ("uv-old" if old else "uv")
-            uv.write_text(self.FAKE_UV.format(python=sys.executable, old=old))
-            uv.chmod(0o755)
+            self.write_fake_uv(uv, old)
             for how in ("working directory", "VIRTUAL_ENV"):
                 for provisioned in (True, False):
                     with self.subTest(old_uv=old, venv=how, managed_python_present=provisioned):

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import shutil
 import tempfile
@@ -205,8 +206,12 @@ class VisionPhaseTests(unittest.TestCase):
     def test_partial_worker_response_cannot_outlive_phase_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "fake-vision-worker"
-            binary.write_text(f"#!{sys.executable}\nimport sys,time\nsys.stdin.readline()\n"
-                              "sys.stdout.write('{');sys.stdout.flush();time.sleep(30)\n")
+            binary.with_suffix(".py").write_text(
+                "import sys,time\nsys.stdin.readline()\n"
+                "sys.stdout.write('{');sys.stdout.flush();time.sleep(30)\n",
+                encoding="utf-8",
+            )
+            binary.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding="utf-8")
             binary.chmod(0o700)
             with mock.patch.dict(os.environ, {"OCR_PHASE_DEADLINE": str(time.time() + 0.3)}, clear=True):
                 worker = vision.SwiftPersistentWorker(binary, 1)

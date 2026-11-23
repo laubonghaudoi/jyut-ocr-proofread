@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import socket
@@ -117,7 +118,8 @@ class SharedBrokerTest(unittest.TestCase):
         sys.modules[name] = self.module
         spec.loader.exec_module(self.module)
         self.binary = self.root / "fake-server"
-        self.binary.write_text("#!" + sys.executable + "\n" + textwrap.dedent(FAKE).replace("__ROOT__", repr(str(self.root))))
+        self.binary.with_suffix(".py").write_text(textwrap.dedent(FAKE).replace("__ROOT__", repr(str(self.root))), encoding="utf-8")
+        self.binary.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding="utf-8")
         self.binary.chmod(0o700)
         for name in ("model", "mmproj"):
             (self.root / name).write_bytes(b"fake model bytes")
@@ -524,7 +526,8 @@ class LivelockWatchdogTest(unittest.TestCase):
         (self.root / "model").touch()
         (self.root / "mmproj").touch()
         self.binary = self.root / "fake-server"
-        self.binary.write_text("#!" + sys.executable + "\n" + textwrap.dedent(FAKE).replace("__ROOT__", repr(str(self.root))))
+        self.binary.with_suffix(".py").write_text(textwrap.dedent(FAKE).replace("__ROOT__", repr(str(self.root))), encoding="utf-8")
+        self.binary.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding="utf-8")
         self.binary.chmod(0o700)
 
     def tearDown(self):

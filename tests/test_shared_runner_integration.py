@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -32,7 +33,8 @@ class SharedRunnerIntegrationTest(LocalOCRTestBase):
         fake = fake.replace("self.reply({'model':", "record('end:' + str(page))\n        self.reply({'model':")
         fake = fake.replace("'content': '  輙與弑\\n\\n[原書符號]  \\n'",
                             "'content': 'page payload ' + str(page)")
-        self.binary.write_text('#!' + sys.executable + '\n' + fake)
+        self.binary.with_suffix('.py').write_text(fake, encoding='utf-8')
+        self.binary.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$0.py\" \"$@\"\n", encoding='utf-8')
         self.processes = []
         self.addCleanup(self.cleanup_children)
         self.env['OCR_HUNYUAN_MODE'] = 'shared'

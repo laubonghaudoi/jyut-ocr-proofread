@@ -319,31 +319,35 @@ def refusal_checks(tmp: Path) -> None:
         refused("a delivery holding its lock", "a delivery is being written")
 
     # A process still working on the book: phase 3 and repair_book.py hold no lock.
-    render = book / "renders" / "page-0001.png"
-    with child(str(render), cwd=book, opens=render) as process:
-        refused(f"a process naming the book folder with a render open (pid {process.pid})",
-                f"a run is still working on this book (pid {process.pid}", "--dry-run")
-        refused("the same, not a dry run", f"(pid {process.pid} ({os.path.basename(sys.executable)}): its working directory is {book})")
-    with child("scripts/proofread_pages.py", str(book / "renders"), str(book / "proofread"), cwd=tmp) as process:
-        refused("a pipeline command given the book on its command line, nothing open",
-                f"(pid {process.pid} (proofread_pages.py): the book folder is on its command line)")
-    # A process pool's helper is not another run: Python 3.14's forkserver outlives the pool and carries its parent's
-    # command line, which refused finish_book.py's cleanup whenever it ran with more than one worker.
-    argv, sys.argv = sys.argv, ["scripts/finish_book.py", str(book)]
-    try:
-        with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("forkserver")) as pool:
-            pool.submit(abs, 1).result()
-    finally:
-        sys.argv = argv
-    check(clean_book.working(book) is None, "a process pool's forkserver with the book on its command line is not another run")
-    log = book / "finish.log"
-    with child("scripts/wait_for_run.py", str(book), str(log), cwd=tmp, opens=log), child(cwd=book), \
-            child(str(log), cwd=tmp, opens=log), child(str(book / "finish" / "finish-book.log"), cwd=tmp,
-                                                        opens=book / "finish" / "finish-book.log"):
-        code, lines = run(book, "--dry-run")
-        check(code == 0 and result_ok(lines, 0),
-              f"a wait_for_run.py reading the log, a process merely in the folder and two tailing the logs do not hold "
-              f"it back ({lines[-1][:100]})")
+    # clean_book.working() inspects /proc/<pid>, which exists on Linux only.
+    if os.path.isdir("/proc"):
+        render = book / "renders" / "page-0001.png"
+        with child(str(render), cwd=book, opens=render) as process:
+            refused(f"a process naming the book folder with a render open (pid {process.pid})",
+                    f"a run is still working on this book (pid {process.pid}", "--dry-run")
+            refused("the same, not a dry run", f"(pid {process.pid} ({os.path.basename(sys.executable)}): its working directory is {book})")
+        with child("scripts/proofread_pages.py", str(book / "renders"), str(book / "proofread"), cwd=tmp) as process:
+            refused("a pipeline command given the book on its command line, nothing open",
+                    f"(pid {process.pid} (proofread_pages.py): the book folder is on its command line)")
+        # A process pool's helper is not another run: Python 3.14's forkserver outlives the pool and carries its parent's
+        # command line, which refused finish_book.py's cleanup whenever it ran with more than one worker.
+        argv, sys.argv = sys.argv, ["scripts/finish_book.py", str(book)]
+        try:
+            with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("forkserver")) as pool:
+                pool.submit(abs, 1).result()
+        finally:
+            sys.argv = argv
+        check(clean_book.working(book) is None, "a process pool's forkserver with the book on its command line is not another run")
+        log = book / "finish.log"
+        with child("scripts/wait_for_run.py", str(book), str(log), cwd=tmp, opens=log), child(cwd=book), \
+                child(str(log), cwd=tmp, opens=log), child(str(book / "finish" / "finish-book.log"), cwd=tmp,
+                                                            opens=book / "finish" / "finish-book.log"):
+            code, lines = run(book, "--dry-run")
+            check(code == 0 and result_ok(lines, 0),
+                  f"a wait_for_run.py reading the log, a process merely in the folder and two tailing the logs do not hold "
+                  f"it back ({lines[-1][:100]})")
+    else:
+        print("skip live-process clean_book refusal checks (requires Linux /proc)")
 
     code, lines = run(tmp / "no-such-book")
     check(code == 2 and result_ok(lines, 2) and len(lines) == 1, f"no book folder: exit 2, one line ({lines})")

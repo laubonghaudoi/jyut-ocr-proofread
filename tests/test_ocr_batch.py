@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -334,7 +335,7 @@ class WholeBatchTests(BatchCase):
         for name in b.names:
             self.assertTrue((b.work / name / "draft.md").is_file())
 
-        code, out, plans = b.until_done()
+        code, out, plans = b.until_done("--settle", "0.5")
         self.assertEqual(code, 0, out)
         self.assertIn("RESULT exit=0 DONE - 2/2 delivered", out)
         for name, pdf in zip(b.names, b.pdfs):
@@ -405,7 +406,7 @@ class WholeBatchTests(BatchCase):
         self.assertLess(time.monotonic() - began, 8)
         self.assertRegex(out.strip().splitlines()[-1], r"^\[batch\] RESULT exit=75 RUNNING - 0/2 delivered; OCR 2 to read")
         # The line carries the whole command to run again: an agent whose context was cut still has it.
-        self.assertIn(f"run this command again: {PY} {b.scripts / 'ocr_batch.py'} --round {b.batch} --answered-by {MODEL}",
+        self.assertIn(f"run this command again: {shlex.quote(PY)} {b.scripts / 'ocr_batch.py'} --round {b.batch} --answered-by {MODEL}",
                       out)
         self.assertEqual(len(out.strip().splitlines()), 1)
 
@@ -955,8 +956,9 @@ class StartTests(BatchCase):
         out = b.begin()
         self.assertIn("NEXT 1, the OCR of every book in one hand-over window", out)
         batch = re.escape(str(b.batch))
-        self.assertRegex(out, rf"run_ocr_phase\.py --background -- \S+ \S+ocr_batch\.py --ocr {batch} > ")
-        self.assertRegex(out, rf"in the foreground, again while it ends with 75: \S+ \S+run_ocr_phase\.py -- \S+ "
+        py = re.escape(shlex.quote(PY))
+        self.assertRegex(out, rf"run_ocr_phase\.py --background -- {py} \S+ocr_batch\.py --ocr {batch} > ")
+        self.assertRegex(out, rf"in the foreground, again while it ends with 75: {py} \S+run_ocr_phase\.py -- {py} "
                               rf"\S+ocr_batch\.py --ocr {batch} > ")
 
     def test_status_changes_nothing(self) -> None:
@@ -1040,7 +1042,7 @@ class ScriptAnswererTests(BatchCase):
     def command(self, *more: str) -> str:
         script = self.b.root / "answerer.py"
         script.write_text(ANSWERER, encoding="utf-8")
-        return " ".join([PY, str(script), "{file}", *more])
+        return shlex.join([PY, str(script), "{file}", *more])
 
     def test_the_round_starts_an_answerer_for_every_share_and_delivers_the_books(self) -> None:
         b = self.b
