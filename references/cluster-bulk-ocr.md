@@ -1,52 +1,60 @@
 # 叢集大批 OCR：H200 Slurm 嘅配方
 
-喺 H200 叢集（Slurm、Ubuntu 22.04、NVIDIA driver 570、冇 root）用呢個技能大批 OCR 嘅做法，2026-11-19 喺 M1 叢集逐件量度。數字係每張 H200 或者每個 8 卡節點。各部分分開量過；成條流程頭尾嘅吞吐未量度，量完補返落〈未量度同已知問題〉。
+幾百至過千本書唔好一頁頁排本機 GPU 隊，拆成 **OCR 節點 + 校對模型 Fleet** 兩層跑；配套腳本同 Slurm 範本已經整齊放入技能目錄 `cluster/`（全部經環境變數同 CLI 參數設定，唔寫死叢集路徑、帳號或書號）。
 
 ## 配方
 
-| 節點 | GPU | 做乜 |
-|---|---|---|
-| OCR 節點（1 個） | 0 | SGLang serve PaddleOCR-VL-1.6（固定版本權重），`--mem-fraction-static 0.6` |
-| | 1–3 | 三條 OCR 線：每條一張卡，HunyuanOCR（llama.cpp，16 slots）同 PaddleOCR-VL 嘅版面偵測；VL 識別交 GPU 0 |
-| | 4–7 | 兩個校對模型 replica（2 × TP2） |
-| 校對節點（其餘） | 0–7 | 四個校對模型 replica（4 × TP2） |
-
-校對模型係 Qwen3.8-Flash-Next-FP8，SGLang 0.5.23，每個 replica TP2 EP2 加 MTP（NEXTN 3/4）、FP8 KV cache、`--max-running-requests 104`。六個節點即係一個 OCR 節點加五個校對節點，共 22 個 replica。
+- **兩張 8×H200 節點**起跑（或者多節點 `cluster/slurm/fleet.sbatch` 供幾百頁同時校對）：
+  - **OCR 節點**（`cluster/slurm/ocr-node.sbatch` + `cluster/slurm/vl-server.sh`）：每張 H200 開 1 個 `sglang serve`（PaddleOCR-VL-1.6，**必帶 `--chat-template runtime/paddleocr-vl-server-chat-template.jinja`**）+ 1 個 `run_hunyuanocr.py` shared broker。兩者同卡共駐顯存安全（合計約 ~50 GB / 141 GB），GPU-hours 計入「OCR 層」。
+  - **校對 Fleet**（`cluster/slurm/fleet.sbatch` + `cluster/slurm/fleet-node.sh`）：多張 H200 分卡啟動 SGLang serve 校對視覺語言模型，將 `http://host:port` 寫入共享 `BACKENDS_FILE`。
+  - **Central Router**（`cluster/fleet_router.py`）：單一 async 反向代理接晒所有 `proofread_pages.py`／`book_profile.py` 請求，按 least-inflight 分派、定期探測 `/v1/models`、回應未傳出前遇上游斷線自動重試另一台，並喺 `/status` 吐 JSON 健康指標。
+- **實測總規模（2026-11，1,433 冊走完整條大批管線／519,178 頁，連前期測試共 1,442 冊交付）**：
+  - 總牆鐘時間：**72.06 小時**；
+  - 總算力：**7,607.9 H200 GPU-hours**（`ocr` 節點 **1,188.4** GPU-h + 校對 Fleet **6,419.5** GPU-h）＋ **3,340.4 CPU core-hours**。
 
 ## 點解咁分
 
-- 校對每頁用嘅 GPU 時間大約係 OCR 嘅 13 倍：OCR 兩個引擎合計每張卡每粒鐘約 1,280 頁（每頁約 2.8 GPU 秒），校對每張卡每粒鐘約 98 頁（每頁約 37 GPU 秒）。所以 OCR 淨係要幾張卡，其餘全部校對。
-- 一張卡嘅 PaddleOCR-VL 伺服器頂得住約七張卡嘅 HunyuanOCR；六個節點嘅校對大約每粒鐘 4,300 頁，三條 Hunyuan 線（每條約 1,400 至 1,600 頁）啱啱夠。
+- `ocr_book.py` 逐頁讀，GPU 同 I/O 節奏固定，每卡專責讀書唔會同 128 個並發校對線程爭 KV cache；
+- `book_profile.py` 同 `proofread_pages.py` 淨係發無狀態 HTTP 請求，將多機 Fleet 收斂成一條 `--endpoint` URL 之後，**CPU 節點／校對專機**（`cluster/slurm/proof-node.sbatch`，配 `--ocr-gpus ""`）都可以純用 HTTP 吃盡成個 Fleet 算力；
+- 校對 bottleneck 喺 reasoning tokens 而唔係 OCR 速度：實測校對消耗佔總 GPU-hours 約 **84.4%**（6,419.5 / 7,607.9），將 GPU 分流給 Fleet 先最慳時間。
 
 ## 兩個 OCR 引擎
 
-- **HunyuanOCR**（引擎 B）：llama.cpp b10969。預編嘅 Ubuntu CUDA 二進制要 glibc 2.38，Ubuntu 22.04 行唔到，安裝器會自動用源碼建置同一個 commit（要 `nvcc`、`cmake`、C++ 編譯器）。一張卡 4／8／16／32 slots：每粒鐘 1,409／1,512／1,612／1,587 頁；16 slots 已經 89% 忙，顯存 28 GB。`OCR_HUNYUAN_SLOTS=16` 要明寫：安裝器試跑失敗會將佢改做 1。
-- **PaddleOCR-VL**（引擎 A）：H200 上 native 生成卡死（Paddle 3.3.1 CUDA 12.6 wheel、driver 570：一個 CPU 核 100%、GPU 0%，一頁讀唔完）。改用 `--vl-backend sglang-server`（見 `local-ocr.md`〈PaddleOCR-VL 交外部 VL 伺服器（sglang-server／vllm-server）〉）：版面偵測喺本線張卡，VL 識別交 SGLang。一個伺服器 1／4／8／16 個版面 process：每粒鐘 2,258／6,476／9,201／11,341 頁。
-- 冇 root 裝 Poppler：`apt-get download poppler-utils libpoppler118 libopenjp2-7`，`dpkg -x` 解落共用盤，再用一個設定 `LD_LIBRARY_PATH` 嘅 wrapper 擺入 `PATH`（唔好全域設，會影響 Paddle 嘅 CUDA 函式庫）。
+- **Engine A（PaddleOCR-VL-1.6 via SGLang `--vl-backend sglang-server`）**：版面偵測留喺本機 GPU/CPU，block 識別經 `--chat-template runtime/paddleocr-vl-server-chat-template.jinja` 送 SGLang；2026-11 大批實測單節點每鐘可處理上萬頁。
+- **Engine B（HunyuanOCR via `llama-server` shared broker）**：每卡 1 個 `llama-server`，預設開 CUDA graphs；遇到混頁大小引致 CUDA graph 死鎖或中止，內建 stall watchdog（`OCR_HUNYUAN_STALL_TIMEOUT`，預設 600 秒）自動砍掉重開並加 `GGML_CUDA_DISABLE_GRAPHS=1`。
+- **可選單頁容錯**：`ocr_book.py --max-missing-engine-b 1` 連 `run_hunyuanocr_second_look.py --allow-missing-engine-b`，個別頁（1,433 冊入面得 7 冊出現過單頁缺引擎 B）唔再卡死成冊，轉入單引擎 fallback 並記 `engine-draft-missing` 疑點；預設仍係 `0`（嚴格全頁齊全）。
 
 ## 校對模型
 
-一個節點唔同排法，同時 16／64／192／384 個請求，每秒生成 token：
+喺 1,377 冊最新 `proofread-run.json` 入面 **255,023 頁**嘅實測統計（`--loop-detector` 長開）：
 
-| 排法 | 16 | 64 | 192 | 384 |
-|---|---|---|---|---|
-| 4 × TP2 + MTP | 2,605 | 6,256 | 10,737 | 12,819 |
-| 4 × TP2 | 1,652 | 4,222 | 6,777 | 6,622 |
-| 2 × TP4 + MTP | 2,425 | 5,633 | 顯存爆 | 顯存爆 |
-| 2 × TP4 | 1,603 | 3,950 | 5,950 | 5,119 |
-
-1 × TP8 + MTP 一樣顯存爆（`--mem-fraction-static 0.85`）。28 個 bench 案平均每頁約 59,000 個輸出 token、約 20 個請求，即係每個節點每粒鐘約 780 頁；每個校對節點要保持約 384 個請求喺度做先食得滿。
+- **總呼叫同 tokens**：`3,302,525` 次（均 **12.95 次／頁**）；總輸出 `9,222,723,445` completion tokens（均 **36,164 tokens／頁**，當中 reasoning **34,583 tokens／頁**）。
+- **逐冊分佈（>=20 頁，`n=889` 冊）**：`p10=13,343`、`p25=18,627`、**中位數 `p50=27,822`**、`p75=44,613`、`p90=66,505`、`p99=157,165` completion tokens／頁。
+- **按題型佔比**：`punctuate` **32.5%**（均 11,739 tok/頁，4.04 次/頁）、`adjudicate` **25.0%**（9,052 tok/頁，1.97 次/頁）、`census` **19.5%**（7,068 tok/頁，4.78 次/頁）、`punctuate-retry` **14.7%**（5,309 tok/頁，0.84 次/頁）、`format` **5.5%**、`format-retry` **1.7%**、其餘（`coverage-read`、`cell-direction`、`note-numbers`）合共 **1.1%**。
+- **Loop detector 實效**：成批觸發 **`100,891` 次 `loopCuts`**，直接慳返 **`1,432,949,679` reasoning tokens**。
 
 ## 點跑
 
-- `ocr_batch.py` 用 `--backend http` 嗰陣一次淨校一本，仲要等晒全部書 OCR 完先開始：佢假設部機嘅本機模型要讓 GPU 畀 OCR。叢集上校對模型喺第二啲節點，所以要自己將每本書嘅單本 command（SKILL.md 四）並排咁行：render、`ocr_book.py`、`book_profile.py`、`proofread_pages.py --backend http`、`finish_book.py`。一本書 OCR 完即刻校對，OCR 線同時讀下一本。
-- 每條 OCR 線：`CUDA_VISIBLE_DEVICES` 係佢張卡，自己一個 `XDG_STATE_HOME`（技能嘅 GPU 隊同 Hunyuan broker 放喺本機盤），等幾條線唔會互相排隊；`OCR_PADDLE_DEVICE=gpu:0`、`OCR_PADDLE_WORKERS=8`，連埋 `OCR_PADDLE_VL_*` 指去伺服器。
-- 每條線同時兩本書，再設 `OCR_PADDLE_GPU_RESOURCE`（例如 `paddle-gpu`）：一本行緊 Paddle，另一本嘅 Hunyuan 照讀，唔使排同一條隊。14 本 4,420 頁實測，一個節點（7 條線）每粒鐘 7,124 頁；一條線一本書、共用一條隊嗰陣約 6,300 至 6,700 頁。
-- 設定同環境（`XDG_CONFIG_HOME`、`XDG_DATA_HOME`）放共用盤，所有節點用同一份；本書目錄放節點本機盤：成批書嘅 render 好大，共用盤嘅配額裝唔落，交付完先抄定稿出去。
-- 校對經一個 router 分畀所有 replica（揀手頭最少請求嗰個），每本書 `--max-inflight` 開大啲，令同時做嘅書加埋夠請求。
+詳見 `cluster/README.md` 同 `cluster/` 各腳本 `--help`：
+
+1. **準備環境**：設定 `JYUT_SKILL_DIR`、`PADDLE_VL_MODEL_DIR`、`PROOFREAD_MODEL_DIR`、`JYUT_WORK_DIR`、`JYUT_OUT_DIR`（參考 `cluster/README.md` 環境變數表）。
+2. **啟動校對 Fleet**：提交 `sbatch cluster/slurm/fleet.sbatch`，等 `fleet_router.py` 寫出健康後端清單及 `/status` JSON。
+3. **啟動 OCR／校對 Worker**：
+   - `sbatch cluster/slurm/ocr-node.sbatch` 跑 `cluster/mass_ocr.py`，預設 `--dpi auto`（#11 按實際掃描 PPI 同每頁 40M 像素上限自動選定 `pdftoppm -r`）、`--order alternate`（大細書交錯排隊，避免長書擠到尾段）、`--max-missing-engine-b 1`、`--gpu-max-consecutive-failures 3`（死卡自動熔斷）、每書獨立 `fcntl.flock`（`.book.lock`）防撞書；
+   - Slurm wall-time 快到前，用 `cluster/cutover.sh`（經 `cluster/tcp_pipe.py` 兩輪串流同步＋Pass-2 驗證）無縫遷移去 `cluster/slurm/proof-node.sbatch`；`--ocr-gpus ""` 強制鎖住唔洗走已有 `renders/` 同 `ocr-*` 底稿。
+4. **即時監控同體檢**：
+   - `python3 cluster/monitor.py OUT_DIR... --fleet-status-url http://ROUTER:8081/status --interval 30`；
+   - `python3 cluster/mass_health.py OUT_DIR... --work-dir WORK_DIR --stale-minutes 45`。
 
 ## 未量度同已知問題
 
-- 成條流程頭尾嘅吞吐：未量度（量緊：24 本藏書，6,478 頁）。
-- 一個新開或者重排嘅 replica，第一批請求要編譯 kernel，大約慢 40 秒，之後正常。
-- 2 × TP4、1 × TP8 加 MTP 喺高並行顯存爆；要用就要調低 `--max-running-requests` 或者 `--mem-fraction-static`，未試。
+以下 2026-11 大批跑數暴露過嘅故障模式，現已喺技能同 `cluster/` 內修復並有離線單元測試：
+
+- **`HunyuanServer` CUDA graph 死鎖**：`llama-server` `/v1/models` 仲回 200 但推理完全卡死，現由 `scripts/run_hunyuanocr.py` 內建 `OCR_HUNYUAN_STALL_TIMEOUT` watchdog 主動偵測並以 `GGML_CUDA_DISABLE_GRAPHS=1` 重啟；
+- **`paddle-python` cold-start 探測超時**：NFS 上 `verify_paddleocr_available()` 逾時已放寬至 180 秒、自動注入 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`，並加入 per-venv 原子 JSON 快取；
+- **大開本低 PPI 掃描檔撐爆宿主機 RAM**：`survey_pdf.py --dpi auto` 避免將低 PPI 大圖無謂放大成過億像素；`proofread_pages.py` 亦改用滑動視窗提交、crop-first 灰階、大圖並發解碼訊號量、縮圖快取同串流前釋放 JSON buffer；
+- **多模態 placeholder 同 PaddleX 合成 `<img>` 漏網**：`Client._request` 中和 `<image>`／`<|vision_start|>` 等 token 防 HTTP 400；worker、proofread 同 `audit_ocr_markdown.py` 剝走並審計 `<img src="imgs/img_in_...">`；
+- **分頁邊界修書契約衝突**：`repair_book.py` `forms_stage` 已經過 `rn.edge_safe(...)`；
+- **個別卡／單頁異常**：`cluster/mass_ocr.py` 加入 GPU 連續失敗熔斷同 `--max-missing-engine-b` 單頁容錯（唯容錯退回單引擎校對嘅品質仍不如雙引擎，疑點留待人工覆核）。
+
+仲未系統量度嘅：超過 4 節點以上 Fleet 嘅路由擴展極限、不同書目規模下最慳成本嘅 OCR：Fleet 卡數動態配比，以及跨叢集排程策略。

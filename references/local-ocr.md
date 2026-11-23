@@ -38,7 +38,7 @@ Linux 上可以將 PaddleOCR-VL 嘅 VL 識別交畀一個你自己開嘅 OpenAI 
 - `--vl-server-revision`（`OCR_PADDLE_VL_SERVER_REVISION`，必填）：呼叫者聲明嘅部署版本，伺服器換權重或者 runtime 就要改；
 - `--vl-concurrency`（`OCR_PADDLE_VL_CONCURRENCY`，預設 16）：一頁有幾多個 block 同時送去伺服器。
 
-**伺服器一定要用技能嘅 chat template**：`runtime/paddleocr-vl-server-chat-template.jinja`（SGLang：`--chat-template` 指住佢；vLLM 一樣）。模型自己嘅 template 淨係喺 `{"type": "image"}` 嗰度放圖，PaddleX 送嘅係 OpenAI 格式 `{"type": "image_url"}`，咁圖就放錯位，答案開頭會走樣：表格第一格冇咗 `<fcel>`，轉做 HTML 嗰陣成格跌咗、成行錯位；文字 block 開頭多咗換行或者多咗一個字。2026-11-19 喺 M1 實測（成條流程，28 個 bench 案）：用模型原本 template，28 案 CER 23.00%、表格儲存格 F1 33.1；換咗呢份 template，底稿同 Mac 嘅 MLX 底稿逐頁幾乎一樣（相似度 0.977 至 1.0），28 案 CER 18.69%、儲存格 F1 82.3（Mac 底稿 83.4）。仲差嘅主要係 `doukeoi-zingkeoi/s0583`：校對答案漏咗西文書目，修書補唔齊（974 錯，Mac 底稿三輪都係 110），未查清。換 template 即係換讀法：`--vl-server-revision` 要改。
+**伺服器一定要用技能嘅 chat template**：`runtime/paddleocr-vl-server-chat-template.jinja`（SGLang：`--chat-template` 指住佢；vLLM 一樣）。模型自己嘅 template 淨係喺 `{"type": "image"}` 嗰度放圖，PaddleX 送嘅係 OpenAI 格式 `{"type": "image_url"}`，咁圖就放錯位，答案開頭會走樣：表格第一格冇咗 `<fcel>`，轉做 HTML 嗰陣成格跌咗、成行錯位；文字 block 開頭多咗換行或者多咗一個字。2026-11-19 喺 M1 實測（成條流程，28 個 bench 案）：用模型原本 template，28 案 CER 23.00%、表格儲存格 F1 33.1；換咗呢份 template，底稿同 Mac 嘅 MLX 底稿逐頁幾乎一樣（相似度 0.977 至 1.0），28 案 CER 18.69%、儲存格 F1 82.3（Mac 底稿 83.4）。仲差嘅主要係一份雙欄排印本嘅雙語書目頁：校對答案漏咗西文書目，修書補唔齊（974 錯，Mac 底稿三輪都係 110），未查清。換 template 即係換讀法：`--vl-server-revision` 要改。
 
 底稿身份記住呢個後端：本機權重檔嘅 SHA-256（伺服器應該 serve 同一份）、模型名、部署版本同並行數；同 native 或者 MLX 嘅底稿唔通用，換後端要 `--overwrite`。worker 載入之後核實 Paddle 真係用緊聲明嘅 URL、模型同並行數，版面偵測喺 `--device`，唔啱就唔讀。伺服器由你開、由你管，runner 唔會開、停或者重啟佢。
 
@@ -228,6 +228,10 @@ Linux／WSL2 Hunyuan 單引擎：第 2 步 `ocr_book.py BOOK --engine hunyuan`�
 `finish_book.py --single-engine` 必須明確提供真實 `--ocr-a`，唔接受 `--ocr-b` 或 `--extract-figures`。佢驗逐頁 seals，再組裝及執行 final audit，**唔跑依賴兩引擎嘅 repair**；跨頁段落先保持分開，可能需要接續嘅位置記成疑點（`single-engine-boundary`），唔憑單一底稿自動黐段。工作檔同證據會保留（唔清走）。Final audit 嘅錯誤同雙引擎路線一樣，記入 `doubts.md` 做疑點，完成稿照交付，RESULT 行寫明有幾多個。
 
 個別 runner 都可以直接跑（例如淨係重做幾頁）：`run_hunyuanocr.py RENDER_DIR OUT_DIR`、`run_paddleocr_vl.py RENDER_DIR OUT_DIR`、`run_hunyuanocr_second_look.py RENDER_DIR OCR_A_DIR OCR_B_DIR`，都接受 `--pages 3,8-10` 或 `--first-page 1 --last-page 80`，唔畀 selector 就處理目錄中所有合法 `page-NNNN.png`。Report（`--report`）放喺各自 OCR output 目錄外；兩個引擎唔共用同一個 output directory。
+
+- **Hunyuan 內建死鎖看門狗（`OCR_HUNYUAN_STALL_TIMEOUT`）**：當至少一個頁請求喺途而超過 `OCR_HUNYUAN_STALL_TIMEOUT` 秒（預設 `600`）冇完成（就算 `/v1/models` 仲回 HTTP 200），`HunyuanServer`（無論 standalone 定 `_Broker` 共用）會當成 GPU／CUDA-graph 死鎖，主動終止並改以 `GGML_CUDA_DISABLE_GRAPHS=1` 重啟 `llama-server`，重試當前請求；無請求排隊嘅閒置時間唔會誤觸發重啟。
+- **Paddle 環境探測超時同快取**：`verify_paddleocr_available()` 超時已放寬至 `180` 秒並自動設定 `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`；結果按 interpreter／`pyvenv.cfg`／CUDA 環境（有 `--cuda` 嗰陣）同 node `boot_id` 寫入原子 JSON 快取（預設 `$XDG_CACHE_HOME/jyut-ocr/paddle-probes`，可用 `OCR_PADDLE_PROBE_CACHE_DIR` 改路徑或 `OCR_PADDLE_PROBE_CACHE=0` 停用；設有 `PYTHONPATH` 而冇明示 cache dir 時自動繞過，以免干擾測試環境）。
+- **單頁引擎 B 容錯（可選）**：預設引擎 B 失敗任何一頁成個 `ocr_book.py` 都會失敗（`--max-missing-engine-b 0`）。需要少數頁唔阻住整批／長書交付時，可傳 `ocr_book.py --max-missing-engine-b N`，容許最多 `N` 頁引擎 B 失敗而繼續跑 `run_paddleocr_vl.py` 同 `run_hunyuanocr_second_look.py --allow-missing-engine-b`；缺引擎 B 嘅頁會留低畀第 3 步單引擎 fallback 並記 `engine-draft-missing` 疑點，唔會靜靜略過。
 
 `proofread_pages.py` 冇 `--draft2-directory` 時，先用 profile `sources` 記低、量度嗰陣用嘅引擎 B 目錄，再搵 `DRAFT_DIR` 隔籬嘅 `ocr-hunyuan/`；都搵唔到就 exit `2`，叫你傳 `--draft2-directory` 或者 `--single-engine`。兩份底稿 JSON 嘅 `engine` 要係 A＝PaddleOCR-VL、B＝HunyuanOCR；掉轉咗或者係其他引擎就 exit `2`，寫明點樣調返轉。`finish_book.py` 對 `--ocr-a`／`--ocr-b` 一樣咁查，亦先用 profile `sources` 記低嘅目錄，再用預設目錄名。
 
