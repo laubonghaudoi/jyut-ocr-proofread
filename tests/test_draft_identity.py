@@ -211,9 +211,9 @@ class RecordedNotComparedTest(DraftIdentityTestBase):
     def frozen_scripts(self) -> Path:
         scripts = self.base / 'scripts'
         scripts.mkdir()
-        for name in ('run_hunyuanocr.py', 'run_hunyuanocr_second_look.py', 'run_paddleocr_vl.py',
-                     'paddleocr_vl_worker.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py',
-                     '_mlx_vlm_server.py', '_paddle_pool.py'):
+        for name in ('_common.py', '_ocr_runner_common.py', 'run_hunyuanocr.py', 'run_hunyuanocr_second_look.py',
+                     'run_paddleocr_vl.py', 'paddleocr_vl_worker.py', '_hunyuan_shared.py', '_gpu_queue.py',
+                     '_phase_budget.py', '_ocr_engines.py', '_mlx_vlm_server.py', '_paddle_pool.py'):
             shutil.copy2(SCRIPTS / name, scripts / name)
         return scripts
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +22,11 @@ import stat
 import sys
 import tempfile
 from typing import Any, Iterable, Sequence
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from _common import sha256_file  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -243,14 +247,6 @@ def path_type(path: Path) -> str:
         return lstat_type(path.lstat().st_mode)
     except FileNotFoundError:
         return "absent"
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def tree_inventory(path: Path, kind: str) -> list[dict[str, Any]]:

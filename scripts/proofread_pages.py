@@ -88,6 +88,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
 import _draft_contract
 import _tables  # noqa: E402
 import _loop_watch  # noqa: E402
@@ -4272,28 +4273,6 @@ class PageJob:
     # "A" or "B": the engine whose draft this page lacks on a two-engine run
     # (the page is transcribed from the other's, with a doubt saying so).
     missing_engine: str | None = None
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": ")
-    ).encode("utf-8")
 
 
 def strip_fence(text: str) -> str:

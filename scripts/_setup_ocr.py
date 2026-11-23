@@ -36,6 +36,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from _common import sha256_file  # noqa: E402
+
 
 class SetupError(RuntimeError):
     """Setup can be resumed after the reported missing prerequisite is supplied."""
@@ -146,14 +151,6 @@ def now() -> str:
 
 def stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def canonical_hash(value: Any) -> str:

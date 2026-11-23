@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -47,6 +46,26 @@ import tempfile
 import threading
 import time
 from typing import Any, Mapping, Sequence
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import _common  # noqa: E402
+from _common import sha256_bytes, sha256_file, utc_now  # noqa: E402
+from _ocr_runner_common import (  # noqa: E402
+    PAGE_TOKEN,
+    ConfigurationError,
+    PageInput,
+    PageOCRFailure,
+    output_paths,
+    parse_pages_expression,
+    path_is_within,
+    profile_sha256,
+    render_path,
+    rendered_pages,
+    selected_pages,
+    text_from_lines,
+)
 
 import _paddle_pool
 from _paddle_pool import (CARD_RESERVE_MIB, MAX_AUTO_WORKERS, MIN_PAGES_A_WORKER, WORKERS_ENV,
@@ -81,7 +100,6 @@ OCR_PROFILE: dict[str, Any] = {
     "boundingBoxConvention": "normalised-xywh-top-left-origin",
     "confidenceMeaning": "layout-detector-block-score-not-glyph-confidence",
 }
-PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 
 WORKER_READY_TIMEOUT_SECONDS = 600.0
 PAGE_TIMEOUT_SECONDS = 900.0
@@ -111,14 +129,6 @@ INSTALLER_HINT = (
     "and run this command again.")
 
 
-class ConfigurationError(ValueError):
-    """A command-line or filesystem configuration is unsafe or invalid."""
-
-
-class PageOCRFailure(RuntimeError):
-    """PaddleOCR rejected one page while the worker remains usable."""
-
-
 class WorkerUnavailable(RuntimeError):
     """The worker exited or stopped speaking the worker protocol."""
 
@@ -134,15 +144,6 @@ class ToolIdentity:
 
 
 @dataclass(frozen=True)
-class PageInput:
-    scan_page: int
-    render_file: Path
-    render_sha256: str
-    json_output: Path
-    text_output: Path
-
-
-@dataclass(frozen=True)
 class ResumeCheck:
     valid: bool
     reason: str
@@ -151,36 +152,8 @@ class ResumeCheck:
     legacy: str | None = None
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    if pretty:
-        text = json.dumps(
-            value, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": ")
-        )
-    else:
-        text = json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-    return text.encode("utf-8")
-
-
-def profile_sha256(profile: Mapping[str, Any]) -> str:
-    return sha256_bytes(canonical_json_bytes(profile))
+    return _common.canonical_json_bytes(value, pretty=pretty, trailing_newline=False)
 
 
 def draft_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
@@ -237,82 +210,8 @@ def build_tool_identity(worker_file: Path, interpreter: str) -> ToolIdentity:
     )
 
 
-def parse_pages_expression(expression: str) -> list[int]:
-    pages: set[int] = set()
-    for token in expression.split(","):
-        token = token.strip()
-        if not token:
-            continue
-        match = PAGE_TOKEN.match(token)
-        if match is None:
-            raise ConfigurationError(f"invalid page selector: {token!r}")
-        first = int(match.group("first"))
-        last = int(match.group("last") or first)
-        if last < first:
-            raise ConfigurationError(f"descending page range: {token!r}")
-        pages.update(range(first, last + 1))
-    if not pages:
-        raise ConfigurationError("no pages were selected")
-    return sorted(pages)
-
-
-def rendered_pages(render_directory: Path) -> list[int]:
-    """Every scan page that has a page-NNNN.png render; the default selection."""
-    pages: list[int] = []
-    for path in render_directory.glob("page-*.png"):
-        match = re.fullmatch(r"page-(\d{4})\.png", path.name)
-        if match:
-            pages.append(int(match.group(1)))
-    return sorted(pages)
-
-
-def selected_pages(arguments: argparse.Namespace, render_directory: Path) -> tuple[list[int], str]:
-    if arguments.pages is not None:
-        if arguments.last_page is not None:
-            raise ConfigurationError("--last-page cannot be combined with --pages")
-        return parse_pages_expression(arguments.pages), "explicit-pages"
-    if arguments.first_page is None and arguments.last_page is None:
-        pages = rendered_pages(render_directory)
-        if not pages:
-            raise ConfigurationError(f"no page-NNNN.png renders in {render_directory}")
-        return pages, "all-renders"
-    if arguments.first_page is None:
-        raise ConfigurationError("--last-page needs --first-page")
-    if arguments.last_page is None:
-        pages = rendered_pages(render_directory)
-        if not pages:
-            raise ConfigurationError(f"no page-NNNN.png renders in {render_directory}")
-        arguments.last_page = pages[-1]
-    if arguments.first_page <= 0 or arguments.last_page <= 0:
-        raise ConfigurationError("page numbers must be positive")
-    if arguments.last_page < arguments.first_page:
-        raise ConfigurationError("--last-page must be at least --first-page")
-    return list(range(arguments.first_page, arguments.last_page + 1)), "page-range"
-
-
-def render_path(render_directory: Path, scan_page: int) -> Path:
-    return render_directory / f"page-{scan_page:04d}.png"
-
-
-def output_paths(output_directory: Path, scan_page: int) -> tuple[Path, Path]:
-    stem = f"page-{scan_page:04d}"
-    return output_directory / f"{stem}.json", output_directory / f"{stem}.txt"
-
-
 def default_report_path(output_directory: Path) -> Path:
     return output_directory.parent / "paddleocr-vl-run.json"
-
-
-def path_is_within(candidate: Path, directory: Path) -> bool:
-    try:
-        candidate.relative_to(directory)
-    except ValueError:
-        return False
-    return True
-
-
-def text_from_lines(lines: Sequence[Mapping[str, Any]]) -> bytes:
-    return ("\n".join(str(line["text"]) for line in lines) + "\n").encode("utf-8")
 
 
 def _validate_line_fields(record: Mapping[str, Any]) -> str | None:

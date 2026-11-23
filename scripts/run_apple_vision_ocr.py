@@ -29,7 +29,22 @@ from typing import Any, Callable, Mapping, Sequence
 import uuid
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import _common  # noqa: E402
+from _common import sha256_bytes, sha256_file  # noqa: E402
+from _ocr_runner_common import (  # noqa: E402
+    PAGE_TOKEN,
+    ConfigurationError,
+    PageInput,
+    PageOCRFailure,
+    output_paths,
+    path_is_within as _path_is_within,
+    profile_sha256 as _profile_sha256,
+    render_path,
+    text_from_lines,
+)
 from _phase_budget import Budget, EXIT_INCOMPLETE, record_child
 from _mlx_vlm_server import SupervisedProcess
 from _vision_layout import adapt_observations
@@ -50,15 +65,6 @@ VISION_PROFILE: dict[str, Any] = {
     "minimumTextHeight": 0.0025,
     "readingOrder": "top-to-bottom-then-left-to-right",
 }
-PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
-
-
-class ConfigurationError(ValueError):
-    """A command-line or filesystem configuration is unsafe or invalid."""
-
-
-class PageOCRFailure(RuntimeError):
-    """Vision rejected one page while the persistent worker remains usable."""
 
 
 class BudgetExpired(RuntimeError):
@@ -79,15 +85,6 @@ class ToolIdentity:
 
 
 @dataclass(frozen=True)
-class PageInput:
-    scan_page: int
-    render_file: Path
-    render_sha256: str
-    json_output: Path
-    text_output: Path
-
-
-@dataclass(frozen=True)
 class ResumeCheck:
     valid: bool
     reason: str
@@ -100,44 +97,15 @@ Compiler = Callable[[Path, Path], tuple[Path, dict[str, Any]]]
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
-        "+00:00", "Z"
-    )
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _common.utc_now(milliseconds=True)
 
 
 def canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    if pretty:
-        text = json.dumps(
-            value,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-            separators=(",", ": "),
-        )
-    else:
-        text = json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    return (text + "\n").encode("utf-8")
+    return _common.canonical_json_bytes(value, pretty=pretty, trailing_newline=True)
 
 
 def profile_sha256(profile: Mapping[str, Any]) -> str:
-    return sha256_bytes(canonical_json_bytes(profile))
+    return _profile_sha256(profile, trailing_newline=True)
 
 
 def build_tool_identity(swift_file: Path) -> ToolIdentity:
@@ -234,19 +202,6 @@ def resolve_worker_count(
     if not 1 <= requested <= MAX_WORKERS:
         raise ConfigurationError("--workers must be auto or an integer from 1 to 8")
     return min(pending_count, requested)
-
-
-def render_path(render_directory: Path, scan_page: int) -> Path:
-    return render_directory / f"page-{scan_page:04d}.png"
-
-
-def output_paths(output_directory: Path, scan_page: int) -> tuple[Path, Path]:
-    stem = f"page-{scan_page:04d}"
-    return output_directory / f"{stem}.json", output_directory / f"{stem}.txt"
-
-
-def text_from_lines(lines: Sequence[Mapping[str, Any]]) -> bytes:
-    return ("\n".join(str(line["text"]) for line in lines) + "\n").encode("utf-8")
 
 
 def _validate_legacy_fields(
@@ -701,11 +656,7 @@ def run_worker_pool(
 
 
 def path_is_within(path: Path, directory: Path) -> bool:
-    try:
-        path.resolve().relative_to(directory.resolve())
-        return True
-    except ValueError:
-        return False
+    return _path_is_within(path, directory, resolve=True)
 
 
 def default_report_path(output_directory: Path) -> Path:

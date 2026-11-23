@@ -37,9 +37,7 @@ import argparse
 import concurrent.futures
 import contextlib
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import functools
-import hashlib
 import json
 import math
 import os
@@ -51,6 +49,11 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Mapping, Sequence
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from _common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
 
 MANIFEST_NAME = "page-manifest.json"
 REPORT_NAME = "survey-report.json"
@@ -79,28 +82,6 @@ class PageFacts:
     width: int
     height: int
     ink_fraction: float | None
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def canonical_json_bytes(value: Any) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, indent=2, sort_keys=True, separators=(",", ": ")
-    ).encode("utf-8")
 
 
 def require_tool(name: str) -> str:
