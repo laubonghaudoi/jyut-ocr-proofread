@@ -235,7 +235,8 @@ class Batch:
     def round(self, *extra: str, wait: int = 20) -> tuple[int, str]:
         grace = [] if "--answer-grace" in extra else ["--answer-grace", "0"]
         grace += [] if "--settle" in extra else ["--settle", "0"]
-        return self.call("--round", str(self.batch), "--answered-by", MODEL, "--wait", str(wait), "--poll", "0.1",
+        poll = [] if "--poll" in extra else ["--poll", "0.1"]
+        return self.call("--round", str(self.batch), "--answered-by", MODEL, "--wait", str(wait), *poll,
                          *grace, *extra)
 
     def answer(self, leave_out_workers: int = 0) -> dict:
@@ -335,7 +336,8 @@ class WholeBatchTests(BatchCase):
         for name in b.names:
             self.assertTrue((b.work / name / "draft.md").is_file())
 
-        code, out, plans = b.until_done("--settle", "0.5")
+        # Shared filesystems need a >0.1s poll interval so both books' fast fake steps settle into one round.
+        code, out, plans = b.until_done("--poll", "1.5")
         self.assertEqual(code, 0, out)
         self.assertIn("RESULT exit=0 DONE - 2/2 delivered", out)
         for name, pdf in zip(b.names, b.pdfs):
