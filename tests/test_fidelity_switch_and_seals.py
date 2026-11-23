@@ -232,7 +232,11 @@ class DoubtLabelTests(unittest.TestCase):
         # doubts.md files each kind under a section with a label
         # (finish_book.KINDS); one without falls to a bare kind name.
         import finish_book
-        source = Path(pp.__file__).read_text(encoding="utf-8")
+        pp_path = Path(pp.__file__)
+        source = "".join(
+            path.read_text(encoding="utf-8")
+            for path in [pp_path, *sorted(pp_path.parent.glob("_proofread_*.py"))]
+        )
         kinds = set(re.findall(r'"kind":\s*"([a-z-]+)",\s*"detail"', source))
         self.assertIn("non-cjk-text-not-transcribed", kinds)
         self.assertEqual(sorted(kinds - set(finish_book.KINDS)), [])
