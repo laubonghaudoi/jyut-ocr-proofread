@@ -56,9 +56,12 @@ from _ocr_markdown import (
     foot_notes,
     html_table_lines,
     is_blank,
+    is_table_row,
     line_body,
     split_lines,
 )
+
+TABLE_SPAN_PAGES = 10
 
 # A $...$ pair on a line: math, where no renderer reads a footnote.
 MATH = re.compile(r"\$[^$\n]+\$")
@@ -215,6 +218,66 @@ def _run_over(before: _PageScan, after: _PageScan, preceding: dict[Spot, str]) -
     return found
 
 
+def _table_run_over(scans: list[_PageScan], lines: list[str]) -> list[tuple[Spot, Spot, str, int, int]]:
+    """Pair unpaired continuation-page notes with unpaired single calls inside
+    Markdown pipe tables on earlier pages (e.g. stitched multi-page tables),
+    requiring the continuation tail from the first paired note onward to leave
+    no later unpaired numbered notes behind."""
+    by_src: dict[int, list[tuple[Spot, Spot, str, int, int]]] = defaultdict(list)
+    for idx in range(1, len(scans)):
+        after = scans[idx]
+        if after.page is None:
+            continue
+        for spot, k in sorted(after.read_notes):
+            if not k or not k.isdigit() or int(k) <= 1:
+                continue
+            if after.notes.get(k) != [spot] or after.calls.get(k):
+                continue
+            for src in range(idx - 1, max(-1, idx - TABLE_SPAN_PAGES - 1), -1):
+                before = scans[src]
+                if before.page is None:
+                    continue
+                if any(scans[mid].calls.get(k) or scans[mid].notes.get(k) for mid in range(src + 1, idx)):
+                    break
+                if src < idx - 1 and any(scans[mid].read_calls for mid in range(src + 1, idx)):
+                    break
+                if before.notes.get(k):
+                    continue
+                calls = before.calls.get(k, [])
+                if len(calls) == 1 and is_table_row(line_body(lines[calls[0][0]])):
+                    by_src[src].append((calls[0], spot, k, src, idx))
+                    break
+    found: list[tuple[Spot, Spot, str, int, int]] = []
+    for src, group in sorted(by_src.items()):
+        paired_spots = {(idx, spot) for _, spot, _, _, idx in group}
+        first_paired = min(paired_spots)
+        max_idx = max(idx for _, _, _, _, idx in group)
+        leftover_in_tail = False
+        for p in range(src + 1, max_idx + 1):
+            sc = scans[p]
+            unpaired = [sp for spots in sc.notes.values() for sp in spots] + list(sc.unread_notes)
+            if any((p, sp) not in paired_spots and (p, sp) > first_paired for sp in unpaired):
+                leftover_in_tail = True
+                break
+        if leftover_in_tail:
+            continue
+        if not scans[max_idx].read_calls:
+            for p2 in range(max_idx + 1, min(len(scans), src + TABLE_SPAN_PAGES + 1)):
+                sc2 = scans[p2]
+                if sc2.page is None or sc2.read_calls:
+                    break
+                if sc2.notes or sc2.unread_notes:
+                    leftover_in_tail = True
+                    break
+            if leftover_in_tail:
+                continue
+        for c_spot, n_spot, key_k, _, idx in group:
+            scans[src].calls.pop(key_k)
+            scans[idx].notes.pop(key_k)
+            found.append((c_spot, n_spot, key_k, src, idx))
+    return found
+
+
 def _around(lines: list[str], n: int, s: int, e: int) -> str:
     body = line_body(lines[n])
     return body[max(0, s - 8) : e + 4]
@@ -289,6 +352,9 @@ def convert(text: str, *, renumber: bool = False) -> tuple[str, dict[str, Any]]:
     preceding = {spot: k for (spot, _), (_, k) in zip(read[1:], read)}
     for idx in range(1, len(scans)):
         candidates += [(c, n, k, idx - 1, idx) for c, n, k in _run_over(scans[idx - 1], scans[idx], preceding)]
+
+    # Step 2b: a stitched multi-page table whose calls sit on an earlier page.
+    candidates += _table_run_over(scans, lines)
 
     candidates.sort(key=lambda item: (item[0], item[1]))
 

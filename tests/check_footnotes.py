@@ -401,6 +401,16 @@ def convert_checks(tmp: Path) -> None:
     out, report = _footnotes.convert("<!-- page_001 -->\n\n甲$x^{①}$乙。\n\n①注一。\n")
     check(out.endswith("甲$x^{①}$乙。\n\n①注一。\n") and "math" in [w["kind"] for w in report["left"][0]["why"]],
           f"a number inside $…$ math stays as printed ({report})")
+    out, report = _footnotes.convert("<!-- page_001 -->\n\n（克拉斯諾亞爾斯克）\\*①。\n\n① 注一。\n")
+    check("（克拉斯諾亞爾斯克）\\*[^1]。" in out and "[^1]: 注一。" in out and not report["left"],
+          f"an escaped literal asterisk before a call is no math operator ({report})")
+    out, report = _footnotes.convert("<!-- page_001 -->\n\na * ①。\n\n① 注一。\n")
+    check("a * ①。" in out and "math" in [w["kind"] for w in report["left"][0]["why"]],
+          f"an unescaped multiplication asterisk before a call stays math ({report})")
+    tbl_one = ("<!-- page_001 -->\n\n| 甲 | 乙① |\n| --- | --- |\n\n<!-- page_002 -->\n\n<!-- page_003 -->\n\n① 註一。\n")
+    out, report = _footnotes.convert(tbl_one)
+    check("[^1]" not in out and report["footnotes"] == 0,
+          f"_table_run_over never pairs key 1 across pages ({report})")
     inside = "<!-- page_001 -->\n\n乙[^1]丙[^2]。\n\n[^1]: 註甲。\n\n[^2]: 同[^1]。\n"
     out, report = _footnotes.convert(inside)
     check(out == inside and [w["kind"] for w in report["left"][0]["why"]] == ["inside"],
@@ -593,11 +603,10 @@ def stitch_checks(tmp: Path) -> None:
     """A table printed over three pages, each page's note at its foot beside
     a line engine A read as a footnote: stitch_tables.py merges the table on
     its first page and leaves each note where it is printed; finish_book.py
-    pairs page by page and across one page break only, as before the
-    stitched pages were paired as one page (STAGE 97494fd, reverted
-    2026-11-15: on the benchmark's stitched table it converted 2 of 12 notes,
-    the benchmark moves converted definitions to the end of the text, and
-    the primary metric, #2 CER, lost 1.0 point)."""
+    pairs continuation table notes past one page break ONLY when every later
+    continuation note also pairs (all-or-nothing tail completeness, so a
+    partial prefix conversion cannot reorder converted definitions past
+    unconverted numbered notes and hurt #2 CER)."""
     import contextlib
     import io
     import stitch_tables
@@ -627,16 +636,25 @@ def stitch_checks(tmp: Path) -> None:
     code, lines = cfb.finish(book)
     final = (book / "final.md").read_text(encoding="utf-8")
     report = json.loads((book / "finish" / finish_book.FOOTNOTES_JSON).read_text(encoding="utf-8"))
-    doubts = json.loads((book / "finish" / finish_book.DOUBTS_JSON).read_text(encoding="utf-8"))
     finished = json.loads((book / "finish" / "finish-report.json").read_text(encoding="utf-8"))
-    check(code == 0 and report["footnotes"] == 2 and "stitched" not in report
-          and "| 三年 | 卅兩③ |" in final and notes[10] in final and "[^3]" not in final
-          and not footnote_problems(final)
-          and [d for d in doubts if d["kind"] == "note-unmatched"]
+    cross = [(c["callPage"], c["notePage"], c["label"]) for c in report["crossPage"]]
+    check(code == 0 and report["footnotes"] == 3 and "stitched" not in report
+          and "| 三年 | 卅兩[^3] |" in final and "[^3]: 丙書卷五頁六。" in final
+          and (8, 10, "3") in cross and not footnote_problems(final)
           and "footnotesStitched" not in json.dumps(finished),
-          f"finish_book.py after the stitch: the stitched pages are not paired as one; the third page's call and "
-          f"note stay as printed, a doubt (exit {code}, {report['footnotes']} footnotes, "
-          f"stitched {report.get('stitched')}, left {report['left']})")
+          f"finish_book.py after complete stitch: all 3 stitched table footnotes pair across pages 8->10 "
+          f"(exit {code}, {report['footnotes']} footnotes, crossPage {cross}, left {report['left']})")
+
+    # Partial continuation tail guard: when page 10 holds an extra unpaired
+    # numbered note ④ with no call in the table, page 10's ③ is NOT converted
+    # ahead of ④ (locking in the 97494fd CER guard).
+    partial_book = ("<!-- page_008 -->\n\n| 年 | 稅 |\n| --- | --- |\n| 一年 | 十兩① |\n| 二年 | 廿兩② |\n| 三年 | 卅兩③ |\n\n①甲。\n"
+                    "\n<!-- page_009 -->\n\n②乙。\n\n<!-- page_010 -->\n\n③丙。\n\n④丁。\n")
+    p_out, p_report = _footnotes.convert(partial_book)
+    p_cross = [(c["callPage"], c["notePage"], c["label"]) for c in p_report["crossPage"]]
+    check(p_report["footnotes"] == 2 and "| 三年 | 卅兩③ |" in p_out and "③丙。" in p_out and "[^3]" not in p_out
+          and (8, 10, "3") not in p_cross,
+          f"partial stitched table tail leaves ③ unpaired when ④ remains unpaired after it ({p_report})")
 
 
 def main() -> int:

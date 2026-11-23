@@ -251,6 +251,16 @@ def _math_operator(char: str) -> bool:
     return char in "=+*/-" or (char != "|" and unicodedata.category(char) == "Sm")
 
 
+def _escaped(text: str) -> bool:
+    """Whether the last character of TEXT is preceded by an odd number of backslashes."""
+    slashes = 0
+    for ch in reversed(text[:-1]):
+        if ch != "\\":
+            break
+        slashes += 1
+    return slashes % 2 == 1
+
+
 def _math_base(char: str) -> bool:
     # Unicode variables and numerals are not limited to ASCII: π, 𝑥, Ⅲ, ٣.
     # Han prose legitimately carries superscript note calls, so do not classify
@@ -276,7 +286,7 @@ def math_context(text: str, start: int, end: int, *, figure_base: bool = True) -
     right = text[end:].split("\n", 1)[0].lstrip()
     # Check operators before the circled-label exemption: ① + ② is arithmetic,
     # even when a separate numbered line happens to share an operand's value.
-    if (left and _math_operator(left[-1])) or (right and _math_operator(right[0])):
+    if (left and _math_operator(left[-1]) and not _escaped(left)) or (right and _math_operator(right[0])):
         return True
     if all(_CIRCLED.fullmatch(c) for c in raw):
         return False

@@ -343,7 +343,7 @@ def unpaired_notes(book: Any, model: Mapping[str, Any], texts: Mapping[int, str]
                 "before": text[start:body_at], "line": rn.show(raw, 60), "label": kinds[n]}))
             plan.doubts.append(("note-unpaired", scan,
                                 f"a note at the page's foot with no number, written as an unpaired note: "
-                                f"{rn.show(raw.strip(), 60)}", {"line": raw.strip()[:200]}))
+                                f"{rn.show(raw.strip(), 60)}", {"line": raw.strip()[:200], "mark": head}))
     return plan
 
 

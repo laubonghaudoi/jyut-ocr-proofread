@@ -216,10 +216,190 @@ def main_checks(tmp: Path) -> None:
     status, pages, log = repair(tmp, spec_of(), "notes-off", "--no-notes")
     check(status == 0 and not any(r["rule"] == "N9" for r in log),
           f"--no-notes switches the stage off ({sorted({r['rule'] for r in log})})")
+    # Resolved B4 note-unpaired doubt is pruned from doubts.json while unresolved stays.
+    main_doubts = json.loads((tmp / "notes-out" / "doubts.json").read_text(encoding="utf-8"))
+    unpaired_pages = {d["page"] for d in main_doubts if d["kind"] == "note-unpaired"}
+    check(unpaired_pages == {13}, f"resolved B4 note-unpaired doubt pruned for scan 20, kept for scan 13 ({unpaired_pages})")
+
+
+def more_checks(tmp: Path) -> None:
+    """Issue #8 fixes: mangled held markers, bracketed superscripts/note heads,
+    punctuation/line-break call insert fallbacks, and spurious mid-page note heads."""
+    spec = fx.make_spec()
+    # Scan 14: mangled held markers ㊱/㊷ where 66/67 belong (s0075).
+    spec[14]["items"][1:1] = [
+        ("line", "春山居士云⑥④甲乙丙丁"), ("line", "秋夜居士曰⑥⑤戊己庚辛"),
+        ("line", "民的蹤跡⑥⑥春風吹過"), ("line", "民的說法⑥⑦小橋流水"),
+        ("line", "⑥④〔明〕春風吹過"), ("line", "⑥⑤〔清〕小橋流水"),
+        ("line", "⑥⑥萬曆湖廣總志"), ("line", "⑥⑦羅香林源流考"),
+    ]
+    spec[14]["sealedEdits"] = [("蹤跡⑥⑥", "蹤跡㊱"), ("說法⑥⑦", "說法㊷")]
+    # Scan 15: mangled held markers ㉗/㉘ where 72/73 belong (s0077).
+    spec[15]["items"][1:1] = [
+        ("line", "諸虫毒⑦②其實被形容"), ("line", "化為土著⑦③亦步入"), ("line", "醞釀過程⑦④所以明代"),
+        ("line", "⑦②〔清〕鄭昌齡修"), ("line", "⑦③〔明〕劉熙祚修"), ("line", "⑦④〔美〕梁肇庭著"),
+    ]
+    spec[15]["bEdits"] = [("毒⑦②", "毒$ ^{72} $"), ("著⑦③", "著$ ^{73} $"), ("程⑦④", "程$ ^{74} $")]
+    spec[15]["sealedEdits"] = [("毒⑦②", "毒㉗"), ("著⑦③", "著㉘")]
+    # Scan 16: bracketed superscripts & note heads + B4 empty 〔〕 cleanup (MH1582).
+    spec[16]["items"][1:1] = [
+        ("line", "根本計劃①甲乙丙丁"), ("line", "主持大計②戊己庚辛"), ("line", "爭取支持③壬癸子丑"),
+        ("line", "①〔1〕胡漢民自傳"), ("line", "②〔2〕張難先知錄"),
+    ]
+    spec[16]["aEdits"] = [("劃①甲", "劃$ ^{[1]} $甲"), ("計②戊", "計$ ^{(2)} $戊"), ("持③壬", "持<sup>[3]</sup>壬"),
+                          ("①〔1〕胡漢民", "〔1〕胡漢民"), ("②〔2〕張難先", "〔2〕張難先")]
+    spec[16]["bEdits"] = [("劃①甲", "劃$ ^{(1)} $甲"), ("計②戊", "計$ ^{(2)} $戊"), ("持③壬", "持$ ^{(3)} $壬"),
+                          ("①〔1〕胡漢民", "〔1〕胡漢民"), ("②〔2〕張難先", "〔2〕張難先")]
+    spec[16]["sealedEdits"] = [("劃①甲", "劃甲"), ("計②戊", "計戊"), ("持③壬", "持壬"),
+                               ("①〔1〕胡漢民", "〔1〕胡漢民"), ("②〔2〕張難先", "〔2〕張難先")]
+    spec[16]["extraSealed"].append("〔〕孫中山全集")
+    spec[16]["extraBlocks"] = [{"text": "〔3〕孫中山全集", "boundingBox": fx.box_of(300, 900, 16, 200),
+                                "blockLabel": "footnote", "blockOrder": -1}]
+    # Scan 17: punctuation mismatch (`）。` vs `。`) and line-break mismatch on calls (MH1656).
+    spec[17]["items"][1:1] = [
+        ("line", "居「住過」①。本書編者"), ("line", "可觀的利益②。正因如此"),
+        ("line", "①〔蘇〕哈巴羅夫呈文"), ("line", "②〔俄〕別斯克羅内夫"),
+    ]
+    spec[17]["bEdits"] = [("過」①口", "過」①\n口"), ("益②口", "益$ ^{2} $口\n")]
+    spec[17]["aEdits"] = [("益②。", "益$ ^{2} $。\n")]
+    spec[17]["sealedEdits"] = [("過」①。", "過」）。"), ("益②。", "益。」"),
+                               ("①〔蘇〕", "〔蘇〕"), ("②〔俄〕", "〔俄〕")]
+    # Scan 18: spurious mid-page circled header filtered by _foot_notes_only (MH0651 p58).
+    spec[18]["items"][1:1] = [
+        ("line", "裹足不前①。市場情況"),
+        ("line", "生計路絀②。因此傳統"),
+        ("line", "第一章戰略分析"),
+    ]
+    spec[18]["aEdits"] = [("第一章戰略分析", "①第一章戰略分析"), ("前①。", "前$ ^{1} $。"), ("絀②。", "絀$ ^{2} $。")]
+    spec[18]["bEdits"] = [("前①口", "前$ ^{1} $口"), ("絀②口", "絀$ ^{2} $口")]
+    spec[18]["sealedEdits"] = [("前①。", "前。"), ("絀②。", "絀。")]
+    spec[18]["extraSealed"] = ["彭澤益財政經濟", "馮桂芬顯志堂稿"]
+    spec[18]["extraBlocks"] = [
+        {"text": "①彭澤益財政經濟", "boundingBox": fx.box_of(300, 880, 16, 200), "blockLabel": "footnote", "blockOrder": -1},
+        {"text": "②馮桂芬顯志堂稿", "boundingBox": fx.box_of(300, 910, 16, 200), "blockLabel": "footnote", "blockOrder": -1},
+    ]
+
+    status, pages, log = repair(tmp, spec, "more")
+    check(status == 0, f"more checks exit 0 (exit {status})")
+    p14 = pages[14]
+    check("蹤跡⑥⑥春" in p14 and "說法⑥⑦小" in p14 and "㊱" not in p14 and "㊷" not in p14,
+          f"mangled ㊱/㊷ overwritten with ⑥⑥/⑥⑦ ({p14[p14.find('蹤跡'):p14.find('蹤跡')+30]!r})")
+    t14, r14 = _footnotes.convert(f"<!-- page_014 -->\n{p14}")
+    check(r14["footnotes"] == 4, f"s0075 converts all 4 footnotes ({r14})")
+    p15 = pages[15]
+    check("毒⑦②其" in p15 and "著⑦③亦" in p15 and "㉗" not in p15 and "㉘" not in p15,
+          f"mangled ㉗/㉘ overwritten with ⑦②/⑦③ ({p15[:80]!r})")
+    t15, r15 = _footnotes.convert(f"<!-- page_015 -->\n{p15}")
+    check(r15["footnotes"] == 3, f"s0077 converts all 3 footnotes ({r15})")
+    p16 = pages[16]
+    check("計劃①甲" in p16 and "大計②戊" in p16 and "支持③壬" in p16
+          and "\n①胡漢民自傳" in p16 and "\n②張難先知錄" in p16 and "\n③孫中山全集" in p16
+          and "〔〕" not in p16,
+          f"MH1582 bracketed superscripts and note heads restored cleanly ({p16[-120:]!r})")
+    t16, r16 = _footnotes.convert(f"<!-- page_016 -->\n{p16}")
+    check(r16["footnotes"] == 3, f"MH1582 converts all 3 footnotes ({r16})")
+    more_doubts = json.loads((tmp / "more-out" / "doubts.json").read_text(encoding="utf-8"))
+    check(16 not in {d["page"] for d in more_doubts if d["kind"] == "note-unpaired"},
+          "MH1582 scan 16 resolved note-unpaired doubt pruned")
+    p17 = pages[17]
+    check("居「住過」）①。" in p17 and "益②。」" in p17,
+          f"MH1656 call_insert fallback places calls beside mismatched punctuation ({p17[:100]!r})")
+    t17, r17 = _footnotes.convert(f"<!-- page_017 -->\n{p17}")
+    check(r17["footnotes"] == 2, f"MH1656 converts both footnotes ({r17})")
+    p18 = pages[18]
+    check("①彭澤益財政經濟" in p18 and "②馮桂芬顯志堂稿" in p18 and "第一章戰略分析" in p18,
+          f"MH0651 _foot_notes_only ignores spurious mid-page circled line ({p18[-80:]!r})")
+    t18, r18 = _footnotes.convert(f"<!-- page_018 -->\n{p18}")
+    check(r18["footnotes"] == 2, f"MH0651 converts both foot notes ({r18})")
+
+
+def stitched_checks(tmp: Path) -> None:
+    """Stitched multi-page table span (doukeoi-zingkeoi/s0315-0318-table geometry):
+    scans 6..9 hold body calls 194..197 + 8 stitched table calls 198..205 on
+    scan 6 and 13 notes 193..205 across scans 6..9 (with orphan 193)."""
+    spec = fx.make_spec()
+    for scan in (7, 8, 9):
+        spec[scan]["items"] = []
+    # Scan 6: 4 body prose calls (194..197) + 4 notes (193..196) + 8 stitched table calls (198..205).
+    spec[6]["items"][1:1] = [
+        ("line", "非兩藩之利也①⑨④兩廣總督"),
+        ("line", "支持吉安行廣鹽①⑨⑤天啟五年"),
+        ("line", "以免分爭者也①⑨⑥崇禎帝"),
+        ("line", "致垂政體①⑨⑦兩淮鹽課"),
+    ]
+    spec[6]["aEdits"] = [("也①⑨④兩", "也⑲兩"), ("鹽①⑨⑤天", "鹽⑲天"), ("也①⑨⑥崇", "也⑲崇"), ("體①⑨⑦兩", "體⑲兩")]
+    spec[6]["bEdits"] = [("也①⑨④兩", "也$ ^{19} $兩"), ("鹽①⑨⑤天", "鹽$ ^{19} $天"),
+                         ("也①⑨⑥崇", "也$ ^{19} $崇"), ("體①⑨⑦兩", "體$ ^{19} $兩")]
+    spec[6]["sealedEdits"] = [("也①⑨④兩", "也兩"), ("鹽①⑨⑤天", "鹽天"), ("也①⑨⑥崇", "也崇"), ("體①⑨⑦兩", "體兩")]
+    table_lines = [
+        "| 年份 | 歲收 | 出處 |",
+        "| --- | --- | --- |",
+        "| 正德六年 | 10671.66兩⑲ | 王陽明集 |",
+        "| 正德十二年 | 6395.65兩①⑨ | 王陽明集 |",
+        "| 嘉靖五年 | 24000兩②⑩ | 明世宗錄 |",
+        "| 嘉靖十五年 | 26958.08兩②⑩ | 明世宗錄 |",
+        "| 嘉靖三十六年 | 15000兩⑩ | 重修虔臺 |",
+        "| 萬曆十四年 | 20000兩²⁰³ | 明神宗錄 |",
+        "| 萬曆二十一年 | 26666.66兩²⁰⁴ | 重修虔臺 |",
+        "| 天啟五年 | 12500兩²⁰⁵ | 明熹宗錄 |",
+    ]
+    s6_notes = [
+        ("陳玉輝上報鹽議", "⑲陳玉輝上報鹽議"),
+        ("萬曆廣東通志鹽課條", "萬曆廣東通志鹽課條"),
+        ("吳文華與畢松坡疏", "吳文華與畢松坡疏"),
+        ("明熹宗實錄卷五十六", "⑩明熹宗實錄卷五十六"),
+    ]
+    spec[6]["extraSealed"] = table_lines + [s for s, _ in s6_notes]
+    spec[6]["extraBlocks"] = [
+        {"text": a, "boundingBox": fx.box_of(300, 880 + 25 * k, 16, 200), "blockLabel": "footnote", "blockOrder": -1}
+        for k, (_, a) in enumerate(s6_notes)
+    ]
+
+    # Scans 7..9: continuation note items (note #205 has engine B $ ^{20)} $ reading, #204 has ②04 exact).
+    # Scan 7: 2 notes (197..198); Scan 8: 1 note (199); Scan 9: 6 notes (200..205).
+    spec[7]["items"] = [("line", "畢自嚴題覆吉安疏。"), ("line", "正德六年贛關抽分廠。")]
+    spec[7]["aEdits"] = [("畢自嚴題覆吉安疏。", "⑲畢自嚴題覆吉安疏。"), ("正德六年贛關抽分廠。", "⑲正德六年贛關抽分廠。")]
+    spec[7]["bEdits"] = [("畢自嚴題覆吉安疏口", "$ ^{19} $畢自嚴題覆吉安疏。"), ("正德六年贛關抽分廠口", "$ ^{20)} $正德六年贛關抽分廠。")]
+    spec[8]["items"] = [("line", "正德十二年抽過商稅。")]
+    spec[8]["aEdits"] = [("正德十二年抽過商稅。", "⑲正德十二年抽過商稅。")]
+    spec[8]["bEdits"] = [("正德十二年抽過商稅口", "$ ^{20)} $正德十二年抽過商稅。")]
+    s9_notes = [
+        ("萬曆江西省大志賦書。", "②萬曆江西省大志賦書。", "萬曆江西省大志賦書口", "$ ^{20)} $萬曆江西省大志賦書。"),
+        ("嘉靖十六年共收鹽稅。", "②0嘉靖十六年共收鹽稅。", "嘉靖十六年共收鹽稅口", "$ ^{20)} $嘉靖十六年共收鹽稅。"),
+        ("嘉靖三十六年不及數。", "②2021 嘉靖三十六年不及數。", "嘉靖三十六年不及數口", "$ ^{20)} $嘉靖三十六年不及數。"),
+        ("天啟重修虔臺志事紀。", "②3天啟重修虔臺志事紀。", "天啟重修虔臺志事紀口", "$ ^{20)} $天啟重修虔臺志事紀。"),
+        ("贛關商稅達至四萬兩。", "②04 贛關商稅達至四萬兩。", "贛關商稅達至四萬兩口", "$ ^{20)} $贛關商稅達至四萬兩。"),
+        ("當時江西南贛巡撫稅。", "當時江西南贛巡撫稅。", "當時江西南贛巡撫稅口", "$ ^{20)} $當時江西南贛巡撫稅。"),
+    ]
+    spec[9]["items"] = [("line", s) for s, _, _, _ in s9_notes]
+    spec[9]["aEdits"] = [(s, a) for s, a, _, _ in s9_notes if a != s]
+    spec[9]["bEdits"] = [(bt, b) for _, _, bt, b in s9_notes]
+
+    # Scan 10: continuation after stitched span (`span_last = 205` -> `prior = 206`).
+    spec[10]["items"][1:1] = [("line", "續表後論②⓪⑥甲乙丙丁"), ("line", "②⓪⑥清初史料輯錄")]
+    spec[10]["aEdits"] = [("論②⓪⑥甲", "論②⓪⑥甲"), ("②⓪⑥清初", "②⓪⑥清初")]
+    spec[10]["bEdits"] = [("論②⓪⑥甲", "論②⓪⑥甲"), ("②⓪⑥清初", "②⓪⑨清初")]
+    spec[10]["sealedEdits"] = [("論②⓪⑥甲", "論甲"), ("②⓪⑥清初", "清初")]
+
+    status, pages, log = repair(tmp, spec, "stitched")
+    check(status == 0, f"stitched table repair exits 0 (exit {status})")
+    p6 = pages[6]
+    check("非兩藩之利也①⑨④兩" in p6 and "10671.66兩①⑨⑧" in p6 and "15000兩②⓪②" in p6 and "20000兩²⁰³" in p6,
+          f"s0315-0318-table body calls 194..197 and table calls 198..205 written cleanly ({p6[:300]!r})")
+    joined = "".join(f"<!-- page_{sc:04d} -->\n{pages[sc]}\n" for sc in (6, 7, 8, 9))
+    converted, report = _footnotes.convert(joined)
+    check(report["footnotes"] == 12 and "①⑨③陳玉輝上報鹽議" in converted
+          and "10671.66兩[^198]" in converted and "[^205]: 當時江西南贛巡撫稅" in converted,
+          f"s0315-0318-table converts all 12/12 footnotes while leaving orphan 193 ({report})")
+    check("論②⓪⑥甲" in pages[10] and "②⓪⑥清初史料輯錄" in pages[10],
+          f"prior=206 after stitched span settles scan 10 to 206 ({pages[10][:80]!r})")
 
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
-        main_checks(Path(directory))
+        root = Path(directory)
+        main_checks(root)
+        more_checks(root)
+        stitched_checks(root)
     print("all note-number checks passed" if not FAILURES else f"FAIL: {len(FAILURES)} failure(s)")
     sys.exit(1 if FAILURES else 0)

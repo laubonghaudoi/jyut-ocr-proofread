@@ -500,6 +500,19 @@ def run(arguments: argparse.Namespace) -> int:
         stages[stage.name] = {"status": "ran", "edits": len(ledger.records) - logged, "doubts": len(result.doubts),
                               "rules": STAGE_RULES.get(stage.name), "seconds": round(time.monotonic() - mark, 2)}
 
+    before_prune = len(ledger.doubts)
+    ledger.doubts[:] = [
+        d for d in ledger.doubts
+        if not (d.get("kind") == "note-unpaired" and d.get("mark")
+                and d.get("page") in ledger.texts
+                and d["mark"] not in ledger.texts[d["page"]])
+    ]
+    if len(ledger.doubts) != before_prune:
+        for i, d in enumerate(ledger.doubts, start=1):
+            d["id"] = f"U{i:04d}"
+        if "brackets" in stages and "doubts" in stages["brackets"]:
+            stages["brackets"]["doubts"] = sum(1 for d in ledger.doubts if d.get("stage") == "brackets")
+
     written: dict[str, str] = {}
     log_name = "repair-log.jsonl"
     data = re_.log_bytes(ledger.records)
