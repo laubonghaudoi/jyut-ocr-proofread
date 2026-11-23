@@ -68,7 +68,10 @@ import offline  # noqa: E402,F401
 
 
 def main() -> int:
-    runner = (ROOT / "scripts" / "proofread_pages.py").read_text(encoding="utf-8")
+    runner = "".join(
+        path.read_text(encoding="utf-8")
+        for path in [ROOT / "scripts" / "proofread_pages.py", *sorted((ROOT / "scripts").glob("_proofread_*.py"))]
+    )
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     references = "".join(path.read_text(encoding="utf-8") for path in sorted((ROOT / "references").glob("*.md")))
     workflow = (ROOT / "references" / "long-book-workflow.md").read_text(encoding="utf-8")
