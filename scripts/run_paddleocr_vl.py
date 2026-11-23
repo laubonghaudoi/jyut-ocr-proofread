@@ -735,10 +735,92 @@ PROBE = (
 )
 
 
+PROBE_TIMEOUT_SECONDS = 180.0
+PROBE_CACHE_ENV = "OCR_PADDLE_PROBE_CACHE"
+PROBE_CACHE_DIR_ENV = "OCR_PADDLE_PROBE_CACHE_DIR"
+
+
+def _stat_token(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _probe_cache_path(interpreter: str, probe_cuda: bool) -> Path | None:
+    if (os.environ.get(PROBE_CACHE_ENV) or "").strip() == "0":
+        return None
+    explicit_dir = (os.environ.get(PROBE_CACHE_DIR_ENV) or "").strip()
+    if os.environ.get("PYTHONPATH") and not explicit_dir:
+        return None
+    cache_dir = (
+        Path(explicit_dir)
+        if explicit_dir
+        else Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        / "jyut-ocr"
+        / "paddle-probes"
+    )
+    interp_path = Path(interpreter)
+    try:
+        resolved = str(interp_path.resolve())
+    except OSError:
+        resolved = interpreter
+    venv_markers: list[tuple[str, tuple[int, int] | None]] = []
+    for root in {interp_path.parent.parent, Path(resolved).parent.parent}:
+        cfg = root / "pyvenv.cfg"
+        if cfg.exists():
+            venv_markers.append((str(cfg), _stat_token(cfg)))
+        for sp in sorted(root.glob("lib/python*/site-packages")):
+            venv_markers.append((str(sp), _stat_token(sp)))
+    boot_id = ""
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    key_obj = {
+        "interpreter": interpreter,
+        "resolved": resolved,
+        "interpStat": _stat_token(Path(resolved)),
+        "venvMarkers": sorted(set(venv_markers)),
+        "probeCuda": bool(probe_cuda),
+        "cudaEnv": (
+            [os.environ.get("CUDA_VISIBLE_DEVICES", ""), os.environ.get("LD_LIBRARY_PATH", "")]
+            if probe_cuda
+            else []
+        ),
+        "bootId": boot_id,
+        "probeSha256": hashlib.sha256(PROBE.encode("utf-8")).hexdigest(),
+    }
+    digest = hashlib.sha256(json.dumps(key_obj, sort_keys=True).encode("utf-8")).hexdigest()
+    return cache_dir / f"probe-{digest[:24]}.json"
+
+
 def verify_paddleocr_available(interpreter: str, *, probe_cuda: bool = False) -> dict[str, Any]:
     """{"versions": ..., "paddlePackages": ..., "cuda": ...} from INTERPRETER."""
+    cache_path = _probe_cache_path(interpreter, probe_cuda)
+    if cache_path is not None and cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and isinstance(cached.get("versions"), dict):
+                return cached
+        except (OSError, ValueError):
+            pass
     command = [interpreter, "-c", PROBE] + (["cuda"] if probe_cuda else [])
-    result = subprocess.run(command, text=True, capture_output=True, check=False, timeout=60)
+    probe_env = {**os.environ, "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True"}
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            env=probe_env,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ConfigurationError(
+            f"PaddleOCR probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s with {interpreter}"
+        ) from error
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         raise ConfigurationError(
@@ -749,7 +831,24 @@ def verify_paddleocr_available(interpreter: str, *, probe_cuda: bool = False) ->
         probe = json.loads(result.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
         probe = {}
-    return probe if isinstance(probe, dict) else {}
+    out = probe if isinstance(probe, dict) else {}
+    if cache_path is not None and out:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(cache_path.parent),
+                prefix=".probe-",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(json.dumps(out, sort_keys=True))
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, cache_path)
+        except OSError:
+            pass
+    return out
 
 
 def paddle_package(probe: Mapping[str, Any]) -> dict[str, str] | None:

@@ -414,6 +414,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-tokens", type=int, default=8000)
     p.add_argument("--timeout", type=float, default=1200.0)
     p.add_argument("--report", type=Path)
+    p.add_argument(
+        "--allow-missing-engine-b",
+        action="store_true",
+        help="skip pages whose engine B draft is missing instead of failing as blocked",
+    )
     add_queue_arguments(p)
     return p
 
@@ -502,7 +507,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
 
     results: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
-    skipped = blocked = legacy = 0
+    skipped = blocked = missing_b = legacy = 0
     recurring, total_pages = recurring_blocks(drafts_a)
     for scan_page in pages:
         json_b, text_b = hy.output_paths(output, scan_page)
@@ -511,11 +516,15 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
         try:
             raw_a = json_a.read_bytes()
             blocks = json.loads(raw_a.decode("utf-8")).get("lines") or []
+            if not render.is_file():
+                raise ValueError("render file is missing")
+            if arguments.allow_missing_engine_b and (not json_b.is_file() or not text_b.is_file()):
+                missing_b += 1
+                results.append({"scanPage": scan_page, "status": "skipped-missing-engine-b"})
+                continue
             record = json.loads(json_b.read_bytes().decode("utf-8"))
             if hy.text_from_lines(record.get("lines") or []) != text_b.read_bytes():
                 raise ValueError("engine B's TXT does not match its JSON lines")
-            if not render.is_file():
-                raise ValueError("render file is missing")
         except (OSError, UnicodeError, ValueError) as error:
             blocked += 1
             results.append({"scanPage": scan_page, "status": "blocked", "error": str(error)[:200]})
@@ -829,6 +838,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
             "skippedCurrent": skipped,
             "legacy": legacy,
             "blocked": blocked,
+            "missingEngineB": missing_b,
             "failed": failed,
             "deferred": deferred,
             "cropsRead": reread,
@@ -842,7 +852,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
     report_path.write_bytes(hy.canonical_json_bytes(report, pretty=True))
     print(
         f"  requested {len(pages)} | completed {completed} | skipped {skipped} | blocked {blocked} | "
-        f"failed {failed} | deferred {deferred} | crops read {reread}",
+        f"missing-B {missing_b} | failed {failed} | deferred {deferred} | crops read {reread}",
         flush=True,
     )
     print(f"  report: {report_path}", flush=True)

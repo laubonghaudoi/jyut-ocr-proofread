@@ -882,6 +882,8 @@ class _Broker:
                 generation = self.server.generation
                 if self.server.process.poll() is not None and not self.server.recover(generation):
                     raise GPUQueueError(f"shared llama-server exited with code {self.server.process.returncode}")
+                if self.server.is_stalled() and not self.server.recover(generation, force=True):
+                    raise GPUQueueError("shared llama-server stalled and could not recover")
         except BaseException as error:
             self.error = f"shared Hunyuan broker failed: {error}; inspect {self.directory / (self.body['digest'][:32] + '.log')}"
             print(self.error, flush=True)

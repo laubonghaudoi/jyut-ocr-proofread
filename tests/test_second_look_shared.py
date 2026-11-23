@@ -404,6 +404,47 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
             self.assertEqual(updated4['secondLook']['identity']['settings']['maxTokens'], 4000)
             self.assertNotEqual(updated_json['secondLook']['identitySha256'], updated4['secondLook']['identitySha256'])
 
+    def test_allow_missing_engine_b_skips_missing_b_without_blocking(self) -> None:
+        class FakeSharedClient:
+            def __init__(self, config, queue_dir, resource, *, queue_timeout, phase_deadline):
+                pass
+            def ocr(self, render, max_tokens, left):
+                return {"choices": [{"finish_reason": "stop", "message": {"content": "重讀補齊小字附註"}}]}
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = _second_look_book(root)
+            renders = root / "renders"
+            ocr_a = root / "ocr-paddle"
+            ocr_b = root / "ocr-hunyuan"
+            # Add page 2 with valid render + engine A draft, but NO engine B draft
+            (renders / "page-0002.png").write_bytes(_make_solid_png(240, 320))
+            (ocr_a / "page-0002.txt").write_text("第二頁引擎甲單獨讀出。\n", encoding="utf-8")
+            (ocr_a / "page-0002.json").write_text(
+                json.dumps({"schemaVersion": 2, "scanPage": 2, "renderWidth": 240, "renderHeight": 320,
+                            "lines": [{"text": "第二頁引擎甲單獨讀出。", "blockLabel": "text",
+                                       "boundingBox": [0.1, 0.1, 0.8, 0.2], "confidence": 0.9}]},
+                           ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with mock.patch("_ocr_engines.require_supported_host", return_value=None):
+                with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+                    # Strict default fails because page 2 has no engine B draft
+                    rc_strict = sl.main([*args, "--server-mode", "shared"])
+                    self.assertEqual(rc_strict, 1)
+                    rep_strict = json.loads((root / "second-look-report.json").read_text(encoding="utf-8"))
+                    self.assertEqual(rep_strict["counts"]["blocked"], 1)
+
+                    # Opt-in --allow-missing-engine-b completes cleanly and records missingEngineB=1
+                    rc_ok = sl.main([*args, "--server-mode", "shared", "--allow-missing-engine-b"])
+                    self.assertEqual(rc_ok, 0)
+                    rep_ok = json.loads((root / "second-look-report.json").read_text(encoding="utf-8"))
+                    self.assertEqual(rep_ok["counts"]["blocked"], 0)
+                    self.assertEqual(rep_ok["counts"]["missingEngineB"], 1)
+                    self.assertTrue((ocr_b / "page-0001.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

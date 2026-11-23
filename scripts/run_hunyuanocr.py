@@ -85,6 +85,11 @@ READY_TIMEOUT = 600.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 600.0
 CRASH_WAIT = 15.0
+# Inflight stall watchdog: if llama-server makes zero completions for this many
+# seconds while at least one request is inflight, assume a GPU/CUDA-graph
+# livelock even if /v1/models still responds 200, and force a restart.
+DEFAULT_STALL_TIMEOUT = 600.0
+STALL_TIMEOUT_ENV = "OCR_HUNYUAN_STALL_TIMEOUT"
 # llama.cpp's CUDA graphs: a speed-up that replays the recorded GPU steps of the last page.  On
 # M1 (2026-11-20, llama.cpp 391fac1) one server reading pages of very different sizes
 # (MH1408's 5306x7643 renders beside MH1442's 1410x2079) aborted with them on ("CUDA error: an
@@ -368,7 +373,8 @@ class HunyuanServer:
                  model: Path | None, mmproj: Path | None, port: int, ctx: int,
                  model_id: str = "hunyuanocr", lease_fds: tuple[int, ...] = (),
                  parallel: int = 1, log_path: Path | None = None,
-                 cancel_event=None, device: str = "auto", ready_deadline: float | None = None):
+                 cancel_event=None, device: str = "auto", ready_deadline: float | None = None,
+                 stall_timeout: float | None = None):
         """READY_DEADLINE: the phase deadline (time.time()); a server still
         loading then raises StartupExpired instead of waiting out READY_TIMEOUT."""
         self.process: subprocess.Popen[bytes] | None = None
@@ -379,6 +385,21 @@ class HunyuanServer:
         self.restarts: list[float] = []
         self._restart_lock = threading.Lock()
         self._extra_env: dict[str, str] = {}   # set for the starts after a crash (NO_GRAPHS)
+        if stall_timeout is None:
+            raw_stall = (os.environ.get(STALL_TIMEOUT_ENV) or "").strip()
+            if raw_stall:
+                try:
+                    stall_timeout = float(raw_stall)
+                except ValueError as error:
+                    raise ConfigurationError(f"{STALL_TIMEOUT_ENV} must be numeric (got {raw_stall!r})") from error
+            else:
+                stall_timeout = DEFAULT_STALL_TIMEOUT
+        self.stall_timeout = max(0.0, float(stall_timeout))
+        self._inflight_lock = threading.Lock()
+        self._inflight_count = 0
+        self._last_progress = time.monotonic()
+        self._stop_watch = threading.Event()
+        self._watch_thread: threading.Thread | None = None
         self.port = port
         self.execution_profile = device_profile(device, endpoint=bool(endpoint))
         self.model_id = model_id
@@ -408,6 +429,42 @@ class HunyuanServer:
         self._lease_fds, self._log_path, self._cancel_event = lease_fds, log_path, cancel_event
         self._ready_deadline = ready_deadline
         self._start()
+        if self.stall_timeout > 0:
+            self._watch_thread = threading.Thread(target=self._watch_stall, daemon=True)
+            self._watch_thread.start()
+
+    def _enter_inflight(self) -> None:
+        lock = getattr(self, "_inflight_lock", None)
+        if lock is None:
+            return
+        with lock:
+            if self._inflight_count == 0:
+                self._last_progress = time.monotonic()
+            self._inflight_count += 1
+
+    def _leave_inflight(self) -> None:
+        lock = getattr(self, "_inflight_lock", None)
+        if lock is None:
+            return
+        with lock:
+            self._inflight_count = max(0, self._inflight_count - 1)
+            self._last_progress = time.monotonic()
+
+    def is_stalled(self, now: float | None = None) -> bool:
+        """Whether at least one request is inflight and no request has finished for stall_timeout."""
+        if self.stall_timeout <= 0 or self.process is None or self.process.poll() is not None:
+            return False
+        current = time.monotonic() if now is None else now
+        with self._inflight_lock:
+            return self._inflight_count > 0 and (current - self._last_progress) >= self.stall_timeout
+
+    def _watch_stall(self) -> None:
+        interval = min(1.0, max(0.05, self.stall_timeout / 4.0))
+        while not self._stop_watch.wait(interval):
+            generation = self.generation
+            if self.is_stalled():
+                if not self.recover(generation, force=True) and self.generation == generation and self.is_stalled():
+                    break
 
     def _start(self) -> None:
         try:
@@ -435,6 +492,8 @@ class HunyuanServer:
                         f"llama-server exited with code {self.process.returncode}; "
                         "check the configured runtime and available GPU memory")
                 if self._healthy() and self.process.poll() is None:
+                    with self._inflight_lock:
+                        self._last_progress = time.monotonic()
                     return
                 time.sleep(max(0.0, min(0.2, deadline - time.monotonic())))
             waited = time.monotonic() - began
@@ -443,10 +502,10 @@ class HunyuanServer:
                                      f"{waited:.0f}s after it started", waited)
             raise ConfigurationError(f"llama-server did not become ready in {READY_TIMEOUT:.0f}s")
         except BaseException:
-            self.close()
+            self._stop_process()
             raise
 
-    def recover(self, generation: int) -> bool:
+    def recover(self, generation: int, *, force: bool = False) -> bool:
         """After a request to the server of start GENERATION failed: True when the server runs
         again and the page is worth sending once more, False when the failure was the page's
         own (the server still answers) or the server is not started again.
@@ -457,13 +516,14 @@ class HunyuanServer:
         page left on that server failed with it.  The first start after a crash turns llama.cpp's
         CUDA graphs off (NO_GRAPHS), which that crash needed, for the rest of this server's life.
         MAX_RESTARTS starts within RESTART_WINDOW seconds and it stays down: a server that cannot
-        stay up is not restarted for ever."""
+        stay up is not restarted for ever.  With force=True (inflight stall watchdog), restart a
+        stalled process even when /v1/models still responds 200."""
         if self.process is None:
             return False
         with self._restart_lock:
             if self.generation != generation:
                 return self.process.poll() is None   # another request started it again
-            if self.process.poll() is None:
+            if not force and self.process.poll() is None:
                 if self._healthy():
                     return False
                 # An aborting llama.cpp drops its connections before the process is gone.
@@ -472,20 +532,25 @@ class HunyuanServer:
                     time.sleep(0.1)
                 if self.process.poll() is None and self._healthy():
                     return False
+            elif force and self.process.poll() is None and not self.is_stalled():
+                return False
             now = time.monotonic()
             recent = [t for t in self.restarts if now - t < RESTART_WINDOW]
             code = self.process.poll()
+            why = ("exited with code " + str(code) if code is not None
+                   else f"stalled with inflight request(s) for >= {self.stall_timeout:.1f}s" if force
+                   else "stopped answering")
             if len(recent) >= MAX_RESTARTS or (self._cancel_event is not None and self._cancel_event.is_set()):
-                print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
+                print(f"[hunyuan] llama-server {why}; "
                       f"{len(recent)} restarts in the last {RESTART_WINDOW:.0f}s, not starting it again", flush=True)
                 return False
             graphs_off = "" if NO_GRAPHS in os.environ or NO_GRAPHS in self._extra_env else \
                 f", with CUDA graphs off ({NO_GRAPHS}=1)"
             self._extra_env[NO_GRAPHS] = "1"   # llama.cpp reads any value as off
-            print(f"[hunyuan] llama-server {'exited with code ' + str(code) if code is not None else 'stopped answering'}; "
+            print(f"[hunyuan] llama-server {why}; "
                   f"starting it again{graphs_off} (restart {len(recent) + 1} of {MAX_RESTARTS} allowed in "
                   f"{RESTART_WINDOW:.0f}s)", flush=True)
-            self.close()
+            self._stop_process()
             self.restarts.append(now)
             try:
                 with socket.socket() as probe:   # never start on a port someone else took meanwhile
@@ -516,7 +581,7 @@ class HunyuanServer:
         and the page sent once more (recover), within TIMEOUT."""
         deadline = time.monotonic() + timeout
         while True:
-            generation = self.generation
+            generation = getattr(self, "generation", 0)
             try:
                 return self._ocr_once(render, max_tokens, max(0.001, deadline - time.monotonic()))
             except PageOCRFailure:
@@ -538,13 +603,17 @@ class HunyuanServer:
         request = urllib.request.Request(
             self.base + "/v1/chat/completions", json.dumps(body).encode(),
             {"Content-Type": "application/json"})
+        self._enter_inflight()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode())
-        except urllib.error.HTTPError as error:
-            raise PageOCRFailure(f"HTTP {error.code}: {error.read().decode(errors='replace')[:200]}") from error
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as error:
-            raise PageOCRFailure(f"invalid or unavailable endpoint response: {error}") from error
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    payload = json.loads(response.read().decode())
+            except urllib.error.HTTPError as error:
+                raise PageOCRFailure(f"HTTP {error.code}: {error.read().decode(errors='replace')[:200]}") from error
+            except (urllib.error.URLError, OSError, TimeoutError, ValueError) as error:
+                raise PageOCRFailure(f"invalid or unavailable endpoint response: {error}") from error
+        finally:
+            self._leave_inflight()
         try:
             if payload.get("model") != self.model_id:
                 raise PageOCRFailure("response model ID differs from requested model")
@@ -559,7 +628,7 @@ class HunyuanServer:
             raise PageOCRFailure(f"malformed endpoint response: {error}") from error
         return payload
 
-    def close(self) -> None:
+    def _stop_process(self) -> None:
         if self.process and self.process.poll() is None:
             self.process.terminate()
             try:
@@ -567,6 +636,14 @@ class HunyuanServer:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=30)
+
+    def close(self) -> None:
+        self._stop_watch.set()
+        thread = self._watch_thread
+        if thread is not None and threading.current_thread() is not thread:
+            thread.join(timeout=2.0)
+        self._watch_thread = None
+        self._stop_process()
 
 
 def lines_from_text(text: str) -> list[dict[str, Any]]:

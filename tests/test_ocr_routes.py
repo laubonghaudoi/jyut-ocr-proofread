@@ -192,5 +192,66 @@ class Routes(unittest.TestCase):
             self.assertEqual(list(self.base.iterdir()), [])
 
 
+class OcrBookMissingEngineBTests(unittest.TestCase):
+    def test_max_missing_engine_b_tolerates_up_to_limit_and_forwards_allow_flag(self):
+        import ocr_book
+        import time
+
+        def run_case(max_missing: int, failed_pages: list[int]) -> tuple[int, list[list[str]]]:
+            with tempfile.TemporaryDirectory() as tmp:
+                book = Path(tmp) / 'book'
+                (book / 'renders').mkdir(parents=True)
+                for p in (1, 2, 3):
+                    (book / 'renders' / f'page-{p:04d}.png').write_bytes(b'png')
+                calls: list[list[str]] = []
+
+                def fake_run_step(command, step_env, progress):
+                    calls.append(list(command))
+                    report_idx = command.index('--report') + 1
+                    report_path = Path(command[report_idx])
+                    report_path.parent.mkdir(parents=True, exist_ok=True)
+                    script_name = Path(command[1]).name
+                    if script_name == 'run_hunyuanocr.py' and failed_pages:
+                        report = {
+                            'counts': {
+                                'requested': 3,
+                                'completed': 3 - len(failed_pages),
+                                'skippedCurrent': 0,
+                                'failed': len(failed_pages),
+                                'deferred': 0,
+                            },
+                            'pages': [{'scanPage': p, 'status': 'failed'} for p in failed_pages],
+                        }
+                        report_path.write_text(json.dumps(report), encoding='utf-8')
+                        return 1, time.time(), time.monotonic(), None
+                    report_path.write_text(json.dumps({'counts': {'requested': 3, 'completed': 3, 'failed': 0, 'deferred': 0}}), encoding='utf-8')
+                    return 0, time.time(), time.monotonic(), None
+
+                argv = [str(book), '--engine', 'hunyuan-paddle', '--max-missing-engine-b', str(max_missing)]
+                with mock.patch.object(ocr_book, 'resolve_engines', return_value=('hunyuan', 'paddle')), \
+                        mock.patch('_ocr_engines.require_supported_host', return_value=None), \
+                        mock.patch.object(ocr_book, 'run_step', side_effect=fake_run_step), \
+                        mock.patch('subprocess.run', return_value=mock.Mock(returncode=0, stdout='')), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rc = ocr_book.main(argv)
+                return rc, calls
+
+        rc_strict, calls_strict = run_case(0, [2])
+        self.assertEqual(rc_strict, 1)
+        self.assertEqual(len(calls_strict), 1)
+
+        rc_ok, calls_ok = run_case(1, [2])
+        self.assertEqual(rc_ok, 0)
+        self.assertEqual(len(calls_ok), 3)
+        self.assertIn('--allow-missing-engine-b', calls_ok[2])
+
+        rc_over, _ = run_case(1, [2, 3])
+        self.assertEqual(rc_over, 1)
+
+        rc_neg, _ = run_case(-1, [])
+        self.assertEqual(rc_neg, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

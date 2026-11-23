@@ -71,6 +71,11 @@ class Handler(BaseHTTPRequestHandler):
             # The M1 abort: llama.cpp's CUDA graphs on, and off it reads the page.
             log('crash', page=page)
             os._exit(134)
+        if page == 'livelock' and (root / 'livelock-with-graphs').exists() and 'GGML_CUDA_DISABLE_GRAPHS' not in os.environ:
+            # Simulated CUDA-graph livelock: /v1/models stays 200 OK while completion hangs.
+            log('livelock', page=page)
+            time.sleep(60)
+            return
         if page == 'crash' and crash.exists() and int(crash.read_text()) > 0:
             # llama.cpp aborting mid-request (M1, 2026-11-20): the process is gone at once.
             crash.write_text(str(int(crash.read_text()) - 1))
@@ -509,6 +514,63 @@ class PageSlotTest(unittest.TestCase):
                 there.close()
             self.assertEqual(seen, ["complete", "complete"])
             self.assertEqual(broker.request_counts["s"], 0)
+
+
+class LivelockWatchdogTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "model").touch()
+        (self.root / "mmproj").touch()
+        self.binary = self.root / "fake-server"
+        self.binary.write_text("#!" + sys.executable + "\n" + textwrap.dedent(FAKE).replace("__ROOT__", repr(str(self.root))))
+        self.binary.chmod(0o700)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def events(self):
+        path = self.root / "events.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def page(self, name):
+        path = self.root / f"{name}.png"
+        path.write_bytes(name.encode())
+        return path
+
+    def test_livelock_with_healthy_models_endpoint_restarts_without_graphs_and_idle_stays_up(self):
+        import run_hunyuanocr as run
+        (self.root / "livelock-with-graphs").touch()
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = run.HunyuanServer(
+            None,
+            self.binary,
+            self.root / "model",
+            self.root / "mmproj",
+            port,
+            4096,
+            stall_timeout=0.35,
+        )
+        try:
+            first_pid = server.process.pid
+            # Idle for > stall_timeout with 0 inflight requests: must NOT restart.
+            time.sleep(0.55)
+            self.assertEqual(server.generation, 0)
+            self.assertEqual(server.process.pid, first_pid)
+            self.assertFalse(server.is_stalled())
+
+            # Request hangs on completion while /v1/models stays 200 OK; watchdog recovers with NO_GRAPHS=1.
+            result = server.ocr(self.page("livelock"), 100, 10)
+            self.assertEqual(result["choices"][0]["message"]["content"], "livelock")
+            self.assertEqual(server.generation, 1)
+            self.assertNotEqual(server.process.pid, first_pid)
+            events = self.events()
+            self.assertEqual([row["graphs_off"] for row in events if row["event"] == "start"], [None, "1"])
+            self.assertTrue(any(row["event"] == "livelock" for row in events))
+        finally:
+            server.close()
 
 
 class _lease:

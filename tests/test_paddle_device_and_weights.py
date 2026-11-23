@@ -228,5 +228,71 @@ class PaddleWorkerLogTest(LocalOCRTestBase):
         self.assertFalse((self.base / 'report.worker.log').exists())
 
 
+class PaddleProbeCacheTest(unittest.TestCase):
+    def test_probe_cache_hits_invalidates_recovers_corrupt_and_sets_source_check_env(self):
+        import run_paddleocr_vl as runner
+        from pathlib import Path
+        import os
+        import stat
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / 'probe-cache'
+            venv_bin = root / 'venv' / 'bin'
+            venv_bin.mkdir(parents=True)
+            fake_py = venv_bin / 'python'
+            calls_log = root / 'probe-calls.txt'
+            env_log = root / 'probe-env.txt'
+            fake_py.write_text(
+                "#!/bin/sh\n"
+                f"printf 'call\\n' >> '{calls_log}'\n"
+                f"printf '%s\\n' \"${{PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK:-}}\" >> '{env_log}'\n"
+                "case \" $* \" in\n"
+                "  *' cuda '*) printf '{\"versions\": {\"paddlepaddle\": \"3.3.1\", \"paddleocr\": \"3.0\"}, \"paddlePackages\": [], \"cuda\": {\"compiled\": true, \"deviceCount\": 1}}\\n' ;;\n"
+                "  *) printf '{\"versions\": {\"paddlepaddle\": \"3.3.1\", \"paddleocr\": \"3.0\"}, \"paddlePackages\": []}\\n' ;;\n"
+                "esac\n",
+                encoding='utf-8',
+            )
+            fake_py.chmod(fake_py.stat().st_mode | stat.S_IEXEC)
+
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if k not in ('PYTHONPATH', 'OCR_PADDLE_PROBE_CACHE')
+            }
+            clean_env['OCR_PADDLE_PROBE_CACHE_DIR'] = str(cache_dir)
+            with mock.patch.dict(os.environ, clean_env, clear=True):
+                first = runner.verify_paddleocr_available(str(fake_py), probe_cuda=False)
+                second = runner.verify_paddleocr_available(str(fake_py), probe_cuda=False)
+                self.assertEqual(first, second)
+                self.assertEqual(len(calls_log.read_text().splitlines()), 1)
+                self.assertEqual(env_log.read_text().splitlines(), ['True'])
+
+                # Toggling probe_cuda misses non-cuda cache and caches separately
+                cuda_res = runner.verify_paddleocr_available(str(fake_py), probe_cuda=True)
+                self.assertEqual(cuda_res['cuda']['deviceCount'], 1)
+                self.assertEqual(len(calls_log.read_text().splitlines()), 2)
+
+                # Corrupt cache file falls back silently to live probe and refreshes it
+                cache_files = list(cache_dir.glob('probe-*.json'))
+                self.assertEqual(len(cache_files), 2)
+                for cf_path in cache_files:
+                    cf_path.write_text('{not-json', encoding='utf-8')
+                refreshed = runner.verify_paddleocr_available(str(fake_py), probe_cuda=False)
+                self.assertEqual(refreshed['versions']['paddleocr'], '3.0')
+                self.assertEqual(len(calls_log.read_text().splitlines()), 3)
+
+                # Changing interpreter file invalidates cache key
+                fake_py.write_text(fake_py.read_text() + '# touched\n', encoding='utf-8')
+                runner.verify_paddleocr_available(str(fake_py), probe_cuda=False)
+                self.assertEqual(len(calls_log.read_text().splitlines()), 4)
+
+                # PYTHONPATH without explicit OCR_PADDLE_PROBE_CACHE_DIR bypasses cache
+                with mock.patch.dict(os.environ, {'PYTHONPATH': str(root)}, clear=False):
+                    os.environ.pop('OCR_PADDLE_PROBE_CACHE_DIR', None)
+                    self.assertIsNone(runner._probe_cache_path(str(fake_py), False))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -291,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Linux/WSL2 only: equivalent to --engine hunyuan; proofreading/finishing have their own --single-engine flag")
     parser.add_argument("--max-seconds", type=float,
                         help="time budget when no OCR_PHASE_DEADLINE is set (run_ocr_phase.py sets one)")
+    parser.add_argument("--max-missing-engine-b", type=int, default=0,
+                        help="allow up to N failed engine-B pages to fall back to single-engine proofreading "
+                             "when all remaining pages complete (default 0)")
     parser.add_argument("--round", type=int, default=1,
                         help="which call of a run of repeated calls this is; it changes nothing. Run "
                              "directly, an exit 75 names the next command with --round N+1, so repeated "
@@ -354,6 +357,9 @@ def hand_over_command(arguments: argparse.Namespace) -> str:
 
 
 def run(arguments: argparse.Namespace) -> int:
+    if arguments.max_missing_engine_b < 0:
+        say("ERROR --max-missing-engine-b must be >= 0")
+        return 2
     book = arguments.book.expanduser().resolve()
     renders = book / arguments.renders
     if not renders.is_dir():
@@ -408,6 +414,7 @@ def run(arguments: argparse.Namespace) -> int:
 
     try:
         hunyuan_sealed = 0
+        tolerated_missing_b: list[int] = []
         for name, positional in steps:
             if name == "draft":
                 if hunyuan_sealed or not (book / "draft.md").exists():
@@ -437,6 +444,8 @@ def run(arguments: argparse.Namespace) -> int:
                         f"(about {startup:.0f}s): it only skips what is done, and loads nothing")
             say(f"{name}: {script}")
             command = [python, str(SCRIPTS / script), *positional, "--report", str(report_path)]
+            if name == "second-look" and (arguments.max_missing_engine_b > 0 or tolerated_missing_b):
+                command.append("--allow-missing-engine-b")
             if name == "vision":
                 if not render_pages:
                     say("ERROR no rendered pages selected")
@@ -485,6 +494,31 @@ def run(arguments: argparse.Namespace) -> int:
                     f"left, its estimated load and longest page being {startup:.0f}s; the estimate is "
                     f"now {startup_seconds(read_json(times_path), name):.0f}s; run the same command again")
                 return EXIT_INCOMPLETE
+            if name == "hunyuan" and code == 1 and fresh and arguments.max_missing_engine_b > 0:
+                counts = (report or {}).get("counts") or {}
+                failed_n = int(counts.get("failed") or 0)
+                comp_n = int(counts.get("completed") or 0)
+                skip_n = int(counts.get("skippedCurrent") or 0)
+                def_n = int(counts.get("deferred") or 0)
+                req_n = int(counts.get("requested") or 0)
+                if (
+                    0 < failed_n <= arguments.max_missing_engine_b
+                    and def_n == 0
+                    and (comp_n + skip_n + failed_n) == req_n
+                ):
+                    failed_pages = [
+                        p.get("scanPage")
+                        for p in (report.get("pages") or [])
+                        if isinstance(p, dict) and p.get("status") == "failed"
+                    ]
+                    tolerated_missing_b = (
+                        [p for p in failed_pages if isinstance(p, int)] or list(range(failed_n))
+                    )
+                    say(
+                        f"hunyuan: tolerating {failed_n} failed page(s) ({failed_pages}) within "
+                        f"--max-missing-engine-b={arguments.max_missing_engine_b}; continuing for single-engine fallback"
+                    )
+                    continue
             say(f"{name}: {script} exit {code}")
             if code == 1 and fresh and ran_out_of_time(report) and left_at_start is not None:
                 # The budget is smaller than the engine's load: the same call
@@ -496,6 +530,11 @@ def run(arguments: argparse.Namespace) -> int:
                     f"({times_path}); raise the budget (OCR_PHASE_MAX_SECONDS, below the tool call's time "
                     "limit; raise both together) above that. The same call with the same budget fails the same way")
             return 1
+        if tolerated_missing_b:
+            say(
+                f"completed with {len(tolerated_missing_b)} missing engine-B page(s) "
+                f"({tolerated_missing_b}) tolerated for single-engine fallback"
+            )
         return 0
     finally:
         if own_progress:
