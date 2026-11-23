@@ -46,15 +46,21 @@ import os
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 MANIFEST_NAME = "page-manifest.json"
 REPORT_NAME = "survey-report.json"
 RENDERS_DIRNAME = "renders"
 DEFAULT_DPI = 300
+DEFAULT_MAX_PIXELS = 40_000_000
+MIN_DPI = 72
+AUTO_MAX_DPI = 300
+AUTO_FALLBACK_DPI = 300
+MIN_SCAN_IMAGE_SIDE = 128
 DEFAULT_JOBS = os.cpu_count() or 1
 
 BLANK_INK_FRACTION = 0.03
@@ -168,6 +174,230 @@ def parse_page_selection(expression: str) -> list[int]:
     if not pages:
         raise SurveyError("no pages were selected")
     return sorted(pages)
+
+
+def parse_dpi_spec(raw: str | int | None) -> tuple[str, int | None]:
+    """Parse --dpi ('auto' or an integer >= MIN_DPI) into (mode, fixed_dpi)."""
+    if raw is None:
+        return "fixed", DEFAULT_DPI
+    text = str(raw).strip()
+    if text.lower() == "auto":
+        return "auto", None
+    try:
+        value = int(text)
+    except ValueError as error:
+        raise SurveyError(f"--dpi must be 'auto' or an integer >= {MIN_DPI} (got {raw!r})") from error
+    if value < MIN_DPI:
+        raise SurveyError("--dpi below 72 is too low for small CJK glyphs")
+    return "fixed", value
+
+
+def find_pdfimages() -> str | None:
+    """Locate poppler's pdfimages binary (optional, used by --dpi auto)."""
+    override = (os.environ.get("PDFIMAGES") or "").strip()
+    if override:
+        if os.path.isfile(override) and os.access(override, os.X_OK):
+            return override
+        resolved = shutil.which(override)
+        if resolved:
+            return resolved
+    for sibling_tool in ("pdftoppm", "pdfinfo"):
+        tool_path = shutil.which(sibling_tool)
+        if tool_path:
+            candidate = Path(tool_path).parent / "pdfimages"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return shutil.which("pdfimages")
+
+
+_PAGE_SIZE_RE = re.compile(
+    r"^Page\s+(\d+)\s+size:\s*([0-9]+(?:\.[0-9]+)?)\s*x\s*([0-9]+(?:\.[0-9]+)?)\s+pts",
+    re.IGNORECASE,
+)
+_NOMINAL_SIZE_RE = re.compile(
+    r"([0-9]+(?:\.[0-9]+)?)\s*x\s*([0-9]+(?:\.[0-9]+)?)\s+pts",
+    re.IGNORECASE,
+)
+
+
+def pdf_page_sizes(
+    pdf_path: Path, page_count: int, facts: Mapping[str, Any] | None = None
+) -> dict[int, tuple[float, float]]:
+    """Per-page MediaBox/CropBox sizes in PDF points via `pdfinfo -f 1 -l N`."""
+    sizes: dict[int, tuple[float, float]] = {}
+    pdfinfo = shutil.which("pdfinfo")
+    if pdfinfo and page_count >= 1:
+        try:
+            result = subprocess.run(
+                [pdfinfo, "-f", "1", "-l", str(page_count), str(pdf_path)],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    match = _PAGE_SIZE_RE.match(line.strip())
+                    if match:
+                        sizes[int(match.group(1))] = (
+                            float(match.group(2)),
+                            float(match.group(3)),
+                        )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    nominal = str((facts or {}).get("Page size") or "")
+    nom_match = _NOMINAL_SIZE_RE.search(nominal)
+    if nom_match:
+        nom_size = (float(nom_match.group(1)), float(nom_match.group(2)))
+        for p in range(1, page_count + 1):
+            sizes.setdefault(p, nom_size)
+    return sizes
+
+
+def pdf_image_ppis(pdf_path: Path) -> tuple[dict[int, float], bool]:
+    """Embedded raster image PPIs per page via `pdfimages -list`.
+
+    Returns (page_to_max_ppi, pdfimages_available). Tiny masks/thumbnails
+    (< 128x128) and `smask` entries are ignored.
+    """
+    tool = find_pdfimages()
+    if not tool:
+        return {}, False
+    try:
+        result = subprocess.run(
+            [tool, "-list", str(pdf_path)],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}, False
+    if result.returncode != 0:
+        return {}, False
+
+    ppis: dict[int, float] = {}
+    col_index: dict[str, int] | None = None
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        tokens = stripped.split()
+        if col_index is None:
+            lowered = [tok.lower() for tok in tokens]
+            if {"page", "type", "width", "height", "x-ppi", "y-ppi"}.issubset(lowered):
+                col_index = {name: lowered.index(name) for name in ("page", "type", "width", "height", "x-ppi", "y-ppi")}
+            continue
+        if set(stripped) <= {"-", " "}:
+            continue
+        if len(tokens) <= max(col_index.values()):
+            continue
+        img_type = tokens[col_index["type"]].lower()
+        if img_type in ("smask", "mask"):
+            continue
+        try:
+            page_no = int(tokens[col_index["page"]])
+            width = int(tokens[col_index["width"]])
+            height = int(tokens[col_index["height"]])
+            x_ppi = float(tokens[col_index["x-ppi"]])
+            y_ppi = float(tokens[col_index["y-ppi"]])
+        except ValueError:
+            continue
+        if width < MIN_SCAN_IMAGE_SIDE and height < MIN_SCAN_IMAGE_SIDE:
+            continue
+        if x_ppi <= 0 or y_ppi <= 0:
+            continue
+        best = max(x_ppi, y_ppi)
+        prev = ppis.get(page_no)
+        if prev is None or best > prev:
+            ppis[page_no] = best
+    return ppis, True
+
+
+def coalesce_dpi_ranges(
+    selected: Sequence[int], page_dpis: Mapping[int, int]
+) -> list[dict[str, int]]:
+    """Collapse contiguous pages sharing the same render DPI into range dicts."""
+    ranges: list[dict[str, int]] = []
+    for scan in sorted(set(selected)):
+        dpi = int(page_dpis.get(scan, DEFAULT_DPI))
+        if ranges and scan == ranges[-1]["last"] + 1 and dpi == ranges[-1]["dpi"]:
+            ranges[-1]["last"] = scan
+        else:
+            ranges.append({"first": scan, "last": scan, "dpi": dpi})
+    return ranges
+
+
+def expand_dpi_ranges(
+    ranges: Sequence[Mapping[str, Any]], wanted: Sequence[int], fallback: int = DEFAULT_DPI
+) -> dict[int, int]:
+    """Expand recorded dpiRanges into {scan_page: dpi} for WANTED pages."""
+    dpis = {p: fallback for p in wanted}
+    wanted_set = set(wanted)
+    for entry in ranges:
+        if not isinstance(entry, Mapping):
+            continue
+        try:
+            first = int(entry["first"])
+            last = int(entry["last"])
+            dpi = int(entry["dpi"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if dpi < MIN_DPI:
+            continue
+        for p in range(first, last + 1):
+            if p in wanted_set:
+                dpis[p] = dpi
+    return dpis
+
+
+def choose_page_dpis(
+    selected: Sequence[int],
+    sizes: Mapping[int, tuple[float, float]],
+    image_ppis: Mapping[int, float],
+    *,
+    dpi_mode: str,
+    fixed_dpi: int | None = None,
+    max_pixels: int = DEFAULT_MAX_PIXELS,
+    pdfimages_available: bool = False,
+) -> tuple[dict[int, int], list[dict[str, int]], dict[str, Any]]:
+    """Choose per-page render DPI and summarize scan PPIs / caps."""
+    ordered = sorted(set(selected))
+    page_dpis: dict[int, int] = {}
+    capped_pages = 0
+    if dpi_mode == "fixed":
+        val = int(fixed_dpi if fixed_dpi is not None else DEFAULT_DPI)
+        for p in ordered:
+            page_dpis[p] = val
+    else:
+        for p in ordered:
+            if p in image_ppis:
+                ppi = image_ppis[p]
+                base = MIN_DPI if ppi <= MIN_DPI else min(AUTO_MAX_DPI, math.ceil(ppi / 10.0) * 10)
+            else:
+                base = AUTO_FALLBACK_DPI
+            chosen = base
+            if p in sizes and max_pixels > 0:
+                w_pt, h_pt = sizes[p]
+                area_in2 = (w_pt / 72.0) * (h_pt / 72.0)
+                if area_in2 > 0:
+                    cap = max(MIN_DPI, min(AUTO_MAX_DPI, math.floor(math.sqrt(max_pixels / area_in2))))
+                    if base > cap:
+                        chosen = cap
+                        capped_pages += 1
+            page_dpis[p] = max(MIN_DPI, chosen)
+
+    dpi_ranges = coalesce_dpi_ranges(ordered, page_dpis)
+    sampled_ppis = sorted(image_ppis[p] for p in ordered if p in image_ppis)
+    summary = {
+        "pdfimagesAvailable": pdfimages_available,
+        "pagesWithImages": len(sampled_ppis),
+        "minPpi": round(sampled_ppis[0], 1) if sampled_ppis else None,
+        "medianPpi": round(statistics.median(sampled_ppis), 1) if sampled_ppis else None,
+        "maxPpi": round(sampled_ppis[-1], 1) if sampled_ppis else None,
+        "cappedPages": capped_pages,
+    }
+    return page_dpis, dpi_ranges, summary
 
 
 def contiguous_runs(numbers: list[int]) -> list[tuple[int, int]]:
@@ -305,6 +535,34 @@ RULE_COVERAGE = 0.5
 INK_MARGIN = 45
 
 
+def render_by_dpi(
+    pdf_path: Path,
+    renders_dir: Path,
+    todo: Sequence[int],
+    page_dpis: Mapping[int, int],
+    jobs: int = 1,
+) -> int:
+    """Render TODO pages grouped by their target DPI via render_runs()."""
+    if not todo:
+        return 0
+    by_dpi: dict[int, list[int]] = {}
+    for scan in sorted(todo):
+        by_dpi.setdefault(int(page_dpis.get(scan, DEFAULT_DPI)), []).append(scan)
+    total_rendered = 0
+    for dpi in sorted(by_dpi, key=lambda d: by_dpi[d][0]):
+        runs = contiguous_runs(by_dpi[dpi])
+        shown = ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs[:6])
+        if len(runs) > 6:
+            shown += f", … {len(runs) - 6} more runs"
+        print(
+            f"  rendering  : {len(by_dpi[dpi])} page(s) [{shown}] at {dpi} dpi, "
+            f"{jobs} pdftoppm process(es) at a time",
+            flush=True,
+        )
+        total_rendered += render_runs(pdf_path, renders_dir, dpi, runs, jobs)
+    return total_rendered
+
+
 def measure_page(render_file: Path) -> tuple[int, int, float | None]:
     """Pixel size and the fraction of the page carrying TEXT ink."""
     try:
@@ -313,6 +571,7 @@ def measure_page(render_file: Path) -> tuple[int, int, float | None]:
         return 0, 0, None
     with Image.open(render_file) as image:
         width, height = image.size
+        image.draft("L", (400, 400))
         grey = image.convert("L")
         grey.thumbnail((400, 400))
         histogram = grey.histogram()
@@ -431,9 +690,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dpi",
-        type=int,
         default=None,
-        help=f"render resolution (default {DEFAULT_DPI}; --renders-only: the survey report's)",
+        help=f"render resolution: integer >= {MIN_DPI} or 'auto' (default {DEFAULT_DPI}; --renders-only: the survey report's)",
+    )
+    parser.add_argument(
+        "--max-pixels",
+        type=int,
+        default=DEFAULT_MAX_PIXELS,
+        help=f"maximum pixels per page when --dpi auto is active (default {DEFAULT_MAX_PIXELS})",
     )
     parser.add_argument(
         "--last-page",
@@ -469,9 +733,12 @@ def renders_only(
     output_directory: Path,
     renders_dir: Path,
     selected: list[int] | None,
-    dpi: int | None,
+    dpi: str | int | None,
     jobs: int,
     overwrite: bool,
+    *,
+    max_pixels: int = DEFAULT_MAX_PIXELS,
+    facts: Mapping[str, Any] | None = None,
 ) -> int:
     manifest_path = output_directory / MANIFEST_NAME
     try:
@@ -496,10 +763,6 @@ def renders_only(
             json.loads((output_directory / REPORT_NAME).read_text(encoding="utf-8")).get("render")
             or {}
         )
-    if dpi is None:
-        dpi = DEFAULT_DPI
-        with contextlib.suppress(ValueError, KeyError, TypeError):
-            dpi = int(recorded["dpi"])
     renders_dir.mkdir(parents=True, exist_ok=True)
     existing = {
         int(p.stem.split("-")[1])
@@ -508,13 +771,34 @@ def renders_only(
     }
     todo = wanted if overwrite else sorted(set(wanted) - existing)
     if todo:
-        runs = contiguous_runs(todo)
-        shown = ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs[:6])
-        print(
-            f"  rendering  : {len(todo)} page(s) [{shown}] at {dpi} dpi, {jobs} pdftoppm process(es) at a time",
-            flush=True,
-        )
-        render_runs(pdf_path, renders_dir, dpi, runs, jobs)
+        page_dpis: dict[int, int]
+        fallback_dpi = DEFAULT_DPI
+        with contextlib.suppress(ValueError, KeyError, TypeError):
+            fallback_dpi = int(recorded["dpi"])
+        if dpi is None:
+            ranges = recorded.get("dpiRanges")
+            if isinstance(ranges, list) and ranges:
+                page_dpis = expand_dpi_ranges(ranges, todo, fallback=fallback_dpi)
+            elif recorded.get("dpiMode") == "auto" or str(recorded.get("dpi") or "").lower() == "auto":
+                eff_max = int(recorded.get("maxPixels") or max_pixels)
+                sizes = pdf_page_sizes(pdf_path, max(todo), facts)
+                image_ppis, avail = pdf_image_ppis(pdf_path)
+                page_dpis, _, _ = choose_page_dpis(
+                    todo, sizes, image_ppis, dpi_mode="auto", max_pixels=eff_max, pdfimages_available=avail
+                )
+            else:
+                page_dpis = {p: fallback_dpi for p in todo}
+        else:
+            mode, fixed = parse_dpi_spec(dpi)
+            if mode == "fixed":
+                page_dpis = {p: int(fixed) for p in todo}
+            else:
+                sizes = pdf_page_sizes(pdf_path, max(todo), facts)
+                image_ppis, avail = pdf_image_ppis(pdf_path)
+                page_dpis, _, _ = choose_page_dpis(
+                    todo, sizes, image_ppis, dpi_mode="auto", max_pixels=max_pixels, pdfimages_available=avail
+                )
+        render_by_dpi(pdf_path, renders_dir, todo, page_dpis, jobs)
     else:
         print(f"  rendering  : all {len(wanted)} selected page(s) already present", flush=True)
     differ, missing, unlisted = [], [], []
@@ -552,8 +836,10 @@ def renders_only(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
-    dpi = DEFAULT_DPI if arguments.dpi is None else arguments.dpi
     try:
+        dpi_mode, fixed_dpi = parse_dpi_spec(arguments.dpi)
+        if arguments.max_pixels < 100_000:
+            raise SurveyError("--max-pixels must be at least 100000")
         if arguments.images_dir is not None:
             if len(arguments.paths) != 1:
                 raise SurveyError(
@@ -617,8 +903,6 @@ def main(argv: list[str] | None = None) -> int:
             pdf_path = source_pdf_arg.expanduser().resolve()
             if not pdf_path.is_file():
                 raise SurveyError(f"source PDF does not exist: {pdf_path}")
-            if dpi < 72:
-                raise SurveyError("--dpi below 72 is too low for small CJK glyphs")
             facts = pdf_facts(pdf_path)
             page_count = facts["_page_count"]
             if arguments.pages:
@@ -650,7 +934,24 @@ def main(argv: list[str] | None = None) -> int:
                     arguments.dpi,
                     arguments.jobs,
                     arguments.overwrite,
+                    max_pixels=arguments.max_pixels,
+                    facts=facts,
                 )
+
+            if dpi_mode == "auto":
+                sizes = pdf_page_sizes(pdf_path, last_page, facts)
+                image_ppis, pdfimages_avail = pdf_image_ppis(pdf_path)
+            else:
+                sizes, image_ppis, pdfimages_avail = {}, {}, False
+            page_dpis, dpi_ranges, scan_ppi_summary = choose_page_dpis(
+                selected,
+                sizes,
+                image_ppis,
+                dpi_mode=dpi_mode,
+                fixed_dpi=fixed_dpi,
+                max_pixels=arguments.max_pixels,
+                pdfimages_available=pdfimages_avail,
+            )
 
             existing = (
                 {
@@ -665,16 +966,7 @@ def main(argv: list[str] | None = None) -> int:
             todo = sorted(wanted) if arguments.overwrite else sorted(wanted - existing)
 
             if todo:
-                runs = contiguous_runs(todo)
-                shown = ", ".join(f"{a}" if a == b else f"{a}-{b}" for a, b in runs[:6])
-                if len(runs) > 6:
-                    shown += f", … {len(runs) - 6} more runs"
-                print(
-                    f"  rendering  : {len(todo)} page(s) [{shown}] at {dpi} dpi, "
-                    f"{arguments.jobs} pdftoppm process(es) at a time",
-                    flush=True,
-                )
-                render_runs(pdf_path, renders_dir, dpi, runs, arguments.jobs)
+                render_by_dpi(pdf_path, renders_dir, todo, page_dpis, arguments.jobs)
             else:
                 print(
                     f"  rendering  : all {len(wanted)} selected page(s) already present",
@@ -724,10 +1016,16 @@ def main(argv: list[str] | None = None) -> int:
             "name_pattern": "page-NNNN.png",
         }
     else:
+        distinct_dpis = {entry["dpi"] for entry in dpi_ranges}
+        dpi_value: int | str = next(iter(distinct_dpis)) if len(distinct_dpis) == 1 else "auto"
         render_meta = {
             "tool": "pdftoppm",
             "tool_version": pdftoppm_version(),
-            "dpi": dpi,
+            "dpi": dpi_value,
+            "dpiMode": dpi_mode,
+            "maxPixels": arguments.max_pixels,
+            "dpiRanges": dpi_ranges,
+            "scanPpiSummary": scan_ppi_summary,
             "format": "png",
             "directory": str(renders_dir),
             "name_pattern": "page-NNNN.png",
