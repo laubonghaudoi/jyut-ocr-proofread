@@ -32,8 +32,27 @@ import contextlib
 import copy
 import json
 import os
+import re
 import sys
 from typing import Any
+
+
+_PADDLEX_IMG_TAG_PATTERN = (
+    r"""<img\b[^>]*?\bsrc\s*=\s*(?:"imgs/img_in_[^"]*"|'imgs/img_in_[^']*'|imgs/img_in_[^\s>]+)[^>]*>"""
+)
+PADDLEX_IMG_TAG_RE = re.compile(_PADDLEX_IMG_TAG_PATTERN, re.IGNORECASE)
+PADDLEX_IMG_LINE_RE = re.compile(
+    r"^[ \t]*" + _PADDLEX_IMG_TAG_PATTERN + r"[ \t]*(?:\r?\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_paddlex_img_tags(text: str) -> str:
+    """Remove PaddleX's synthetic ``<img src="imgs/img_in_...">`` tags."""
+    if "img_in_" not in text.lower():
+        return text
+    cleaned = PADDLEX_IMG_LINE_RE.sub("", text)
+    return PADDLEX_IMG_TAG_RE.sub("", cleaned)
 
 
 def emit(channel: Any, payload: dict[str, Any]) -> None:
@@ -159,7 +178,7 @@ def normalise_page(
     # A VL server whose chat template does not place the image (the model's own template takes
     # only {"type": "image"} parts; PaddleX sends "image_url") opens some blocks with a newline
     # the native and MLX readers never write, which led the repair's line pairing astray
-    # (doukeoi-zingkeoi/s0583 lost its bibliography's Western lines).  The server should run with
+    # (an archival bilingual bibliography page lost its Western lines).  The server should run with
     # runtime/paddleocr-vl-server-chat-template.jinja (references/local-ocr.md); this guard keeps
     # such a newline out of the drafts all the same.  It is not text: it goes.
     served = os.environ.get("JYUT_PADDLE_VL_BACKEND") in ("sglang-server", "vllm-server")
@@ -167,6 +186,8 @@ def normalise_page(
         text = block.get("block_content")
         if served and isinstance(text, str):
             text = text.lstrip("\r\n")
+        if isinstance(text, str):
+            text = strip_paddlex_img_tags(text)
         order = _as_int(block.get("block_order"), default=-1)
         bbox = block.get("block_bbox")
         if not isinstance(text, str) or not text.strip():

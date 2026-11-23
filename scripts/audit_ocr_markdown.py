@@ -859,6 +859,12 @@ def _notation_policy_issues(
     return issues
 
 
+PADDLEX_IMG_TAG_RE = re.compile(
+    r"""<img\b[^>]*?\bsrc\s*=\s*(?:"imgs/img_in_[^"]*"|'imgs/img_in_[^']*'|imgs/img_in_[^\s>]+)[^>]*>""",
+    re.IGNORECASE,
+)
+
+
 def _residue_issues(
     lines: Sequence[str], mode: str, authorized_notations: frozenset[str]
 ) -> list[Issue]:
@@ -900,6 +906,15 @@ def _residue_issues(
         if re.search(r"gjcool\s+OCR", body, re.IGNORECASE):
             issues.append(
                 Issue("error", "ocr-tool-heading", line_number, "GJ.cool OCR heading remains")
+            )
+        if PADDLEX_IMG_TAG_RE.search(body):
+            issues.append(
+                Issue(
+                    "error",
+                    "ocr-engine-image-tag",
+                    line_number,
+                    'PaddleX synthetic <img src="imgs/img_in_..."> tag remains',
+                )
             )
         if "此頁OCR無有效文字" in body:
             issues.append(

@@ -305,6 +305,28 @@ def check_edge_circle_split() -> None:
     print("edge circles: a circle fused with a substitution splits off; pairs and shared circles do not")
 
 
+def check_multimodal_placeholders_and_img_tags(endpoint: str) -> None:
+    client = pp.Client(endpoint, "stub", "xhigh", 30)
+    body = client.request_body(
+        "sys <image> <|vision_start|> ok",
+        "draft <image> <|image_pad|> <|vision_end|> <video> <audio> <table><tr><td>正文</td></tr></table>",
+        None,
+        512,
+    )
+    sys_txt = body["messages"][0]["content"]
+    usr_txt = body["messages"][1]["content"][0]["text"]
+    assert "<image>" not in sys_txt and "<|vision_start|>" not in sys_txt, sys_txt
+    assert "< image >" in sys_txt and "< |vision_start| >" in sys_txt, sys_txt
+    for tok in ("<image>", "<|image_pad|>", "<|vision_end|>", "<video>", "<audio>"):
+        assert tok not in usr_txt, (tok, usr_txt)
+    assert "<table><tr><td>正文</td></tr></table>" in usr_txt, usr_txt
+    cleaned = pp.strip_paddlex_img_tags(
+        '前文\n<img src="imgs/img_in_seal_1.jpg" alt="Image" />\n<table><td><img src="imgs/img_in_2.jpg" alt="Image"" /></td><td>後文</td></table>'
+    )
+    assert cleaned == "前文\n<table><td></td><td>後文</td></table>", repr(cleaned)
+    print("safety: Client.request_body neutralizes multimodal placeholders and strip_paddlex_img_tags removes img_in tags")
+
+
 if __name__ == "__main__":
     server, endpoint = serve()
     try:
@@ -313,6 +335,7 @@ if __name__ == "__main__":
         check_lower_start(endpoint)
         check_no_answer_reason(endpoint)
         check_media_aspect(endpoint)
+        check_multimodal_placeholders_and_img_tags(endpoint)
     finally:
         server.shutdown()
     check_profile_cap()

@@ -1878,6 +1878,35 @@ class AuditOcrMarkdownTests(unittest.TestCase):
                 "[unterminated-fence]", unclosed_fence_result.stdout
             )
 
+    def test_paddlex_img_in_tag_flagged_outside_fences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            bad_prose = root / "bad-prose.md"
+            bad_table = root / "bad-table.md"
+            fenced_ok = root / "fenced-ok.md"
+            bad_prose.write_text(
+                '前文\n\n<img src="imgs/img_in_image_box_1_2_3_4.jpg" alt="Image" />\n',
+                encoding="utf-8",
+            )
+            bad_table.write_text(
+                '<table><tr><td><img src="imgs/img_in_seal_box_475_2209_885_2616.jpg" alt="Image"" /></td><td>正文</td></tr></table>\n',
+                encoding="utf-8",
+            )
+            fenced_ok.write_text(
+                '```html\n<img src="imgs/img_in_example.jpg" alt="Image" />\n```\n',
+                encoding="utf-8",
+            )
+
+            prose_res = run_script(AUDIT, bad_prose, "--mode", "final")
+            table_res = run_script(AUDIT, bad_table, "--mode", "final")
+            fence_res = run_script(AUDIT, fenced_ok, "--mode", "final")
+
+            self.assertEqual(prose_res.returncode, 1)
+            self.assertIn("[ocr-engine-image-tag]", prose_res.stdout)
+            self.assertEqual(table_res.returncode, 1)
+            self.assertIn("[ocr-engine-image-tag]", table_res.stdout)
+            self.assertEqual(fence_res.returncode, 0, fence_res.stdout + fence_res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

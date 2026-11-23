@@ -58,7 +58,7 @@ from __future__ import annotations
 import argparse
 import base64
 import bisect
-from collections import Counter
+from collections import Counter, OrderedDict
 import concurrent.futures as cf
 import contextlib
 import contextvars
@@ -2359,13 +2359,21 @@ def measure_columns(render: Path, box: Sequence[float], text_only: bool = False,
         return None
     try:
         with Image.open(render) as image:
+            orig_w, orig_h = image.size
             x, y, w, h = box
             if turned:
-                image = image.transpose(Image.ROTATE_270)
-                x, y, w, h = 1 - y - h, x, h, w
-            width, height = image.size
-            left, top = int(x * width), int(y * height)
-            region = image.convert("L").crop((left, top, int((x + w) * width), int((y + h) * height)))
+                rx, ry, rw, rh = 1 - y - h, x, h, w
+                left, top = int(rx * orig_h), int(ry * orig_w)
+                right, bottom = int((rx + rw) * orig_h), int((ry + rh) * orig_w)
+                crop_bounds = (top, orig_h - right, bottom, orig_h - left)
+                with _large_image_guard(orig_w * orig_h):
+                    sub = image.crop(crop_bounds)
+                region = sub.transpose(Image.ROTATE_270).convert("L")
+            else:
+                left, top = int(x * orig_w), int(y * orig_h)
+                crop_bounds = (left, top, int((x + w) * orig_w), int((y + h) * orig_h))
+                with _large_image_guard(orig_w * orig_h):
+                    region = image.crop(crop_bounds).convert("L")
     except Exception:  # noqa: BLE001
         return None
     rw, rh = region.size
@@ -3054,7 +3062,8 @@ def boundary_crop(render: Path, previous: Mapping[str, Any], following: Mapping[
     try:
         from PIL import Image
         with Image.open(render) as opened:
-            image = opened.convert("L") if opened.mode not in ("L", "RGB") else opened.copy()
+            with _large_image_guard(opened.width * opened.height):
+                image = opened.convert("L") if opened.mode not in ("L", "RGB") else opened.copy()
         size = image.size
         foot = image.crop(edge_region(render, previous, True, run, size))
         if min(foot.size) < 2:
@@ -3393,8 +3402,9 @@ def block_is_vertical(render: Path, box: Sequence[float]) -> bool | None:
         with Image.open(render) as image:
             width, height = image.size
             x, y, w, h = box
-            region = image.convert("L").crop((int(x * width), int(y * height),
-                                              int((x + w) * width), int((y + h) * height)))
+            with _large_image_guard(width * height):
+                region = image.crop((int(x * width), int(y * height),
+                                     int((x + w) * width), int((y + h) * height))).convert("L")
     except Exception:  # noqa: BLE001
         return None
     rw, rh = region.size
@@ -4305,6 +4315,24 @@ def norm_for_diff(text: str) -> str:
 # most a few tens of megapixels anyway (its vision tokens are capped), so an image
 # above the budget is scaled down to fit; every other image is sent unchanged.
 MEDIA_PIXEL_LIMIT = 60_000_000
+LARGE_IMAGE_PIXEL_THRESHOLD = 20_000_000
+_LARGE_IMAGE_SEM = threading.BoundedSemaphore(2)
+_MEDIA_BUDGET_CACHE_MAX = 8
+_MEDIA_BUDGET_CACHE_LOCK = threading.Lock()
+_MEDIA_BUDGET_CACHE: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+
+
+@contextlib.contextmanager
+def _large_image_guard(pixel_count: int) -> Iterator[None]:
+    """Bound concurrent large-image decodes and resizes in host RAM."""
+    if pixel_count <= LARGE_IMAGE_PIXEL_THRESHOLD:
+        yield
+        return
+    _LARGE_IMAGE_SEM.acquire()
+    try:
+        yield
+    finally:
+        _LARGE_IMAGE_SEM.release()
 
 
 def fit_media_budget(image_bytes: bytes, limit: int = MEDIA_PIXEL_LIMIT) -> bytes:
@@ -4314,12 +4342,25 @@ def fit_media_budget(image_bytes: bytes, limit: int = MEDIA_PIXEL_LIMIT) -> byte
         width, height = image.size
         if width * height <= limit:
             return image_bytes
+        key = (sha256_bytes(image_bytes), limit)
+        with _MEDIA_BUDGET_CACHE_LOCK:
+            cached = _MEDIA_BUDGET_CACHE.get(key)
+            if cached is not None:
+                _MEDIA_BUDGET_CACHE.move_to_end(key)
+                return cached
         scale = math.sqrt(limit / (width * height))
         size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        small = image.convert("RGB" if image.mode not in ("1", "L", "RGB") else image.mode).resize(size, Image.LANCZOS)
-    out = io.BytesIO()
-    small.save(out, "PNG")
-    return out.getvalue()
+        out = io.BytesIO()
+        with _large_image_guard(width * height):
+            small = image.convert("RGB" if image.mode not in ("1", "L", "RGB") else image.mode).resize(size, Image.LANCZOS)
+            small.save(out, "PNG")
+    scaled = out.getvalue()
+    with _MEDIA_BUDGET_CACHE_LOCK:
+        _MEDIA_BUDGET_CACHE[key] = scaled
+        _MEDIA_BUDGET_CACHE.move_to_end(key)
+        while len(_MEDIA_BUDGET_CACHE) > _MEDIA_BUDGET_CACHE_MAX:
+            _MEDIA_BUDGET_CACHE.popitem(last=False)
+    return scaled
 
 
 # The vision server also refuses an image whose long side is more than 200 times
@@ -4342,16 +4383,17 @@ def fit_media_aspect(image_bytes: bytes, limit: float = MEDIA_ASPECT_LIMIT) -> b
         width, height = image.size
         if max(width, height) <= limit * min(width, height):
             return image_bytes
-        source = image.convert("L" if image.mode in ("1", "L") else "RGB")
-    histogram = source.histogram()
-    paper = tuple(max(range(256), key=lambda level: histogram[256 * band + level])
-                  for band in range(len(source.getbands())))
-    side = math.ceil(max(width, height) / limit)
-    size = (side, height) if width < height else (width, side)
-    padded = Image.new(source.mode, size, paper if len(paper) > 1 else paper[0])
-    padded.paste(source, ((size[0] - width) // 2, (size[1] - height) // 2))
-    out = io.BytesIO()
-    padded.save(out, "PNG")
+        out = io.BytesIO()
+        with _large_image_guard(width * height):
+            source = image.convert("L" if image.mode in ("1", "L") else "RGB")
+            histogram = source.histogram()
+            paper = tuple(max(range(256), key=lambda level: histogram[256 * band + level])
+                          for band in range(len(source.getbands())))
+            side = math.ceil(max(width, height) / limit)
+            size = (side, height) if width < height else (width, side)
+            padded = Image.new(source.mode, size, paper if len(paper) > 1 else paper[0])
+            padded.paste(source, ((size[0] - width) // 2, (size[1] - height) // 2))
+            padded.save(out, "PNG")
     return out.getvalue()
 
 
@@ -4424,6 +4466,38 @@ def effort_policy_record(client: Any) -> dict[str, str]:
     return {"effortPolicy": text} if text else {}
 
 
+MULTIMODAL_PLACEHOLDER_RE = re.compile(
+    r"<(/?(?:image(?:_pad)?|video(?:_pad)?|audio(?:_pad)?|\|(?:image(?:_pad)?|video(?:_pad)?|audio(?:_pad)?|vision_(?:start|end))\|))>",
+    re.IGNORECASE,
+)
+
+
+def neutralize_multimodal_placeholders(text: str) -> str:
+    """Break literal multimodal placeholder tokens (such as ``<image>`` or
+    ``<|vision_start|>``) so chat templates and vision servers do not count them
+    as extra image parts (HTTP 400)."""
+    return MULTIMODAL_PLACEHOLDER_RE.sub(lambda m: f"< {m.group(1)} >", text)
+
+
+_PADDLEX_IMG_TAG_PATTERN = (
+    r"""<img\b[^>]*?\bsrc\s*=\s*(?:"imgs/img_in_[^"]*"|'imgs/img_in_[^']*'|imgs/img_in_[^\s>]+)[^>]*>"""
+)
+PADDLEX_IMG_TAG_RE = re.compile(_PADDLEX_IMG_TAG_PATTERN, re.IGNORECASE)
+PADDLEX_IMG_LINE_RE = re.compile(
+    r"^[ \t]*" + _PADDLEX_IMG_TAG_PATTERN + r"[ \t]*(?:\r?\n|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_paddlex_img_tags(text: str) -> str:
+    """Strip PaddleX's synthetic ``<img src="imgs/img_in_...">`` HTML tags
+    from OCR drafts, blocks, and proofread page output."""
+    if "img_in_" not in text.lower():
+        return text
+    cleaned = PADDLEX_IMG_LINE_RE.sub("", text)
+    return PADDLEX_IMG_TAG_RE.sub("", cleaned)
+
+
 class Client:
     """Minimal chat client. Retries only on transport errors, never on HTTP 4xx."""
 
@@ -4471,6 +4545,8 @@ class Client:
         """The JSON body of one request, as ask() sends it (request_body), and
         whether its image was padded to the server's aspect ratio
         (fit_media_aspect), which the call ledger records."""
+        system = neutralize_multimodal_placeholders(system)
+        user_text = neutralize_multimodal_placeholders(user_text)
         content: list[dict[str, Any]] = [{"type": "text", "text": user_text}]
         padded = False
         if image_bytes is not None:
@@ -4536,6 +4612,7 @@ class Client:
         effort = self.effort if effort_override == "" else effort_override
         started = time.monotonic()
         payload, waited = self._send(body, kind)
+        del body
         usage = payload.get("usage") or {}
         details = usage.get("completion_tokens_details") or {}
         timings = payload.get("timings") or {}
@@ -4585,9 +4662,7 @@ class Client:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         payload_body = dict(body)
-        request = urllib.request.Request(
-            self.endpoint, json.dumps(payload_body).encode(), headers
-        )
+        stream = bool(payload_body.get("stream"))
         last: Exception | None = None
         waited = 0.0
         for attempt in range(3):
@@ -4597,9 +4672,15 @@ class Client:
                     self.inflight.acquire()
                 waited += time.monotonic() - queued
                 try:
+                    # Serialize only after acquiring an in-flight slot so queued
+                    # threads do not hold multi-MB base64 JSON payloads in RAM.
+                    request = urllib.request.Request(
+                        self.endpoint, json.dumps(payload_body).encode(), headers
+                    )
                     with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                        del request
                         # A streamed request (--loop-detector) is read as one payload.
-                        payload = (self._read_stream(response) if payload_body.get("stream")
+                        payload = (self._read_stream(response) if stream
                                    else json.loads(response.read().decode()))
                         return payload, waited
                 finally:
@@ -4609,9 +4690,6 @@ class Client:
                 detail = error.read().decode(errors="replace")[:300]
                 if error.code == 400 and "reasoning_effort" in detail and "reasoning_effort" in payload_body:
                     payload_body.pop("reasoning_effort", None)
-                    request = urllib.request.Request(
-                        self.endpoint, json.dumps(payload_body).encode(), headers
-                    )
                     continue
                 # A 4xx is a contract problem; retrying sends the same bad request.
                 raise ProofreadError(f"HTTP {error.code}: {detail}") from error
@@ -5304,6 +5382,9 @@ def load_blocks(draft_json: Path | None) -> list[dict[str, Any]]:
         text = line.get("text")
         box = line.get("boundingBox")
         if isinstance(text, str) and isinstance(box, list) and len(box) == 4:
+            text = strip_paddlex_img_tags(text)
+            if not text.strip():
+                continue
             blocks.append({
                 "text": text,
                 "box": [float(v) for v in box],
@@ -11117,11 +11198,13 @@ def page_ink_fraction(render: Path) -> float:
         return -1.0
     try:
         with Image.open(render) as opened:
-            image = opened.convert("L")
-            if image.width > MEASURE_WIDTH:
-                height = max(1, round(image.height * MEASURE_WIDTH / image.width))
-                image = image.resize((MEASURE_WIDTH, height), Image.BOX)
-            histogram = image.histogram()
+            with _large_image_guard(opened.width * opened.height):
+                opened.draft("L", (MEASURE_WIDTH, max(1, round(opened.height * MEASURE_WIDTH / max(1, opened.width)))))
+                image = opened.convert("L")
+                if image.width > MEASURE_WIDTH:
+                    height = max(1, round(image.height * MEASURE_WIDTH / image.width))
+                    image = image.resize((MEASURE_WIDTH, height), Image.BOX)
+                histogram = image.histogram()
             total = sum(histogram)
             if not total:
                 return -1.0
@@ -13446,7 +13529,7 @@ def _proofread_page_inner(
     loop_cuts: list[dict[str, Any]] = []
     _LOOP_CUTS.set(loop_cuts)
     render_bytes = job.render.read_bytes()
-    draft = job.draft_text.read_text(encoding="utf-8").strip()
+    draft = strip_paddlex_img_tags(job.draft_text.read_text(encoding="utf-8")).strip()
     # Engine A's layout blocks: the merge loads them; empty on a page
     # transcribed whole (note_question_reason reads them at the end).
     blocks: list[dict[str, Any]] = []
@@ -13461,7 +13544,7 @@ def _proofread_page_inner(
         metric_calls.append(m)
         metrics.update(aggregate_usage(metric_calls))
 
-    draft2 = (strip_grounding(job.draft2_text.read_text(encoding="utf-8")).strip()
+    draft2 = (strip_paddlex_img_tags(strip_grounding(job.draft2_text.read_text(encoding="utf-8"))).strip()
               if job.draft2_text is not None and job.draft2_text.is_file() else None)
     adjudications: list[dict[str, Any]] = []
     disagreements: list[dict[str, Any]] = []
@@ -15882,7 +15965,11 @@ def _proofread_page_inner(
                 some = [(index, tile_number, crop, lo, hi, tiled, reach)
                         for index, (tiled, parts, reach) in zip(indices, cuts)
                         for tile_number, (crop, lo, hi) in enumerate(parts)]
-                return some, in_context(pool, punctuate, some)
+                del cuts
+                answers_out = in_context(pool, punctuate, some)
+                some = [(index, tile_number, None, lo, hi, tiled, reach)
+                        for index, tile_number, _, lo, hi, tiled, reach in some]
+                return some, answers_out
 
             with cf.ThreadPoolExecutor(page_concurrency) as pool:
                 passes, answers = asked([index for index in to_punctuate if index not in waiting])
@@ -16875,6 +16962,9 @@ def _proofread_page_inner(
                 if unkept else "") if part)
             + " - check the numbers against the image")})
 
+    # Strip any PaddleX synthetic img_in_* tags before coverage review and sealing.
+    writer_text = strip_paddlex_img_tags(writer_text)
+
     # Switch --content-fidelity: final full-image coverage is after table
     # enforcement and every mechanical rewrite.  A rejected formatter fallback
     # is still a candidate, never evidence of full-page coverage.  What it
@@ -17612,6 +17702,35 @@ def missing_engine_doubt(job: PageJob) -> dict[str, str]:
     return {"kind": MISSING_ENGINE_DOUBT, "detail": detail}
 
 
+def _run_windowed(
+    pool: cf.ThreadPoolExecutor,
+    fn: Callable[[Any], Any],
+    jobs: Sequence[Any],
+    window: int,
+) -> Iterator[tuple[Any, cf.Future[Any]]]:
+    """Yield (job, completed_future) while keeping at most WINDOW futures
+    submitted or uncollected in memory at once."""
+    job_iter = iter(jobs)
+    pending: dict[cf.Future[Any], Any] = {}
+    cap = max(1, window)
+
+    def fill() -> None:
+        while len(pending) < cap:
+            try:
+                nxt = next(job_iter)
+            except StopIteration:
+                return
+            pending[pool.submit(fn, nxt)] = nxt
+
+    fill()
+    while pending:
+        done, _ = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
+        for future in done:
+            job = pending.pop(future)
+            fill()
+            yield job, future
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     started_at = utc_now()
@@ -18012,9 +18131,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"{len(learned.get('regions') or [])} region(s); a band on "
                   f"{learned.get('pagesWithBand', 0)} of {learned.get('pagesExamined', 0)} pages", flush=True)
         with cf.ThreadPoolExecutor(arguments.workers) as pool:
-            futures = {pool.submit(proofread_page, j, client, arguments): j for j in jobs}
-            for future in cf.as_completed(futures):
-                job = futures[future]
+            window = max(arguments.workers * 2, 16)
+            for job, future in _run_windowed(
+                pool, lambda j: proofread_page(j, client, arguments), jobs, window
+            ):
                 try:
                     record = future.result()
                 except PacketPending:
@@ -18130,6 +18250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                       f"adjudicated={len(record['adjudications'])}  "
                       f"calls={results[-1]['calls']}  "
                       f"reasoning={record['usage']['reasoning_tokens'] if record['usage']['reasoning_tokens'] is not None else 'unknown'}", flush=True)
+                del record, future
 
     # A table printed across pages: the pages above are sealed one by one, and
     # nothing that sees one page can join a table the page break cut.  The

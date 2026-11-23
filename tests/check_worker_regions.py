@@ -86,8 +86,35 @@ def check_record_contract() -> None:
     print("runner: regions validated when present, optional in older records")
 
 
+def check_paddlex_img_tags_stripped() -> None:
+    sample = {
+        "width": 1000,
+        "height": 2000,
+        "layout_det_res": {"boxes": [{"order": 1, "score": 0.9}, {"order": 2, "score": 0.8}]},
+        "parsing_res_list": [
+            {
+                "block_label": "seal",
+                "block_content": '<img src="imgs/img_in_seal_box_10_20_30_40.jpg" alt="Image" />',
+                "block_bbox": [100, 100, 300, 300],
+                "block_order": None,
+            },
+            {
+                "block_label": "table",
+                "block_content": '<table><tr><td><img src="imgs/img_in_seal_box_475_2209_885_2616.jpg" alt="Image"" /></td><td>正文</td></tr></table>',
+                "block_bbox": [350, 100, 800, 900],
+                "block_order": 1,
+            },
+        ],
+    }
+    lines, regions, _, _ = worker.normalise_page(sample)
+    assert len(lines) == 1 and lines[0]["text"] == "<table><tr><td></td><td>正文</td></tr></table>", lines
+    assert len(regions) == 1 and regions[0]["blockLabel"] == "seal", regions
+    print("normalise_page: strips PaddleX <img src=\"imgs/img_in_...\"> tags cleanly")
+
+
 if __name__ == "__main__":
     check_regions_kept()
     check_lines_unchanged()
     check_record_contract()
+    check_paddlex_img_tags_stripped()
     print("all worker-region checks passed")
