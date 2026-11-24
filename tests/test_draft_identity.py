@@ -212,10 +212,12 @@ class RecordedNotComparedTest(DraftIdentityTestBase):
         scripts = self.base / 'scripts'
         scripts.mkdir()
         for name in ('jyut_ocr/__init__.py', 'jyut_ocr/paths.py', 'jyut_ocr/core/__init__.py',
-                     'jyut_ocr/core/common.py', '_ocr_runner_common.py', 'run_hunyuanocr.py',
+                     'jyut_ocr/core/common.py', 'jyut_ocr/ocr/__init__.py',
+                     'jyut_ocr/ocr/runner_common.py', 'run_hunyuanocr.py',
                      'run_hunyuanocr_second_look.py', 'run_paddleocr_vl.py', 'paddleocr_vl_worker.py',
-                     '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py',
-                     '_mlx_vlm_server.py', '_paddle_pool.py'):
+                     'jyut_ocr/ocr/hunyuan_shared.py', 'jyut_ocr/ocr/gpu_queue.py',
+                     'jyut_ocr/ocr/phase_budget.py', 'jyut_ocr/ocr/engines.py',
+                     'jyut_ocr/ocr/mlx_vlm_server.py', 'jyut_ocr/ocr/paddle_pool.py'):
             dst = scripts / name
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(SCRIPTS / name, dst)
@@ -230,8 +232,10 @@ class RecordedNotComparedTest(DraftIdentityTestBase):
         before = self.snapshot()
         old_tool = json.loads((self.ocr_b / 'page-0001.json').read_text())['provenance']['toolSha256']
         for name in ('run_hunyuanocr.py', 'run_hunyuanocr_second_look.py', 'run_paddleocr_vl.py',
-                     'paddleocr_vl_worker.py', '_hunyuan_shared.py', '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py',
-                     '_mlx_vlm_server.py', '_paddle_pool.py'):
+                     'paddleocr_vl_worker.py', 'jyut_ocr/ocr/hunyuan_shared.py',
+                     'jyut_ocr/ocr/gpu_queue.py', 'jyut_ocr/ocr/phase_budget.py',
+                     'jyut_ocr/ocr/engines.py', 'jyut_ocr/ocr/mlx_vlm_server.py',
+                     'jyut_ocr/ocr/paddle_pool.py'):
             with (scripts / name).open('a') as handle:
                 handle.write('\n# an edit that changes these bytes\n')
         for name, run in (('paddle', self.run_paddle), ('hunyuan', self.run_hunyuan),

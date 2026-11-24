@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _setup_ocr as setup
+from jyut_ocr.ocr import setup_ocr as setup
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -432,9 +432,13 @@ class SetupTest(unittest.TestCase):
         """A copy of the skill's files with env.sh and a ready setup state; the
         Python, runtime and model checks are faked (no subprocess, no model)."""
         repo = self.base / "skill"
-        for name in ("requirements.txt", "runtime/ocr-lock.json", "runtime/mlx-requirements.txt", "scripts/_setup_ocr.py",
-                     "scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py",
-                     "scripts/_gpu_queue.py", "scripts/_phase_budget.py"):
+        for name in ("requirements.txt", "runtime/ocr-lock.json", "runtime/mlx-requirements.txt",
+                     "scripts/jyut_ocr/__init__.py", "scripts/jyut_ocr/paths.py",
+                     "scripts/jyut_ocr/core/__init__.py", "scripts/jyut_ocr/core/common.py",
+                     "scripts/jyut_ocr/ocr/__init__.py",
+                     "scripts/jyut_ocr/ocr/setup_ocr.py", "scripts/run_hunyuanocr.py",
+                     "scripts/jyut_ocr/ocr/hunyuan_shared.py", "scripts/jyut_ocr/ocr/gpu_queue.py",
+                     "scripts/jyut_ocr/ocr/phase_budget.py"):
             (repo / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, repo / name)
         options = replace(self.options, repo_root=repo)
@@ -480,8 +484,9 @@ class SetupTest(unittest.TestCase):
         self.assertIn("scripts/run_hunyuanocr.py", identity["recorded"]["tools"])
         self.assertEqual(identity["recorded"]["python"]["version_info"], [3, 12, 1])
         self.assertEqual(identity["python"], "3.12")
-        for name in ("scripts/_setup_ocr.py", "scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py",
-                     "scripts/_gpu_queue.py", "scripts/_phase_budget.py"):
+        for name in ("scripts/jyut_ocr/ocr/setup_ocr.py", "scripts/run_hunyuanocr.py",
+                     "scripts/jyut_ocr/ocr/hunyuan_shared.py", "scripts/jyut_ocr/ocr/gpu_queue.py",
+                     "scripts/jyut_ocr/ocr/phase_budget.py"):
             with (options.repo_root / name).open("a") as stream:
                 stream.write("\n# a fix that changes these bytes\n")
         self.assertEqual(self.inspect(options)["status"], "ready")

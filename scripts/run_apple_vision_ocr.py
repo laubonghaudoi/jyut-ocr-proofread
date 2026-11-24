@@ -34,7 +34,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from jyut_ocr.core import common as _common  # noqa: E402
 from jyut_ocr.core.common import sha256_bytes, sha256_file  # noqa: E402
-from _ocr_runner_common import (  # noqa: E402
+from jyut_ocr.ocr.runner_common import (  # noqa: E402
     PAGE_TOKEN,
     ConfigurationError,
     PageInput,
@@ -45,9 +45,9 @@ from _ocr_runner_common import (  # noqa: E402
     render_path,
     text_from_lines,
 )
-from _phase_budget import Budget, EXIT_INCOMPLETE, record_child
-from _mlx_vlm_server import SupervisedProcess
-from _vision_layout import adapt_observations
+from jyut_ocr.ocr.phase_budget import Budget, EXIT_INCOMPLETE, record_child
+from jyut_ocr.ocr.mlx_vlm_server import SupervisedProcess
+from jyut_ocr.ocr.vision_layout import adapt_observations
 from jyut_ocr.core.draft_contract import layout_problem
 
 _STOP = threading.Event()
@@ -120,11 +120,9 @@ def build_tool_identity(swift_file: Path) -> ToolIdentity:
     combined.update(runner_bytes)
     combined.update(b"\0apple_vision_ocr.swift\0")
     combined.update(swift_bytes)
-    for helper in ("_vision_layout.py", "_mlx_vlm_server.py"):
-        combined.update(b"\0" + helper.encode() + b"\0")
-        combined.update(Path(__file__).with_name(helper).read_bytes())
-    combined.update(b"\0_draft_contract.py\0")
-    combined.update((Path(__file__).resolve().parent / "jyut_ocr" / "core" / "draft_contract.py").read_bytes())
+    for rel in ("jyut_ocr/ocr/vision_layout.py", "jyut_ocr/ocr/mlx_vlm_server.py", "jyut_ocr/core/draft_contract.py"):
+        combined.update(b"\0" + Path(rel).name.encode() + b"\0")
+        combined.update((Path(__file__).resolve().parent / rel).read_bytes())
     return ToolIdentity(
         runner_file=runner_file,
         swift_file=swift_file,
@@ -968,7 +966,7 @@ def _main(
 
 
 def main(argv: Sequence[str] | None = None, **kwargs: Any) -> int:
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host()
     except ValueError as exc:

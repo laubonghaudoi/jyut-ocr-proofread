@@ -325,7 +325,7 @@ class OcrPhaseEndToEndTests(HandoverBase):
         """_setup_ocr.run_smokes with the local model holding the GPU: both
         engines' setup tests, as prepare_smoke builds them, in one hand-over
         (the queue guard lets the runners in only inside the window)."""
-        import _setup_ocr as setup
+        from jyut_ocr.ocr import setup_ocr as setup
         self.book_with_the_model_as_tenant(pages=1)
         options = setup.SetupOptions(SCRIPTS.parent, self.base / 'config', self.base / 'data')
         fingerprint = 'e' * 64
@@ -694,7 +694,7 @@ class ModelProbeTests(unittest.TestCase):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         import threading
         import run_ocr_phase as phase
-        import _tenant_clients as clients
+        from jyut_ocr.ocr import tenant_clients as clients
 
         class Answer(BaseHTTPRequestHandler):
             protocol_version = 'HTTP/1.0'

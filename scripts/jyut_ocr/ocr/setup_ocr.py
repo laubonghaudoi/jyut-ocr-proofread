@@ -36,7 +36,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2])
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from jyut_ocr.core.common import sha256_file  # noqa: E402
@@ -546,7 +546,7 @@ def platform_name() -> str:
     system = platform.system()
     if system not in {"Linux", "Darwin"}:
         raise SetupError("Supported hosts are Linux, macOS and Windows WSL2. Run this installer inside WSL2 on Windows.")
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host(system, machine_name(system))
     except ValueError as exc:
@@ -661,7 +661,7 @@ def requested_value(requested: str | None, saved: str | None, choices: Sequence[
 
 
 def engine_request(requested: str | None, existing: Mapping[str, str]) -> str:
-    from _ocr_engines import DEFAULT_ROUTE, ROUTE_GUIDANCE, ROUTES
+    from jyut_ocr.ocr.engines import DEFAULT_ROUTE, ROUTE_GUIDANCE, ROUTES
     value = requested if requested not in (None, "default") else existing.get("JYUT_OCR_ENGINE")
     if value is None:
         if existing.get("JYUT_OCR_ENGINES"):
@@ -712,7 +712,7 @@ def choose_paddle_backend(request: str, device: str, lock: Mapping[str, Any], *,
 
 def choose_engines(request: str, *, system: str, machine: str) -> tuple[tuple[str, ...], list[str]]:
     """Resolve the public route without downloading or changing configuration."""
-    from _ocr_engines import route_engines
+    from jyut_ocr.ocr.engines import route_engines
     try:
         engines = route_engines(request, system=system, machine=machine)
     except ValueError as exc:
@@ -1920,17 +1920,21 @@ def tool_hashes(root: Path, engine: str | Iterable[str]) -> dict[str, str]:
     """The skill's own files used by setup and the smoke; recorded, not part of
     the fingerprint (see environment_identity)."""
     engines = engine_set(engine)
-    names = ["scripts/_setup_ocr.py", "scripts/run_ocr_phase.py", "scripts/_ocr_engines.py", *ENVIRONMENT_FILES]
+    names = ["scripts/jyut_ocr/ocr/setup_ocr.py", "scripts/run_ocr_phase.py", "scripts/jyut_ocr/ocr/engines.py",
+             *ENVIRONMENT_FILES]
     if "vision" in engines:
         names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift",
                   "scripts/jyut_ocr/core/draft_contract.py",
-                  "scripts/_vision_layout.py", "scripts/_mlx_vlm_server.py", "scripts/_phase_budget.py"]
+                  "scripts/jyut_ocr/ocr/vision_layout.py", "scripts/jyut_ocr/ocr/mlx_vlm_server.py",
+                  "scripts/jyut_ocr/ocr/phase_budget.py"]
     if "hunyuan" in engines:
-        names += ["scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]
+        names += ["scripts/run_hunyuanocr.py", "scripts/jyut_ocr/ocr/hunyuan_shared.py",
+                  "scripts/jyut_ocr/ocr/gpu_queue.py", "scripts/jyut_ocr/ocr/phase_budget.py"]
     if "paddle" in engines:
-        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/_paddle_pool.py",
-                  "scripts/_mlx_vlm_server.py",
-                  "runtime/mlx-requirements.txt", "scripts/_gpu_queue.py", "scripts/_phase_budget.py",
+        names += ["scripts/run_paddleocr_vl.py", "scripts/paddleocr_vl_worker.py", "scripts/jyut_ocr/ocr/paddle_pool.py",
+                  "scripts/jyut_ocr/ocr/mlx_vlm_server.py",
+                  "runtime/mlx-requirements.txt", "scripts/jyut_ocr/ocr/gpu_queue.py",
+                  "scripts/jyut_ocr/ocr/phase_budget.py",
                   PADDLE_CONSTRAINTS, *sorted(path.relative_to(root).as_posix()
                                               for path in root.glob(PADDLE_BUILD_CONSTRAINTS.format(index="*", machine="*")))]
     return {name: sha256_file(root / name) for name in dict.fromkeys(names) if (root / name).is_file()}
@@ -2264,7 +2268,7 @@ def handover_smokes(options: SetupOptions, config: dict[str, str], engines: Sequ
     atomic_json(plan, {"commands": [[str(item) for item in command] for _, command in commands.values()]})
     python = config["JYUT_OCR_PYTHON"]
     wrapper = [python, options.repo_root / "scripts/run_ocr_phase.py", "--",
-               python, options.repo_root / "scripts/_setup_ocr.py", "--run-smoke-plan", plan]
+               python, options.repo_root / "scripts/jyut_ocr/ocr/setup_ocr.py", "--run-smoke-plan", plan]
     environment = dict(os.environ)
     environment.update(config)
     environment.pop("HUNYUAN_ENDPOINT", None)
@@ -2809,5 +2813,5 @@ if __name__ == "__main__":
     # The hand-over's runner for the setup tests (handover_smokes).
     if len(sys.argv) == 3 and sys.argv[1] == "--run-smoke-plan":
         raise SystemExit(run_smoke_plan(Path(sys.argv[2])))
-    print("usage: _setup_ocr.py --run-smoke-plan PLAN.json (internal; run ./install.sh)", file=sys.stderr)
+    print("usage: setup_ocr.py --run-smoke-plan PLAN.json (internal; run ./install.sh)", file=sys.stderr)
     raise SystemExit(2)

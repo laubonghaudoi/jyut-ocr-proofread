@@ -18,7 +18,7 @@ from typing import Sequence
 # the GPU hand-over smoke gets only what is left of OCR_PHASE_MAX_SECONDS.
 STARTED = time.time()
 
-from _setup_ocr import (LocalModel, SetupError, SetupOptions, default_directories, inspect_setup,
+from jyut_ocr.ocr.setup_ocr import (LocalModel, SetupError, SetupOptions, default_directories, inspect_setup,
                         setup)
 from install_local_adapters import (PORTABLE_AGENTS, InstallError, build_portable_specs, perform_check,
                                     perform_install)
@@ -111,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                            interactive=sys.stdin.isatty(), local_model=local, prepare_only=args.prepare_only,
                            started_at=STARTED, paddle_vl_backend=args.paddle_vl_backend or "default")
     try:
-        from _setup_ocr import platform_name, machine_name, choose_engines, engine_request, read_environment
+        from jyut_ocr.ocr.setup_ocr import platform_name, machine_name, choose_engines, engine_request, read_environment
         system = platform_name()
         existing = read_environment(options.config_dir / "env.sh")
         if args.engine or existing.get("JYUT_OCR_ENGINE") or existing.get("JYUT_OCR_ENGINES"):

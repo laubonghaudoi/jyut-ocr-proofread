@@ -16,9 +16,12 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any
-import urllib.error
 import urllib.request
+from typing import Any
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2])
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 VERSION = "0.8.0"
 BACKEND = "mlx-vlm-server"
@@ -81,7 +84,7 @@ class SupervisedProcess:
             raise
         finally:
             os.close(read_fd)
-        from _phase_budget import record_child
+        from jyut_ocr.ocr.phase_budget import record_child
         record_child("mlx-owned", self.process.pid)
 
     def close(self) -> None:

@@ -15,7 +15,7 @@ from unittest import mock
 from test_local_ocr_runners import FAKE_PADDLE, LocalOCRTestBase, SCRIPTS
 
 sys.path.insert(0, str(SCRIPTS))
-from _mlx_vlm_server import MLXError, MLXServer
+from jyut_ocr.ocr.mlx_vlm_server import MLXError, MLXServer
 
 
 SERVER = r'''
@@ -177,7 +177,7 @@ class MLXRunnerTest(LocalOCRTestBase):
                 occupied.bind(('127.0.0.1', 0))
                 occupied.listen()
                 port = occupied.getsockname()[1]
-                with mock.patch('_mlx_vlm_server.free_port', return_value=port):
+                with mock.patch('jyut_ocr.ocr.mlx_vlm_server.free_port', return_value=port):
                     with self.assertRaises(MLXError):
                         MLXServer(sys.executable, self.vl_dir, self.base / 'collision.log', ready_timeout=2)
                 self.assertFalse(self.mlx_pid.exists())

@@ -14,8 +14,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
-import _ocr_engines as engines
-import _setup_ocr as setup
+from jyut_ocr.ocr import engines as engines
+from jyut_ocr.ocr import setup_ocr as setup
 import install
 import ocr_book
 import run_ocr_phase as phase
@@ -229,7 +229,7 @@ class OcrBookMissingEngineBTests(unittest.TestCase):
 
                 argv = [str(book), '--engine', 'hunyuan-paddle', '--max-missing-engine-b', str(max_missing)]
                 with mock.patch.object(ocr_book, 'resolve_engines', return_value=('hunyuan', 'paddle')), \
-                        mock.patch('_ocr_engines.require_supported_host', return_value=None), \
+                        mock.patch('jyut_ocr.ocr.engines.require_supported_host', return_value=None), \
                         mock.patch.object(ocr_book, 'run_step', side_effect=fake_run_step), \
                         mock.patch('subprocess.run', return_value=mock.Mock(returncode=0, stdout='')), \
                         contextlib.redirect_stdout(io.StringIO()), \

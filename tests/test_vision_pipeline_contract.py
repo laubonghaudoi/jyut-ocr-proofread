@@ -16,8 +16,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from jyut_ocr.core import draft_contract as contract
-from _ocr_engines import resolve_engines, recorded_draft_directory, draft_a_directory
-from _vision_layout import adapt_observations
+from jyut_ocr.ocr.engines import resolve_engines, recorded_draft_directory, draft_a_directory
+from jyut_ocr.ocr.vision_layout import adapt_observations
 import ocr_book
 import proofread_pages as pp
 import run_apple_vision_ocr as vision
@@ -181,7 +181,7 @@ class VisionPhaseTests(unittest.TestCase):
     @mock.patch("platform.system", return_value="Darwin")
     @mock.patch("platform.machine", return_value="arm64")
     def test_vision_runs_with_a_local_model_without_acquiring_the_gpu_queue(self, *_):
-        import _setup_ocr as setup
+        from jyut_ocr.ocr import setup_ocr as setup
         with tempfile.TemporaryDirectory() as temporary:
             book = Path(temporary)
             (book / "renders").mkdir()
@@ -190,7 +190,7 @@ class VisionPhaseTests(unittest.TestCase):
             env = {"OCR_PHASE_RELEASE_CMD": "must-not-run", "OCR_PHASE_RESTORE_CMD": "must-not-run",
                    "OCR_PHASE_SWAP": "always", "OCR_GPU_QUEUE_DIR": str(book / "queue")}
             with mock.patch.dict(os.environ, env, clear=True), \
-                    mock.patch("_gpu_queue.GPUQueue.acquire", side_effect=AssertionError("Vision requested GPU lease")) as lease:
+                    mock.patch("jyut_ocr.ocr.gpu_queue.GPUQueue.acquire", side_effect=AssertionError("Vision requested GPU lease")) as lease:
                 self.assertEqual(vision.main([str(book / "renders"), str(book / "ocr-vision"), "--pages", "1"],
                                              compiler=harness.compiler, worker_factory=harness.factory), 0)
                 options = setup.SetupOptions(Path(vision.__file__).resolve().parents[1], book / "config", book / "data")

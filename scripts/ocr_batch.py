@@ -192,9 +192,9 @@ from typing import Any, Iterator
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
-import _ocr_engines  # noqa: E402
+from jyut_ocr.ocr import engines as _ocr_engines  # noqa: E402
 import packet_dispatch  # noqa: E402
-from _phase_budget import DEADLINE_ENV, EXIT_INCOMPLETE  # noqa: E402
+from jyut_ocr.ocr.phase_budget import DEADLINE_ENV, EXIT_INCOMPLETE  # noqa: E402
 
 PY = sys.executable
 SCHEMA = 1

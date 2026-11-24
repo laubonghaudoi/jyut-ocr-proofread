@@ -357,7 +357,7 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
     assert book is not None
     if not book.is_dir():
         raise FinishError(EXIT_USAGE, f"{book} is not a folder")
-    from _ocr_engines import read_book_engine_record
+    from jyut_ocr.ocr.engines import read_book_engine_record
     try:
         read_book_engine_record(book)
     except ValueError as exc:
@@ -410,7 +410,7 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
         if given is not None:
             return given
         source = named(key)
-        from _ocr_engines import recorded_draft_directory
+        from jyut_ocr.ocr.engines import recorded_draft_directory
         recorded = recorded_draft_directory(book, key[-1])
         if recorded is not None:
             if not _page_numbers(recorded, "txt"):

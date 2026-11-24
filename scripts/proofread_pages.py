@@ -706,7 +706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     started = time.monotonic()
     try:
         renders = arguments.render_directory.expanduser().resolve()
-        from _ocr_engines import read_book_engine_record
+        from jyut_ocr.ocr.engines import read_book_engine_record
         try:
             read_book_engine_record(renders.parent)
         except ValueError as exc:

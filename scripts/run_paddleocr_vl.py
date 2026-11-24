@@ -52,7 +52,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from jyut_ocr.core import common as _common  # noqa: E402
 from jyut_ocr.core.common import sha256_bytes, sha256_file, utc_now  # noqa: E402
-from _ocr_runner_common import (  # noqa: E402
+from jyut_ocr.ocr.runner_common import (  # noqa: E402
     PAGE_TOKEN,
     ConfigurationError,
     PageInput,
@@ -67,8 +67,8 @@ from _ocr_runner_common import (  # noqa: E402
     text_from_lines,
 )
 
-import _paddle_pool
-from _paddle_pool import (CARD_RESERVE_MIB, MAX_AUTO_WORKERS, MIN_PAGES_A_WORKER, WORKERS_ENV,
+from jyut_ocr.ocr import paddle_pool as _paddle_pool
+from jyut_ocr.ocr.paddle_pool import (CARD_RESERVE_MIB, MAX_AUTO_WORKERS, MIN_PAGES_A_WORKER, WORKERS_ENV,
                           WORKER_SHARE_MIB)
 # An OpenAI-compatible server someone else runs (SGLang or vLLM, as PaddleX names them), serving the
 # pinned PaddleOCR-VL weights: Paddle keeps the layout detector on --device and sends each block's
@@ -79,7 +79,7 @@ SERVER_URL_ENV, SERVER_MODEL_ENV = "OCR_PADDLE_VL_SERVER_URL", "OCR_PADDLE_VL_SE
 SERVER_REVISION_ENV, SERVER_CONCURRENCY_ENV = "OCR_PADDLE_VL_SERVER_REVISION", "OCR_PADDLE_VL_CONCURRENCY"
 DEFAULT_SERVER_CONCURRENCY = 16
 
-from _mlx_vlm_server import (BACKEND as MLX_BACKEND, MLXDeadline, MLXError, MLXServer,
+from jyut_ocr.ocr.mlx_vlm_server import (BACKEND as MLX_BACKEND, MLXDeadline, MLXError, MLXServer,
                              SupervisedProcess, probe as probe_mlx)
 
 
@@ -197,9 +197,10 @@ def build_tool_identity(worker_file: Path, interpreter: str) -> ToolIdentity:
     # The interpreter selects the PaddleOCR build, so it is part of tool identity.
     combined.update(b"\0interpreter\0")
     combined.update(interpreter.encode("utf-8"))
-    combined.update(Path(__file__).with_name("_phase_budget.py").read_bytes())
-    combined.update(Path(__file__).with_name("_gpu_queue.py").read_bytes())
-    combined.update(Path(__file__).with_name("_mlx_vlm_server.py").read_bytes())
+    here = Path(__file__).resolve().parent
+    combined.update((here / "jyut_ocr/ocr/phase_budget.py").read_bytes())
+    combined.update((here / "jyut_ocr/ocr/gpu_queue.py").read_bytes())
+    combined.update((here / "jyut_ocr/ocr/mlx_vlm_server.py").read_bytes())
     return ToolIdentity(
         runner_file=runner_file,
         worker_file=worker_file,
@@ -1053,15 +1054,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-from _gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
+from jyut_ocr.ocr.gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
                         _resource_name, add_queue_arguments)
 
-from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
+from jyut_ocr.ocr.phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
     EXIT_INCOMPLETE, Budget, die_with_parent, exit_on_sigterm)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host()
     except ValueError as exc:

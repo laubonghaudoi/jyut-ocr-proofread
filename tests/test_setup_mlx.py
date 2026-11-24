@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _setup_ocr as setup
+from jyut_ocr.ocr import setup_ocr as setup
 import install
 import run_ocr_phase as phase
 

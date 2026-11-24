@@ -78,10 +78,10 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _phase_budget import (  # noqa: E402
+from jyut_ocr.ocr.phase_budget import (  # noqa: E402
     DEADLINE_ENV, EXIT_INCOMPLETE, PROGRESS_ENV, STARTUP_ENV)
-from _ocr_engines import resolve_engines, engine_a, BOOK_ENGINE_RECORD
-from _gpu_queue import LOCAL_MODEL_MESSAGE, TENANT_ENV, WINDOW_ENV  # noqa: E402
+from jyut_ocr.ocr.engines import resolve_engines, engine_a, BOOK_ENGINE_RECORD
+from jyut_ocr.ocr.gpu_queue import LOCAL_MODEL_MESSAGE, TENANT_ENV, WINDOW_ENV  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent
 TIMES_NAME = "ocr-times.json"

@@ -980,7 +980,7 @@ class PaddleWorkersTest(LocalOCRTestBase):
                 count(bad, gpu=True, pages=many, free_mib=None)
 
     def test_what_the_hand_over_needs_free_before_the_workers_start(self):
-        import _paddle_pool as pool
+        from jyut_ocr.ocr import paddle_pool as pool
         import run_ocr_phase as phase
         one = phase.PADDLE_MIB
         self.assertEqual(pool.need_mib('1', one), one)

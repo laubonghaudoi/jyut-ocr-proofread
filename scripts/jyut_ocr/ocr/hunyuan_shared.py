@@ -33,8 +33,15 @@ import time
 import uuid
 from typing import Any
 
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, check_local_model
-from _phase_budget import StartupExpired, record_child
+_SCRIPTS_DIR = str(Path(__file__).resolve().parents[2])
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from jyut_ocr.ocr import gpu_queue as _gpu_queue  # noqa: E402
+from jyut_ocr.ocr import phase_budget as _phase_budget  # noqa: E402
+from jyut_ocr.ocr.gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout, check_local_model  # noqa: E402
+from jyut_ocr.ocr.phase_budget import StartupExpired, record_child  # noqa: E402
+from jyut_ocr.paths import script_path  # noqa: E402
 
 # 2: the broker tells its members "starting" once it holds the GPU and loads
 # the server, so a deadline reached then is a load too long for the budget
@@ -141,8 +148,9 @@ def _identity(config: dict, root: Path, resource: str) -> dict:
                ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
                 "GGML_METAL_DEVICES", "LLAMA_ARG_DEVICE", "MTMD_BACKEND_DEVICE")}
     code = hashlib.sha256()
-    for filename in ("_hunyuan_shared.py", "_gpu_queue.py", "_phase_budget.py", "run_hunyuanocr.py"):
-        code.update(Path(__file__).with_name(filename).read_bytes())
+    for path in (Path(__file__), Path(_gpu_queue.__file__), Path(_phase_budget.__file__),
+                 script_path("run_hunyuanocr.py")):
+        code.update(path.read_bytes())
     body = {"protocol": PROTOCOL, "config": config, "queue_root": str(root),
             "resource": resource, "runtime": runtime, "code": code.hexdigest()}
     body["digest"] = hashlib.sha256(_json(body)).hexdigest()
@@ -813,7 +821,7 @@ class _Broker:
 
     def run(self) -> None:
         from run_hunyuanocr import HunyuanServer
-        from _phase_budget import exit_on_sigterm
+        from jyut_ocr.ocr.phase_budget import exit_on_sigterm
         exit_on_sigterm()
         workers = []
         try:

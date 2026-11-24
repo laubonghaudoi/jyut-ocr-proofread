@@ -32,9 +32,9 @@ from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_hunyuanocr as hy  # noqa: E402
-from _gpu_queue import (  # noqa: E402
+from jyut_ocr.ocr.gpu_queue import (  # noqa: E402
     GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU, add_queue_arguments)
-from _phase_budget import EXIT_INCOMPLETE, Budget, StartupExpired, exit_on_sigterm  # noqa: E402
+from jyut_ocr.ocr.phase_budget import EXIT_INCOMPLETE, Budget, StartupExpired, exit_on_sigterm  # noqa: E402
 
 SCHEMA_VERSION = 2
 SECOND_LOOK_LABEL = "second-look"
@@ -262,8 +262,12 @@ def tool_sha256(model: Path | None, mmproj: Path | None, binary: Path | None = N
     combined.update(
         b"run_hunyuanocr_second_look.py\0" + Path(__file__).resolve().read_bytes()
     )
-    for filename in ("run_hunyuanocr.py", "_hunyuan_shared.py", "_gpu_queue.py", "_phase_budget.py"):
-        combined.update(filename.encode() + b"\0" + Path(__file__).with_name(filename).read_bytes())
+    here = Path(__file__).resolve().parent
+    for filename, rel in (("run_hunyuanocr.py", "run_hunyuanocr.py"),
+                          ("_hunyuan_shared.py", "jyut_ocr/ocr/hunyuan_shared.py"),
+                          ("_gpu_queue.py", "jyut_ocr/ocr/gpu_queue.py"),
+                          ("_phase_budget.py", "jyut_ocr/ocr/phase_budget.py")):
+        combined.update(filename.encode() + b"\0" + (here / rel).read_bytes())
     for label in ("model", "mmproj", "binary"):
         if hashes.get(label) is not None:
             combined.update(f"\0{label}\0".encode() + str(hashes[label]).encode())
@@ -426,7 +430,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
     """SERVER, for offline tests: an object with ocr(path, max_tokens, timeout)
     and close(), used instead of starting llama-server or SharedHunyuanClient."""
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host()
     except ValueError as exc:
@@ -580,7 +584,7 @@ def main(argv: Sequence[str] | None = None, server: Any | None = None) -> int:
                 if not budget.allows_next_page():
                     raise GPUQueueTimeout("phase deadline reached before model loading")
                 if not arguments.endpoint and arguments.server_mode == "shared":
-                    from _hunyuan_shared import SharedHunyuanClient
+                    from jyut_ocr.ocr.hunyuan_shared import SharedHunyuanClient
 
                     hy_tool = hy.build_tool_identity(
                         arguments.model, arguments.mmproj, arguments.llama_server

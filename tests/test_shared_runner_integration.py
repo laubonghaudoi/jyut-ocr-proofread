@@ -22,8 +22,10 @@ class SharedRunnerIntegrationTest(LocalOCRTestBase):
         self.scripts = self.base / 'scripts'
         self.scripts.mkdir()
         for name in ('jyut_ocr/__init__.py', 'jyut_ocr/paths.py', 'jyut_ocr/core/__init__.py',
-                     'jyut_ocr/core/common.py', '_ocr_runner_common.py', 'run_hunyuanocr.py', '_hunyuan_shared.py',
-                     '_gpu_queue.py', '_phase_budget.py', '_ocr_engines.py'):
+                     'jyut_ocr/core/common.py', 'jyut_ocr/ocr/__init__.py',
+                     'jyut_ocr/ocr/runner_common.py', 'run_hunyuanocr.py',
+                     'jyut_ocr/ocr/hunyuan_shared.py', 'jyut_ocr/ocr/gpu_queue.py',
+                     'jyut_ocr/ocr/phase_budget.py', 'jyut_ocr/ocr/engines.py'):
             dst = self.scripts / name
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(SCRIPTS / name, dst)
@@ -147,7 +149,7 @@ class SharedRunnerIntegrationTest(LocalOCRTestBase):
 import sys,time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from _gpu_queue import GPUQueue
+from jyut_ocr.ocr.gpu_queue import GPUQueue
 q=GPUQueue(sys.argv[2], 'offline-test-gpu');q.acquire()
 Path(sys.argv[3]).touch()
 time.sleep(30)
@@ -198,7 +200,7 @@ time.sleep(30)
         helper = """
 import subprocess,sys,time
 sys.path.insert(0, sys.argv[1])
-from _phase_budget import parent_bound_command
+from jyut_ocr.ocr.phase_budget import parent_bound_command
 code = 'import os,time;from pathlib import Path;Path(' + repr(sys.argv[2]) + ').write_text(str(os.getpid()));time.sleep(30)'
 subprocess.Popen(parent_bound_command([sys.executable, '-c', code]))
 time.sleep(30)

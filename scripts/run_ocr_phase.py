@@ -170,10 +170,10 @@ import urllib.request
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _paddle_pool  # noqa: E402
-from _phase_budget import (  # noqa: E402
+from jyut_ocr.ocr import paddle_pool as _paddle_pool  # noqa: E402
+from jyut_ocr.ocr.phase_budget import (  # noqa: E402
     CHILDREN_ENV, DEADLINE_ENV, EXIT_INCOMPLETE, PROGRESS_ENV, process_start_time, read_children)
-from _gpu_queue import (  # noqa: E402
+from jyut_ocr.ocr.gpu_queue import (  # noqa: E402
     WINDOW_ENV, GPUQueue, GPUQueueError, GPUQueueTimeout, handover_directory, live_ticket_count)
 
 EXIT_GPU_BUSY = 76
@@ -676,7 +676,7 @@ def _paddle_need(options: argparse.Namespace) -> tuple[int, str]:
 def batch_engines(arguments: list[str]) -> tuple[str, ...]:
     """The engines of the batch that `ocr_batch.py --ocr BATCH` reads: its batch.json names the
     route every book of it was started with."""
-    from _ocr_engines import ROUTES
+    from jyut_ocr.ocr.engines import ROUTES
     folders = [item for item in arguments if not item.startswith("-")]
     if "--ocr" not in arguments or len(folders) != 1:
         raise PhaseError("Of ocr_batch.py only `--ocr BATCH` runs in a hand-over window: its other calls need no GPU")
@@ -695,7 +695,7 @@ def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
     for index, argument in enumerate(runner):
         name = os.path.basename(argument)
         options = _engine_options(runner[index + 1:])
-        if name == "_setup_ocr.py" and "--run-smoke-plan" in runner[index + 1:]:
+        if name in ("setup_ocr.py", "_setup_ocr.py") and "--run-smoke-plan" in runner[index + 1:]:
             if _plan_depth:
                 raise PhaseError("Nested setup smoke plans are not supported")
             try:
@@ -717,7 +717,7 @@ def engine_need(runner: list[str], *, _plan_depth: int = 0) -> tuple[int, str]:
             return 0, "Apple Vision (system-managed memory)"
         if name in BOOK_SCRIPTS or name in BATCH_SCRIPTS:
             import ocr_book
-            from _ocr_engines import resolve_engines
+            from jyut_ocr.ocr.engines import resolve_engines
             engine_options = argparse.Namespace(**dict(vars(options), device=None))
             try:
                 if name in BATCH_SCRIPTS:
@@ -1284,7 +1284,7 @@ def startup_need(runner: list[str]) -> tuple[float, str]:
             except SystemExit:
                 return 0.0, "no startup estimate"
             times = ocr_book.read_json(Path(options.book).expanduser() / options.reports / ocr_book.TIMES_NAME)
-            from _ocr_engines import resolve_engines
+            from jyut_ocr.ocr.engines import resolve_engines
             try:
                 names = list(resolve_engines(options.engine, single_engine=options.single_engine,
                                              book=Path(options.book).expanduser()))
@@ -1366,7 +1366,7 @@ def notify(command: str | None, message: str) -> None:
 def tenant_clients():
     """scripts/_tenant_clients.py, or None where it is not installed."""
     try:
-        import _tenant_clients  # noqa: PLC0415
+        from jyut_ocr.ocr import tenant_clients as _tenant_clients  # noqa: PLC0415
     except ImportError:
         return None
     return _tenant_clients
@@ -1425,7 +1425,7 @@ def wait_for_other_clients(arguments: argparse.Namespace, clock: Clock, reserve:
         return None
     module = tenant_clients()
     if module is None:
-        say("[ocr-phase] WARNING scripts/_tenant_clients.py is missing: the model's other "
+        say("[ocr-phase] WARNING scripts/jyut_ocr/ocr/tenant_clients.py is missing: the model's other "
             "clients are not looked for", error=True)
         return None
     exclude = ancestor_pids()
@@ -2052,7 +2052,7 @@ def next_round(argv: list[str], runner: list[str], current: int) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host()
     except ValueError as exc:

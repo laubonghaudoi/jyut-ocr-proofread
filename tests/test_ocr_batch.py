@@ -168,7 +168,10 @@ elif name == "clean_book.py":
 
 STEPS = ("survey_pdf.py", "ocr_book.py", "build_draft.py", "book_profile.py", "proofread_pages.py", "finish_book.py",
          "clean_book.py")
-REAL = ("ocr_batch.py", "_ocr_engines.py", "packet_dispatch.py", "_phase_budget.py")
+REAL = ("ocr_batch.py", "jyut_ocr/__init__.py", "jyut_ocr/paths.py",
+        "jyut_ocr/core/__init__.py", "jyut_ocr/core/common.py",
+        "jyut_ocr/ocr/__init__.py", "jyut_ocr/ocr/engines.py",
+        "packet_dispatch.py", "jyut_ocr/ocr/phase_budget.py")
 MODEL = "test-answerer-1"
 
 
@@ -182,7 +185,9 @@ class Batch:
         self.scripts = self.root / "skill" / "scripts"
         self.scripts.mkdir(parents=True)
         for name in REAL:
-            shutil.copy(SCRIPTS / name, self.scripts / name)
+            dst = self.scripts / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(SCRIPTS / name, dst)
         # An answerer's own file holds the instruction itself: the real page, as an install has it.
         (self.root / "skill" / "references").mkdir(parents=True, exist_ok=True)
         shutil.copy(SCRIPTS.parent / "references" / "packet-worker.md", self.root / "skill" / "references" / "packet-worker.md")

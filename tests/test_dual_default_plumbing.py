@@ -31,7 +31,7 @@ sys.path.insert(0, str(TESTS))
 sys.path.insert(0, str(TESTS.parent / "scripts"))
 import stand_in  # noqa: E402 - first: the closed endpoint
 from stand_in import CLOSED_ENDPOINT  # noqa: E402
-import _hunyuan_shared as hs  # noqa: E402
+from jyut_ocr.ocr import hunyuan_shared as hs  # noqa: E402
 import _packet_client as pc  # noqa: E402
 import apply_packet_answers as apply  # noqa: E402
 import finish_book  # noqa: E402

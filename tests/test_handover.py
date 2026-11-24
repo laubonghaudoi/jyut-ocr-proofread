@@ -23,8 +23,8 @@ from unittest import mock
 from test_local_ocr_runners import FAKE_PADDLE, FAKE_PADDLE_CORE, FAKE_SERVER, SCRIPTS
 
 sys.path.insert(0, str(SCRIPTS))
-import _gpu_queue  # noqa: E402
-import _phase_budget  # noqa: E402
+from jyut_ocr.ocr import gpu_queue as _gpu_queue  # noqa: E402
+from jyut_ocr.ocr import phase_budget as _phase_budget  # noqa: E402
 import run_ocr_phase as phase  # noqa: E402
 
 PY = sys.executable
@@ -80,7 +80,7 @@ LEASE_RUNNER = r'''
 import json, os, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from _gpu_queue import GPUQueue, GPUQueueTimeout, LocalModelOwnsGPU
+from jyut_ocr.ocr.gpu_queue import GPUQueue, GPUQueueTimeout, LocalModelOwnsGPU
 out, shared = Path(sys.argv[2]), sys.argv[3]
 resource = os.environ.get('OCR_GPU_RESOURCE', 'local-gpu')
 lease = GPUQueue(None, resource)
@@ -117,7 +117,7 @@ LEAK_RUNNER = r'''
 import os, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from _gpu_queue import GPUQueue
+from jyut_ocr.ocr.gpu_queue import GPUQueue
 gate, pidfile = sys.argv[2], sys.argv[3]
 lease = GPUQueue(None, os.environ.get('OCR_GPU_RESOURCE', 'local-gpu'))
 lease.acquire(timeout=5)
@@ -339,7 +339,7 @@ class NeedAndPolicyTests(unittest.TestCase):
     def test_setup_smoke_plan_uses_its_actual_engines(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {}, clear=True):
             plan = Path(directory) / 'plan.json'
-            command = ['python', '_setup_ocr.py', '--run-smoke-plan', str(plan)]
+            command = ['python', 'scripts/jyut_ocr/ocr/setup_ocr.py', '--run-smoke-plan', str(plan)]
             plan.write_text(json.dumps({'commands': [['python', 'run_apple_vision_ocr.py', 'R', 'O']]}))
             self.assertEqual(phase.engine_need(command)[0], 0)
             plan.write_text(json.dumps({'commands': [['run_paddleocr_vl.py', 'R', 'O'],
@@ -410,7 +410,7 @@ class OwnedProcessCleanupTests(unittest.TestCase):
             self.assertEqual(kill.call_args_list, [mock.call(102, sig), mock.call(104, sig)])
 
     def test_final_kill_removes_a_term_resistant_owned_child_and_its_lease(self):
-        from _mlx_vlm_server import SupervisedProcess
+        from jyut_ocr.ocr.mlx_vlm_server import SupervisedProcess
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             children, ready = root / 'children', root / 'child.pid'
@@ -693,7 +693,7 @@ class BusyTests(HandoverBase):
         self.assertIn('no page was sealed in the OCR window', wait.stdout, wait.stdout + wait.stderr)
         self.assertIn('the local model was stopped for it and is back up', wait.stdout)
         self.assertNotIn('nothing was stopped', wait.stdout)
-        import _setup_ocr
+        from jyut_ocr.ocr import setup_ocr as _setup_ocr
         message = str(_setup_ocr.handover_failure(76, {}))
         self.assertIn('GPU is busy', message)
         self.assertIn('says whether the local model was stopped', message)

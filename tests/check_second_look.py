@@ -127,8 +127,13 @@ def phase_order() -> None:
         root = Path(tmp)
         scripts = root / "scripts"
         scripts.mkdir()
-        for name in ("ocr_book.py", "_phase_budget.py", "_gpu_queue.py", "_ocr_engines.py"):
-            shutil.copy2(ROOT / "scripts" / name, scripts / name)
+        for name in ("ocr_book.py", "jyut_ocr/__init__.py", "jyut_ocr/paths.py",
+                     "jyut_ocr/core/__init__.py", "jyut_ocr/core/common.py",
+                     "jyut_ocr/ocr/__init__.py", "jyut_ocr/ocr/phase_budget.py",
+                     "jyut_ocr/ocr/gpu_queue.py", "jyut_ocr/ocr/engines.py"):
+            dst = scripts / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / name, dst)
         for name in ("run_hunyuanocr.py", "build_draft.py", "run_paddleocr_vl.py", "run_hunyuanocr_second_look.py"):
             (scripts / name).write_text(STAND_IN_RUNNER, encoding="utf-8")
         env = {key: value for key, value in os.environ.items() if not key.startswith("OCR_PHASE_")}

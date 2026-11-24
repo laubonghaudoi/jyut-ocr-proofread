@@ -26,7 +26,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _setup_ocr as setup
+from jyut_ocr.ocr import setup_ocr as setup
 import install
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1275,7 +1275,7 @@ class SmokeTests(Case):
         self.assertTrue(argv[1].endswith("scripts/run_ocr_phase.py"))
         # No start time: the whole budget (CD-R12 gives the wrapper what is left).
         self.assertEqual(argv[2:5], ["--max-seconds", "540", "--"])
-        self.assertEqual(argv[6:8], [str(ROOT / "scripts/_setup_ocr.py"), "--run-smoke-plan"])
+        self.assertEqual(argv[6:8], [str(ROOT / "scripts/jyut_ocr/ocr/setup_ocr.py"), "--run-smoke-plan"])
         self.assertEqual(seen["env"]["OCR_PHASE_RELEASE_CMD"], "stop-llm")
         self.assertEqual(seen["env"]["OCR_PHASE_REQUIRED_MIB"], "28076")
         self.assertEqual(seen["timeout"], 840)
@@ -1362,7 +1362,7 @@ class SmokeTests(Case):
             import json, os, sys
             from pathlib import Path
             sys.path.insert(0, sys.argv[1])
-            import _setup_ocr as setup
+            from jyut_ocr.ocr import setup_ocr as setup
             report = Path(sys.argv[sys.argv.index("--report") + 1])
             render = report.parent / "renders/page-0001.png"
             output = report.parent / "ocr"

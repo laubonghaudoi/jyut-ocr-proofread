@@ -40,7 +40,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from jyut_ocr.core import common as _common  # noqa: E402
 from jyut_ocr.core.common import sha256_bytes, sha256_file, utc_now  # noqa: E402
-from _ocr_runner_common import (  # noqa: E402
+from jyut_ocr.ocr.runner_common import (  # noqa: E402
     PAGE_TOKEN,
     ConfigurationError,
     PageInput,
@@ -260,9 +260,10 @@ def build_tool_identity(model: Path | None, mmproj: Path | None,
             raise ConfigurationError(f"missing {label} file: {path}")
         hashes.append(sha256_file(path) if path is not None else None)
     combined = hashlib.sha256(runner.read_bytes())
-    combined.update(Path(__file__).with_name("_phase_budget.py").read_bytes())
-    combined.update(Path(__file__).with_name("_gpu_queue.py").read_bytes())
-    combined.update(Path(__file__).with_name("_hunyuan_shared.py").read_bytes())
+    here = Path(__file__).resolve().parent
+    combined.update((here / "jyut_ocr/ocr/phase_budget.py").read_bytes())
+    combined.update((here / "jyut_ocr/ocr/gpu_queue.py").read_bytes())
+    combined.update((here / "jyut_ocr/ocr/hunyuan_shared.py").read_bytes())
     combined.update(canonical_json_bytes(hashes))
     return ToolIdentity(runner, *hashes, combined.hexdigest())
 
@@ -720,10 +721,10 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-from _gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
+from jyut_ocr.ocr.gpu_queue import (GPUQueue, GPUQueueError, GPUQueueTimeout, LOCAL_MODEL_SUMMARY, LocalModelOwnsGPU,
                         add_queue_arguments)
 
-from _phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
+from jyut_ocr.ocr.phase_budget import (  # noqa: E402  (scripts/ is sys.path[0])
     EXIT_INCOMPLETE, Budget, StartupExpired, exit_on_sigterm, parent_bound_command)
 
 
@@ -773,7 +774,7 @@ def recognize_pages(pages, server, budget, max_tokens, timeout, workers):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from _ocr_engines import require_supported_host
+    from jyut_ocr.ocr.engines import require_supported_host
     try:
         require_supported_host()
     except ValueError as exc:
@@ -889,7 +890,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not budget.allows_next_page():
                     raise GPUQueueTimeout("phase deadline reached before model loading")
                 if not arguments.endpoint and arguments.server_mode == "shared":
-                    from _hunyuan_shared import SharedHunyuanClient
+                    from jyut_ocr.ocr.hunyuan_shared import SharedHunyuanClient
                     # workers vary per client; weights, runtime, slot capacity and
                     # actual request profile must agree for a shared backend.
                     shared_profile = dict(profile, deployment={

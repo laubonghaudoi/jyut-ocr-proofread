@@ -754,7 +754,7 @@ def profile_book(arguments: argparse.Namespace) -> int:
     renders = arguments.render_directory.expanduser().resolve()
     drafts = arguments.draft_directory.expanduser().resolve()
     drafts2 = arguments.draft2_directory.expanduser().resolve()
-    from _ocr_engines import read_book_engine_record
+    from jyut_ocr.ocr.engines import read_book_engine_record
     from proofread_pages import engine_roles_problem
     try:
         read_book_engine_record(renders.parent)

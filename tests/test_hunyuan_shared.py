@@ -23,7 +23,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
-from _gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout
+from jyut_ocr.ocr.gpu_queue import GPUQueue, GPUQueueError, GPUQueueTimeout
 
 
 FAKE = r'''
@@ -110,13 +110,15 @@ class SharedBrokerTest(unittest.TestCase):
         self.scripts = self.root / "scripts"
         self.scripts.mkdir()
         for name in ("jyut_ocr/__init__.py", "jyut_ocr/paths.py", "jyut_ocr/core/__init__.py",
-                     "jyut_ocr/core/common.py", "_ocr_runner_common.py", "_hunyuan_shared.py", "_gpu_queue.py",
-                     "_phase_budget.py", "_ocr_engines.py", "run_hunyuanocr.py"):
+                     "jyut_ocr/core/common.py", "jyut_ocr/ocr/__init__.py",
+                     "jyut_ocr/ocr/runner_common.py", "jyut_ocr/ocr/hunyuan_shared.py",
+                     "jyut_ocr/ocr/gpu_queue.py", "jyut_ocr/ocr/phase_budget.py",
+                     "jyut_ocr/ocr/engines.py", "run_hunyuanocr.py"):
             dst = self.scripts / name
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(SCRIPTS / name, dst)
         name = "shared_test_" + uuid.uuid4().hex
-        spec = importlib.util.spec_from_file_location(name, self.scripts / "_hunyuan_shared.py")
+        spec = importlib.util.spec_from_file_location(name, self.scripts / "jyut_ocr/ocr/hunyuan_shared.py")
         self.module = importlib.util.module_from_spec(spec)
         sys.modules[name] = self.module
         spec.loader.exec_module(self.module)
@@ -358,7 +360,7 @@ class SharedBrokerTest(unittest.TestCase):
         code = """
 import json, sys, time
 from pathlib import Path
-from _hunyuan_shared import SharedHunyuanClient
+from jyut_ocr.ocr.hunyuan_shared import SharedHunyuanClient
 root, page = Path(sys.argv[1]), sys.argv[2]
 client = SharedHunyuanClient(json.loads((root / 'client-config.json').read_text()),
                              root / 'queue', 'isolated-fake-gpu', queue_timeout=10)
@@ -481,7 +483,7 @@ class PageSlotTest(unittest.TestCase):
     failed the book's HunyuanOCR run (MH0925, page 183 of 870)."""
 
     def test_a_page_sent_the_moment_the_last_answer_arrives_finds_its_slot(self):
-        import _hunyuan_shared as shared
+        from jyut_ocr.ocr import hunyuan_shared as shared
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             render = root / "page.png"

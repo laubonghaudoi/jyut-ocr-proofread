@@ -107,13 +107,13 @@ class SecondLookLoadBudgetTests(unittest.TestCase):
         # Both modes: the deadline reached while the model loads ends with 1
         # and the times (a 75 was repeated for ever under the hand-over).
         import io, contextlib, os, time
-        from _phase_budget import StartupExpired
+        from jyut_ocr.ocr.phase_budget import StartupExpired
 
         def expired(*_args, **kwargs):
             seen.update(kwargs)
             raise StartupExpired("still loading at the phase deadline", 7.0)
 
-        for mode, target in (("shared", "_hunyuan_shared.SharedHunyuanClient"),
+        for mode, target in (("shared", "jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient"),
                              ("dedicated", "run_hunyuanocr.HunyuanServer")):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                 seen: dict = {}
@@ -323,7 +323,7 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
                     pass
 
             report_path = root / "second-look-report.json"
-            with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+            with mock.patch("jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
                 rc1 = sl.main(
                     [
                         str(renders),
@@ -350,7 +350,7 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
             self.assertIn("頁底小字附註", updated_txt)
 
             # Second run should detect current secondLook seal and skip without calling broker!
-            with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+            with mock.patch("jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
                 rc2 = sl.main(
                     [
                         str(renders),
@@ -376,7 +376,7 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
 
             # The execution policy (device) is deployment: recorded with the
             # second look, not compared, so the look stays current.
-            with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+            with mock.patch("jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
                 rc3 = sl.main([
                     str(renders), str(ocr_a), str(ocr_b), '--server-mode', 'shared',
                     '--model', str(fake_model), '--mmproj', str(fake_mmproj),
@@ -389,7 +389,7 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
             self.assertEqual(rep3['counts']['skippedCurrent'], 1)
             self.assertEqual(rep3['profile']['executionProfile']['effectiveDevice'], 'cpu')
             # A request setting (max tokens) is identity: the look is redone.
-            with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+            with mock.patch("jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
                 rc4 = sl.main([
                     str(renders), str(ocr_a), str(ocr_b), '--server-mode', 'shared',
                     '--model', str(fake_model), '--mmproj', str(fake_mmproj),
@@ -429,8 +429,8 @@ class SecondLookAndImagesDirTests(unittest.TestCase):
                            ensure_ascii=False),
                 encoding="utf-8",
             )
-            with mock.patch("_ocr_engines.require_supported_host", return_value=None):
-                with mock.patch("_hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
+            with mock.patch("jyut_ocr.ocr.engines.require_supported_host", return_value=None):
+                with mock.patch("jyut_ocr.ocr.hunyuan_shared.SharedHunyuanClient", FakeSharedClient):
                     # Strict default fails because page 2 has no engine B draft
                     rc_strict = sl.main([*args, "--server-mode", "shared"])
                     self.assertEqual(rc_strict, 1)

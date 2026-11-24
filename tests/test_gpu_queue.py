@@ -19,7 +19,7 @@ CLIENT = r'''
 import os, signal, subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from _gpu_queue import GPUQueue
+from jyut_ocr.ocr.gpu_queue import GPUQueue
 base, label = Path(sys.argv[2]), sys.argv[3]
 queue = GPUQueue(directory=base / 'queue', resource=os.environ.get('TEST_RESOURCE', 'gpu'))
 def cancelled(signum, frame): raise SystemExit(128 + signum)

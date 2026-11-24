@@ -26,7 +26,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-import _tenant_clients as tc  # noqa: E402
+from jyut_ocr.ocr import tenant_clients as tc  # noqa: E402
 
 # argv: pid file, release file, host or '-', port or '-', marker words...
 HOLDER = r'''
@@ -177,7 +177,7 @@ class ClientsTest(unittest.TestCase):
         held = socket.create_connection(("127.0.0.1", self.server.port))
         self.addCleanup(held.close)
         outside, _ = self.holder()
-        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); import _tenant_clients as tc; "
+        code = ("import json, sys; sys.path.insert(0, sys.argv[1]); from jyut_ocr.ocr import tenant_clients as tc; "
                 "print(json.dumps(tc.find_other_clients(sys.argv[2], exclude_pids=set(), match=[])))")
         result = subprocess.run([sys.executable, "-c", code, str(ROOT / "scripts"), self.server.url],
                                 text=True, capture_output=True, timeout=60, check=True)
