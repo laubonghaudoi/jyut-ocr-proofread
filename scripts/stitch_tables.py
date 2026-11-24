@@ -45,7 +45,7 @@ import sys
 from typing import Any, Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _stitch  # noqa: E402
+from jyut_ocr.finish import stitch as _stitch  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 
 PAGE_JSON = re.compile(r"page-(\d{4})\.json")

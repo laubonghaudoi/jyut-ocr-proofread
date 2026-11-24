@@ -127,8 +127,8 @@ from typing import Any, Mapping
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import _deliver  # noqa: E402
-import _figures  # noqa: E402
+from jyut_ocr.finish import deliver as _deliver  # noqa: E402
+from jyut_ocr.finish import figures as _figures  # noqa: E402
 import finish_book  # noqa: E402
 
 TOOL = "clean_book.py"

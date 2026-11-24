@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import offline  # noqa: E402,F401
 import repair_fixture as fx  # noqa: E402
 import repair_book  # noqa: E402
-import _footnotes  # noqa: E402
+from jyut_ocr.finish import footnotes as _footnotes  # noqa: E402
 
 FAILURES: list[str] = []
 TAB_CIRCLED = "\textcircled"   # engine B's \textcircled whose \t arrived as a tab

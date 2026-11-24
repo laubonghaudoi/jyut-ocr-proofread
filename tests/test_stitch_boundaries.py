@@ -9,7 +9,7 @@ import unittest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import _stitch as stitch
+from jyut_ocr.finish import stitch as stitch
 import proofread_pages as pp
 import stitch_tables
 

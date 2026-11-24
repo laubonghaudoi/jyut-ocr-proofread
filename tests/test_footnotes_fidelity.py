@@ -15,7 +15,7 @@ SCRIPTS_DIR = (
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import _footnotes  # noqa: E402
+from jyut_ocr.finish import footnotes as _footnotes  # noqa: E402
 from jyut_ocr.core import note_markers as nm  # noqa: E402
 from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 import _repair_runs as runs  # noqa: E402

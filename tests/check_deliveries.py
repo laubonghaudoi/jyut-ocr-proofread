@@ -83,7 +83,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import offline  # noqa: E402,F401
 import build_draft  # noqa: E402
 import build_progress  # noqa: E402
-import _deliver  # noqa: E402
+from jyut_ocr.finish import deliver as _deliver  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 
 PROBLEMS: list[str] = []

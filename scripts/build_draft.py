@@ -72,7 +72,7 @@ from typing import Iterable, Mapping, Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import proofread_pages as pp  # noqa: E402
-import _deliver  # noqa: E402
+from jyut_ocr.finish import deliver as _deliver  # noqa: E402
 
 DRAFT_NAME = "draft.md"
 OCR_DIRNAME = "ocr-hunyuan"

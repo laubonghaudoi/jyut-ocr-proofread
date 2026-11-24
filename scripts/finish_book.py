@@ -177,9 +177,9 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import _deliver  # noqa: E402
-import _figures  # noqa: E402
-import _footnotes  # noqa: E402
+from jyut_ocr.finish import deliver as _deliver  # noqa: E402
+from jyut_ocr.finish import figures as _figures  # noqa: E402
+from jyut_ocr.finish import footnotes as _footnotes  # noqa: E402
 
 EXIT_DONE, EXIT_FAILED, EXIT_USAGE, EXIT_NOT_READY, EXIT_STOPPED = 0, 1, 2, 3, 4
 STATE = {EXIT_DONE: "DONE", EXIT_FAILED: "FAILED", EXIT_USAGE: "FAILED", EXIT_NOT_READY: "NOT READY",
