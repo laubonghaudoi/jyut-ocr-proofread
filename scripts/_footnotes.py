@@ -47,8 +47,8 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
-from _note_markers import NOTE_CIRCLED, NOTE_HEAD_RE as NOTE, iter_note_markers, marker_key, math_context
-from _ocr_markdown import (
+from jyut_ocr.core.note_markers import NOTE_CIRCLED, NOTE_HEAD_RE as NOTE, iter_note_markers, marker_key, math_context
+from jyut_ocr.core.ocr_markdown import (
     FOOTNOTE_CALL_RE,
     FOOTNOTE_HEAD_RE,
     THEMATIC_BREAK_RE,

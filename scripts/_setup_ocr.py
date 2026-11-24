@@ -39,7 +39,7 @@ import urllib.request
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import sha256_file  # noqa: E402
+from jyut_ocr.core.common import sha256_file  # noqa: E402
 
 
 class SetupError(RuntimeError):
@@ -1922,7 +1922,8 @@ def tool_hashes(root: Path, engine: str | Iterable[str]) -> dict[str, str]:
     engines = engine_set(engine)
     names = ["scripts/_setup_ocr.py", "scripts/run_ocr_phase.py", "scripts/_ocr_engines.py", *ENVIRONMENT_FILES]
     if "vision" in engines:
-        names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift", "scripts/_draft_contract.py",
+        names += ["scripts/run_apple_vision_ocr.py", "scripts/apple_vision_ocr.swift",
+                  "scripts/jyut_ocr/core/draft_contract.py",
                   "scripts/_vision_layout.py", "scripts/_mlx_vlm_server.py", "scripts/_phase_budget.py"]
     if "hunyuan" in engines:
         names += ["scripts/run_hunyuanocr.py", "scripts/_hunyuan_shared.py", "scripts/_gpu_queue.py", "scripts/_phase_budget.py"]

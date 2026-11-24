@@ -278,7 +278,7 @@ def boundary_checks(tmp: Path) -> None:
           f"no boundary is a doubt ({[d['kind'] for d in result.doubts if d.get('stage') == 'joins']})")
     check(set(result.report["boundaries"]["rules"]) <= {"S", "T", "H", "L", "J", "P"},
           f"the report counts each label's rule ({result.report['boundaries']['rules']})")
-    import _ocr_markdown as om
+    from jyut_ocr.core import ocr_markdown as om
     combined = (result.out / "combined-repaired.md").read_text(encoding="utf-8")
     final = om.apply_boundary_contract(combined, result.labels)
     first = next(item[1] for item in spec[16]["items"] if item[0] == "para")

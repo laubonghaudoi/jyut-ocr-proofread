@@ -29,7 +29,7 @@ import re
 from typing import Any, Iterable, Mapping, Sequence
 
 import proofread_pages as pp
-from _ocr_markdown import PAGE_MARKER_RE, load_page_manifest
+from jyut_ocr.core.ocr_markdown import PAGE_MARKER_RE, load_page_manifest
 
 
 # The skill's book layout (SKILL.md, long-book-workflow.md): what each input

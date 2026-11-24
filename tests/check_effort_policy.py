@@ -147,7 +147,7 @@ def check_kinds() -> None:
     for path in paths:
         source = path.read_text(encoding="utf-8")
         named |= set(re.findall(r'\bkind="([a-z+-]+)"', source))
-    fidelity = (SCRIPTS / "_content_fidelity.py").read_text(encoding="utf-8")
+    fidelity = (SCRIPTS / "jyut_ocr" / "core" / "content_fidelity.py").read_text(encoding="utf-8")
     stages = set(re.findall(r'"(page-inventory|content-recovery|coverage-review)"', fidelity))
     check("the fidelity questions are the three", stages, {"page-inventory", "content-recovery", "coverage-review"})
     check("and their one correction is the kind plus -correction", 'kind=kind + "-correction"' in fidelity, True)

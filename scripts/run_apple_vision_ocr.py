@@ -32,8 +32,8 @@ import uuid
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import _common  # noqa: E402
-from _common import sha256_bytes, sha256_file  # noqa: E402
+from jyut_ocr.core import common as _common  # noqa: E402
+from jyut_ocr.core.common import sha256_bytes, sha256_file  # noqa: E402
 from _ocr_runner_common import (  # noqa: E402
     PAGE_TOKEN,
     ConfigurationError,
@@ -48,7 +48,7 @@ from _ocr_runner_common import (  # noqa: E402
 from _phase_budget import Budget, EXIT_INCOMPLETE, record_child
 from _mlx_vlm_server import SupervisedProcess
 from _vision_layout import adapt_observations
-from _draft_contract import layout_problem
+from jyut_ocr.core.draft_contract import layout_problem
 
 _STOP = threading.Event()
 
@@ -120,9 +120,11 @@ def build_tool_identity(swift_file: Path) -> ToolIdentity:
     combined.update(runner_bytes)
     combined.update(b"\0apple_vision_ocr.swift\0")
     combined.update(swift_bytes)
-    for helper in ("_vision_layout.py", "_draft_contract.py", "_mlx_vlm_server.py"):
+    for helper in ("_vision_layout.py", "_mlx_vlm_server.py"):
         combined.update(b"\0" + helper.encode() + b"\0")
         combined.update(Path(__file__).with_name(helper).read_bytes())
+    combined.update(b"\0_draft_contract.py\0")
+    combined.update((Path(__file__).resolve().parent / "jyut_ocr" / "core" / "draft_contract.py").read_bytes())
     return ToolIdentity(
         runner_file=runner_file,
         swift_file=swift_file,

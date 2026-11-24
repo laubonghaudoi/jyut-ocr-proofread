@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
 
-from _common import canonical_json_bytes, sha256_bytes
+from jyut_ocr.core.common import canonical_json_bytes, sha256_bytes
 
 PAGE_TOKEN = re.compile(r"(?P<first>[1-9][0-9]*)(?:-(?P<last>[1-9][0-9]*))?\Z")
 

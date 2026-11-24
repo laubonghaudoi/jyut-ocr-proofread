@@ -6,7 +6,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _ocr_markdown as om  # noqa: E402
+from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 
 
 class MaskNonrenderedMarkdownTests(unittest.TestCase):

@@ -13,8 +13,8 @@ import unicodedata
 from pathlib import Path
 from typing import Iterable, Sequence
 
-import _tables
-from _note_markers import NOTE_CIRCLED, NOTE_LINE_RE
+from jyut_ocr.core import tables as _tables
+from jyut_ocr.core.note_markers import NOTE_CIRCLED, NOTE_LINE_RE
 
 
 PAGE_MARKER_RE = re.compile(

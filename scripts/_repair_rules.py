@@ -1905,8 +1905,8 @@ def forms(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: 
     U+16FE6 canonicalized to 。。 (K9), emphasis runs neither engine holds
     deleted, and literal printed asterisks escaped as \\* where Markdown
     would otherwise parse emphasis or list bullets (K12)."""
-    import _ocr_markdown as om
-    import _tables
+    from jyut_ocr.core import ocr_markdown as om
+    from jyut_ocr.core import tables as _tables
 
     plan = Plan()
     single_star_re = re.compile(r"(?<!\*)\*(?!\*)")

@@ -87,12 +87,12 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
-import _draft_contract
-import _tables  # noqa: E402
+from jyut_ocr.core.common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
+from jyut_ocr.core import draft_contract as _draft_contract
+from jyut_ocr.core import tables as _tables  # noqa: E402
 import _loop_watch  # noqa: E402
-import _content_fidelity  # noqa: E402
-import _note_markers  # noqa: E402
+from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
+from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
 import _packet_events  # noqa: E402
 import _punctuation_fusion  # noqa: E402
 from _packet_client import (  # noqa: E402

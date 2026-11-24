@@ -81,8 +81,8 @@ CASES = Path(__file__).resolve().parent / "cases"
 GOLDEN = Path(__file__).resolve().parent / "golden"
 HARD = {"human", "regression"}
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _tables  # noqa: E402  (scripts/ is not a package)
-from _trees import brace_tree, tree_label, tree_parses  # noqa: E402,F401  (golden_tree; one parser with the pipeline)
+from jyut_ocr.core import tables as _tables  # noqa: E402  (scripts/ is not a package)
+from jyut_ocr.core.trees import brace_tree, tree_label, tree_parses  # noqa: E402,F401  (golden_tree; one parser with the pipeline)
 
 
 def cjk(text: str) -> str:

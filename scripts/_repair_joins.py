@@ -72,7 +72,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 import _book_lint as lint
-import _ocr_markdown as om
+from jyut_ocr.core import ocr_markdown as om
 import _repair_edits as re_
 import _repair_rules as rr
 import _repair_structure as rs

@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _tables  # noqa: E402
+from jyut_ocr.core import tables as _tables  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 
 

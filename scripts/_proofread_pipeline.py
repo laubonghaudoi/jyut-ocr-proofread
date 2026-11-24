@@ -19,10 +19,10 @@ from typing import Any, Mapping, Sequence
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import (  # noqa: E402
+from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file, utc_now,
 )
-import _content_fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
 from _packet_client import (  # noqa: E402
     PacketPending, packet_page_context,
 )

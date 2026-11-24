@@ -13,7 +13,7 @@ from typing import Any, Callable, Collection, Mapping, Sequence
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import _tables  # noqa: E402
+from jyut_ocr.core import tables as _tables  # noqa: E402
 from _proofread_core import (  # noqa: E402
     CIRCLE_CHARS, CJK, DROP_GRAM, FURNITURE_LABELS, LOOPED_READING, NUMERAL_CHARS, TEXT_SEAMS,
     facade_attr, is_numeral_conflict, strip_fence,

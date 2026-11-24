@@ -13,7 +13,7 @@ import re
 import sys
 from typing import Sequence
 
-from _ocr_markdown import (
+from jyut_ocr.core.ocr_markdown import (
     apply_boundary_contract_with_break_lines,
     boundary_contract_problems,
     classify_all_boundaries,

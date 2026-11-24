@@ -469,7 +469,7 @@ def resolve_inputs(book: Path, arguments: argparse.Namespace) -> Inputs:
     if renders is None:
         candidates = []
         try:
-            from _ocr_markdown import load_page_manifest
+            from jyut_ocr.core.ocr_markdown import load_page_manifest
             first = load_page_manifest(manifest).pages[0]
             candidates.append(first.render_path.parent)
         except Exception:  # noqa: BLE001 - verified with its own message below
@@ -553,8 +553,8 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
     the manifest's.  These checks also run before reusing an earlier assembly."""
     import proofread_pages as pp
     import _repair_inputs as ri
-    import _content_fidelity as fidelity
-    from _ocr_markdown import load_page_manifest
+    from jyut_ocr.core import content_fidelity as fidelity
+    from jyut_ocr.core.ocr_markdown import load_page_manifest
 
     try:
         manifest_bytes = inputs.page_manifest.read_bytes()
@@ -596,7 +596,7 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
             incomplete.append(scan)
             continue
         problems = ri.seal_problems(scan, md_bytes, json_bytes)
-        import _draft_contract
+        from jyut_ocr.core import draft_contract as _draft_contract
         provenance = record.get("provenance") or {}
         for key, directory in zip(_draft_contract.SEMANTIC_KEYS, (inputs.ocr_a, inputs.ocr_b)):
             # The missing-A fallback transcribes B's TXT and deliberately
@@ -894,7 +894,7 @@ def finalize(book: Path, sealed: Sealed, inputs: Inputs, arguments: argparse.Nam
     --extract-figures is set (scripts/_figures.py), converting paired notes
     into Markdown footnotes (scripts/_footnotes.py), removing page markers,
     and running the final audit."""
-    from _ocr_markdown import find_page_markers, load_boundary_manifest, split_lines
+    from jyut_ocr.core.ocr_markdown import find_page_markers, load_boundary_manifest, split_lines
 
     repaired = book / REPAIRED
     finish = book / FINISH_DIR

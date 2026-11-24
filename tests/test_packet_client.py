@@ -21,7 +21,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _packet_client as pc  # noqa: E402
-import _content_fidelity as fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as fidelity  # noqa: E402
 import apply_packet_answers  # noqa: E402
 import book_profile  # noqa: E402
 import proofread_pages as pp  # noqa: E402

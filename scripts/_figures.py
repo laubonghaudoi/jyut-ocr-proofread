@@ -47,7 +47,7 @@ import re
 from typing import Any, Mapping, Sequence
 import unicodedata
 
-from _ocr_markdown import (PAGE_MARKER_RE, find_page_markers, foot_notes, is_blank, line_body, preferred_newline,
+from jyut_ocr.core.ocr_markdown import (PAGE_MARKER_RE, find_page_markers, foot_notes, is_blank, line_body, preferred_newline,
                            split_lines)
 
 FOLDER = "figures"                 # in BOOK; copied as X-圖/ beside the PDF (_deliver.py)

@@ -16,13 +16,14 @@ from typing import Any, Collection, Iterable, Iterator, Mapping, Sequence
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import (  # noqa: E402
+from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file,
 )
-import _draft_contract  # noqa: E402
-import _tables  # noqa: E402
+from jyut_ocr.core import draft_contract as _draft_contract  # noqa: E402
+from jyut_ocr.core import tables as _tables  # noqa: E402
 import _loop_watch  # noqa: E402
-import _content_fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
+from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
 import _packet_events  # noqa: E402
 import _punctuation_fusion  # noqa: E402
 from _proofread_core import (  # noqa: E402
@@ -399,7 +400,7 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
                              if getattr(arguments, "backend", "packet") == "http" else "",
         "proofreadScriptSha256": facade_attr("sha256_file", sha256_file)(PROOFREAD_SCRIPT_PATH),
         "contentFidelitySha256": facade_attr("sha256_file", sha256_file)(Path(_content_fidelity.__file__)),
-        "contentNoteMarkersSha256": facade_attr("sha256_file", sha256_file)(Path(_content_fidelity.__file__).with_name("_note_markers.py")),
+        "contentNoteMarkersSha256": facade_attr("sha256_file", sha256_file)(Path(_note_markers.__file__)),
         "profileSha256": getattr(arguments, "profile_sha", "") or "",
         "enginePreference": getattr(arguments, "prefer_engine", "") or "",
         "fallbackEngine": getattr(arguments, "fallback_engine", "") or "",

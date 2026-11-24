@@ -22,7 +22,7 @@ import urllib.request
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import sha256_bytes  # noqa: E402
+from jyut_ocr.core.common import sha256_bytes  # noqa: E402
 import _loop_watch  # noqa: E402
 from _proofread_core import (  # noqa: E402
     CJK, LOCAL_AGENT_ENV, MEDIA_PIXEL_LIMIT, ProofreadError, QWEN_CODE_MODEL_ENV, SITE_PLACE_KEYS,

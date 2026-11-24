@@ -138,7 +138,7 @@ import _figures  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import clean_book  # noqa: E402
 import finish_book  # noqa: E402
-from _ocr_markdown import apply_boundary_contract  # noqa: E402
+from jyut_ocr.core.ocr_markdown import apply_boundary_contract  # noqa: E402
 
 FAILURES: list[str] = []
 PDF_NAME = "海港 年報 第二冊.pdf"

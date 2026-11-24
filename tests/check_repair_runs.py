@@ -217,7 +217,7 @@ sys.path.insert(0, str(HERE.parent / "scripts"))
 import _repair_edits as re_  # noqa: E402
 import _repair_rules as rr  # noqa: E402
 import _repair_runs as rn  # noqa: E402
-import _ocr_markdown as om  # noqa: E402
+from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 import repair_book  # noqa: E402
 

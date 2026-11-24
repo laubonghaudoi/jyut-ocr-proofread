@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import offline  # noqa: E402,F401 - an endpoint nothing listens on
 import _stitch  # noqa: E402
-import _tables  # noqa: E402
+from jyut_ocr.core import tables as _tables  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 import stitch_tables  # noqa: E402
 

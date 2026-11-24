@@ -759,7 +759,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A misspelt counter would count nothing and never fail the run.
         print(f"--fail-on: no counter {', '.join(unknown)} (the counters: {', '.join(COUNTERS)})", file=sys.stderr)
         return 2
-    from _ocr_markdown import load_boundary_manifest, parse_page_spec
+    from jyut_ocr.core.ocr_markdown import load_boundary_manifest, parse_page_spec
     pages = parse_page_spec([arguments.pages]) if arguments.pages else None
     paths = ri.InputPaths.resolve(arguments.book, {})
     try:

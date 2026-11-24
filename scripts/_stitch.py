@@ -39,8 +39,8 @@ import difflib
 import re
 from typing import Any, Callable, Mapping, Sequence
 
-import _tables
-from _ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, THEMATIC_BREAK_RE
+from jyut_ocr.core import tables as _tables
+from jyut_ocr.core.ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, THEMATIC_BREAK_RE
 import proofread_pages as pp
 
 # Every doubt the stitch writes starts with this, so a re-run can take the

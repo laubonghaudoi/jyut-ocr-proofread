@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from typing import Sequence
 
-from _ocr_markdown import (
+from jyut_ocr.core.ocr_markdown import (
     apply_boundary_contract,
     boundary_contract_problems,
     find_page_markers,

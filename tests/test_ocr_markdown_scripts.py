@@ -1049,8 +1049,8 @@ class AuditOcrMarkdownTests(unittest.TestCase):
             local_scripts.mkdir()
             local_audit = local_scripts / AUDIT.name
             local_audit.write_bytes(AUDIT.read_bytes())
-            for sibling in AUDIT.parent.glob("*.py"):
-                if sibling.name != AUDIT.name:
+            for sibling in AUDIT.parent.iterdir():
+                if sibling.name != AUDIT.name and (sibling.suffix == ".py" or sibling.name == "jyut_ocr"):
                     os.symlink(sibling, local_scripts / sibling.name)
             tool_alias = Path(temporary_directory) / "audit-tool-alias.py"
             tool_before = hashlib.sha256(local_audit.read_bytes()).hexdigest()

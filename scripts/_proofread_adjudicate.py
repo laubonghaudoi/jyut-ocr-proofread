@@ -16,7 +16,7 @@ import unicodedata
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import _content_fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
 from _proofread_core import (  # noqa: E402
     ADJUDICATE_SYSTEM, ANSWER_DELETION_LIMIT, BLIND_SYSTEM, BLIND_USER, CIRCLE_CHARS, CJK,
     DEGENERATE_NGRAM_RATIO, DROP_GRAM, EMPTY_VERDICTS, INSERTION_LIMIT, LOOPED_READING,

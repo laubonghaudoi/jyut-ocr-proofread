@@ -107,7 +107,7 @@ from typing import Any, Mapping, Sequence
 import _repair_rules as rr
 import _repair_runs as rn
 import _repair_edits as re_
-from _note_markers import marker_key
+from jyut_ocr.core.note_markers import marker_key
 
 OPEN, CLOSE = "〔", "〕"
 # The shapes the page may hold where the engines read the editors' brackets:
@@ -269,7 +269,7 @@ UNPAIRED_HEAD = re.compile(rf"\[\^{UNPAIRED}-\d+-\d+\]: ")
 
 def _note_head(line: str) -> bool:
     """LINE opens with a note number or a footnote definition's head."""
-    from _ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, line_body
+    from jyut_ocr.core.ocr_markdown import FOOTNOTE_HEAD_RE, NOTE_LINE_RE, line_body
     body = line_body(line).lstrip()
     return bool(NOTE_LINE_RE.match(body) or FOOTNOTE_HEAD_RE.match(body))
 

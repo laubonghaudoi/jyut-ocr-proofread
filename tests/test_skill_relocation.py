@@ -65,7 +65,8 @@ class RelocatedSkillTests(unittest.TestCase):
                 self.assertTrue((self.skill / path).is_file(), path)
         program = (
             "import json,sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
-            "import proofread_pages as p, book_profile, _ocr_markdown, repair_book; "
+            "import proofread_pages as p, book_profile, repair_book; "
+            "from jyut_ocr.core import ocr_markdown as _ocr_markdown; "
             "assert p.user_variant_rulings(); assert p.opencc_allographs(); "
             "print(json.dumps({'source':p.__file__,'variants':str(p.VARIANT_LIST),'hashes':p._LIST_SHA256}))"
         )

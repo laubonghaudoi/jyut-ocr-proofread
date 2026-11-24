@@ -416,9 +416,9 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import proofread_pages as pp
-import _ocr_markdown as om
-import _tables
-from _note_markers import NUMBER_RE as NUMERIC_NOTE_RE, marker_key, math_context
+from jyut_ocr.core import ocr_markdown as om
+from jyut_ocr.core import tables as _tables
+from jyut_ocr.core.note_markers import NUMBER_RE as NUMERIC_NOTE_RE, marker_key, math_context
 import _repair_align as ra
 import _repair_edits as re_
 import _repair_joins as rj

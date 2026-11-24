@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _content_fidelity as fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as fidelity  # noqa: E402
 import _packet_client as packets  # noqa: E402
 import book_profile  # noqa: E402
 import proofread_pages as pp  # noqa: E402

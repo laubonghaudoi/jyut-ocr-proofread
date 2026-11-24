@@ -18,7 +18,7 @@ SCRIPTS_DIR = (
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _ocr_markdown import images_inventory_sha256, load_page_manifest  # noqa: E402
+from jyut_ocr.core.ocr_markdown import images_inventory_sha256, load_page_manifest  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import run_hunyuanocr as hy  # noqa: E402
 import run_hunyuanocr_second_look as sl  # noqa: E402

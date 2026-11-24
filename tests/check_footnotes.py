@@ -80,7 +80,7 @@ import offline  # noqa: E402,F401  (private stores, closed endpoint)
 import check_finish_book as cfb  # noqa: E402
 import repair_fixture as fx  # noqa: E402
 import _footnotes  # noqa: E402
-import _ocr_markdown as om  # noqa: E402
+from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import finish_book  # noqa: E402
 

@@ -38,8 +38,8 @@ import urllib.request
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-import _common  # noqa: E402
-from _common import sha256_bytes, sha256_file, utc_now  # noqa: E402
+from jyut_ocr.core import common as _common  # noqa: E402
+from jyut_ocr.core.common import sha256_bytes, sha256_file, utc_now  # noqa: E402
 from _ocr_runner_common import (  # noqa: E402
     PAGE_TOKEN,
     ConfigurationError,

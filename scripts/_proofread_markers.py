@@ -18,10 +18,10 @@ import unicodedata
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import (  # noqa: E402
+from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes,
 )
-import _note_markers  # noqa: E402
+from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
 from _proofread_core import (  # noqa: E402
     BRACKET_BESIDE, BRACKET_MISREADS, BRACKET_SLIP, CIRCLE_CHARS, CJK, CLOSE_BRACKETS,
     DEGENERATE_NGRAM_RATIO, FURNITURE_LABELS, LEADER, LEADER_READ, LOOPED_READING, NEARBY_WINDOW,

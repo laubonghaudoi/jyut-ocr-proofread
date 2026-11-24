@@ -16,8 +16,8 @@ import re
 import unicodedata
 from typing import Any, Mapping
 
-import _tables
-from _note_markers import iter_note_markers, marker_key, math_context
+from jyut_ocr.core import tables as _tables
+from jyut_ocr.core.note_markers import iter_note_markers, marker_key, math_context
 
 
 CONTRACT_VERSION = "content-fidelity-v2"

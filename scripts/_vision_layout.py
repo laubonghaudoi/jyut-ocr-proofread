@@ -5,7 +5,7 @@ import math
 import statistics
 from typing import Any, Mapping
 
-from _draft_contract import LAYOUT_CONTRACT
+from jyut_ocr.core.draft_contract import LAYOUT_CONTRACT
 
 LAYOUT_VERSION = "vision-horizontal-v1"
 

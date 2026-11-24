@@ -140,7 +140,7 @@ from typing import Any, Callable, Mapping, NamedTuple, Sequence
 
 import proofread_pages as pp
 import _book_lint as lint
-import _ocr_markdown as om
+from jyut_ocr.core import ocr_markdown as om
 import _repair_align as ra
 import _repair_edits as re_
 import _repair_model as rm

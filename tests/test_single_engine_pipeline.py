@@ -14,7 +14,7 @@ import zlib
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 import apply_packet_answers
-import _content_fidelity as fidelity
+from jyut_ocr.core import content_fidelity as fidelity
 import finish_book as finish
 import proofread_pages as pp
 import survey_pdf

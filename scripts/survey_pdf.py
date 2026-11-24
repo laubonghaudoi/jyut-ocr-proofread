@@ -53,7 +53,7 @@ from typing import Any, Mapping, Sequence
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
+from jyut_ocr.core.common import canonical_json_bytes, sha256_bytes, sha256_file, utc_now  # noqa: E402
 
 MANIFEST_NAME = "page-manifest.json"
 REPORT_NAME = "survey-report.json"

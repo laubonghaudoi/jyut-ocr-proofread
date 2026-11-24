@@ -51,7 +51,7 @@ import sys
 import tempfile
 from typing import Any, Sequence
 
-from _ocr_markdown import find_page_markers, load_page_manifest, split_lines
+from jyut_ocr.core.ocr_markdown import find_page_markers, load_page_manifest, split_lines
 
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")

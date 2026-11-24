@@ -16,8 +16,8 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import _footnotes  # noqa: E402
-import _note_markers as nm  # noqa: E402
-import _ocr_markdown as om  # noqa: E402
+from jyut_ocr.core import note_markers as nm  # noqa: E402
+from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 import _repair_runs as runs  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import finalize_page_markers  # noqa: E402
@@ -422,7 +422,7 @@ class FootnotesFidelityTests(unittest.TestCase):
         # A timeout isolates a potential parser hang instead of blocking the
         # whole test process.  This is a generous safety bound, not a benchmark.
         code = (
-            "import sys; sys.path.insert(0, sys.argv[1]); import _note_markers as nm; "
+            "import sys; sys.path.insert(0, sys.argv[1]); from jyut_ocr.core import note_markers as nm; "
             "bad = ['${' + '{' * 20000 + '②' + '}' * 20000 + '$', '^{' + '1' * 20000 + '②']; "
             "assert all(nm.marker_key(x) == '' and list(nm.iter_note_markers(x)) == [] for x in bad)"
         )

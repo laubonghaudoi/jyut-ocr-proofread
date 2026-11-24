@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _draft_contract as contract
+from jyut_ocr.core import draft_contract as contract
 from _ocr_engines import resolve_engines, recorded_draft_directory, draft_a_directory
 from _vision_layout import adapt_observations
 import ocr_book

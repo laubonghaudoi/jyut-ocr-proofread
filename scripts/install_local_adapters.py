@@ -26,7 +26,7 @@ from typing import Any, Iterable, Sequence
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import sha256_file  # noqa: E402
+from jyut_ocr.core.common import sha256_file  # noqa: E402
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

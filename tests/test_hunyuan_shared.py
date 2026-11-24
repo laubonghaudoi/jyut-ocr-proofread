@@ -109,9 +109,12 @@ class SharedBrokerTest(unittest.TestCase):
         # change a running daemon's source identity halfway through a case.
         self.scripts = self.root / "scripts"
         self.scripts.mkdir()
-        for name in ("_common.py", "_ocr_runner_common.py", "_hunyuan_shared.py", "_gpu_queue.py",
+        for name in ("jyut_ocr/__init__.py", "jyut_ocr/paths.py", "jyut_ocr/core/__init__.py",
+                     "jyut_ocr/core/common.py", "_ocr_runner_common.py", "_hunyuan_shared.py", "_gpu_queue.py",
                      "_phase_budget.py", "_ocr_engines.py", "run_hunyuanocr.py"):
-            shutil.copy2(SCRIPTS / name, self.scripts / name)
+            dst = self.scripts / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SCRIPTS / name, dst)
         name = "shared_test_" + uuid.uuid4().hex
         spec = importlib.util.spec_from_file_location(name, self.scripts / "_hunyuan_shared.py")
         self.module = importlib.util.module_from_spec(spec)

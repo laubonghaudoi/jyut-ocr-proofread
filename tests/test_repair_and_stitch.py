@@ -19,7 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import _repair_edits as re_  # noqa: E402
 import _repair_rules as rr  # noqa: E402
-import _content_fidelity as fidelity  # noqa: E402
+from jyut_ocr.core import content_fidelity as fidelity  # noqa: E402
 import audit_ocr_markdown  # noqa: E402
 import finalize_page_markers  # noqa: E402
 import finish_book  # noqa: E402

@@ -16,9 +16,9 @@ import unicodedata
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import sha256_bytes  # noqa: E402
-import _tables  # noqa: E402
-import _note_markers  # noqa: E402
+from jyut_ocr.core.common import sha256_bytes  # noqa: E402
+from jyut_ocr.core import tables as _tables  # noqa: E402
+from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
 from _packet_client import PacketPending  # noqa: E402
 from _proofread_core import (  # noqa: E402
     CHINESE_DIGITS, CJK, INSERTION_LIMIT, ZERO_FORMS, engine_gaps, facade_attr, gaps_of,

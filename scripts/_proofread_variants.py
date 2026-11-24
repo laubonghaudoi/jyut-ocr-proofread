@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping, Sequence
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
-from _common import (  # noqa: E402
+from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file,
 )
 from _proofread_core import (  # noqa: E402
