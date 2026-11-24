@@ -126,7 +126,7 @@ Exit：`0` 揀咗嘅頁全部封好；`1` 有頁 failed 或者 blocked（包括�
 
 ## 註腳
 
-`finish_book.py` 將每頁配到嘅註號同註寫成 Markdown 腳註（`scripts/_footnotes.py`），跟評測規則：
+`finish_book.py` 將每頁配到嘅註號同註寫成 Markdown 腳註（`scripts/jyut_ocr/finish/footnotes.py`），跟評測規則：
 
 - 引用 `[^n]` 留喺原本位置；預設用原印編號（印 `②④⓪` 就寫 `[^240]`）；`--renumber-footnotes` 先全書重編 `[^1]`、`[^2]`……
 - 標號全書唯一：同一原印號再出現（每頁由 ① 起，或者同一版兩條 ①），後出嗰條改用 `[^1-2]`、`[^1-3]`……，引用同定義同一個 ID。
@@ -196,7 +196,7 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 
 ## 圖：淨係留圖片（--extract-figures）
 
-預設唔抽圖：圖表、地圖、相入面印咗嘅字照轉寫（評測規則：圖表文字都要轉）。用戶要求先加 `finish_book.py --extract-figures`（`--single-engine` 唔接受）；加咗，第 3 步將每幅圖由 render 裁出嚟留做圖片，唔問模型、唔使 GPU（`scripts/_figures.py`）：
+預設唔抽圖：圖表、地圖、相入面印咗嘅字照轉寫（評測規則：圖表文字都要轉）。用戶要求先加 `finish_book.py --extract-figures`（`--single-engine` 唔接受）；加咗，第 3 步將每幅圖由 render 裁出嚟留做圖片，唔問模型、唔使 GPU（`scripts/jyut_ocr/finish/figures.py`）：
 
 - **揀邊啲**：引擎 A 頁 JSON 嘅 `regions`（佢冇讀到字嘅版面區域）入面標 `chart` 或者 `image` 嘅（`header_image`、`footer_image`、`seal` 唔要），裁出嚟會重疊嘅併做一幅，細過頁面 2% 嘅唔要（條碼、花邊）。冇 `regions` 嘅舊底稿冇圖；manifest 略過嘅頁唔睇；phase 3 因為引擎 A 讀到循環而擱埋一邊嘅 block（`engineALoopsDropped`）唔留圖：封存頁淨係記 block 號，冇記框。
 - **影印嘅原件**（要有引擎 B 底稿）：喺**簡體字書**（兩個引擎全部草稿嘅 `simplified_script`）入面，引擎 A 一個 block（唔計頁碼同標題）嘅繁體字多過簡體字，而引擎 B 喺嗰度冇讀，或者都讀成繁體，就當係影印嘅原件。引擎 B 讀咗未：成頁引擎 A 嘅行照閱讀次序同引擎 B 嘅字對齊一次（繁簡、異體當一樣），對得返一半或以上就係讀咗。碰到佢嘅引擎 A 區域同引擎 B 框併入去；同一頁幾個原件中間冇印刷字隔開就併做一幅。繁體字書唔做呢樣。

@@ -36,7 +36,7 @@ QUOTE_LENGTH = 6
 
 def skill_text() -> list[Path]:
     return ([ROOT / "SKILL.md"] + sorted((ROOT / "references").glob("*.md"))
-            + sorted((ROOT / "scripts").glob("*.py")))
+            + sorted((ROOT / "scripts").rglob("*.py")))
 
 
 def case_ids() -> set[str]:

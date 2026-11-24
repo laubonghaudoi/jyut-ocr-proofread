@@ -151,7 +151,7 @@ Agent 跑交接嘅規矩：
 - 開窗口要先攞到全機交接鎖同共用 GPU 隊列，兩樣都係唔等、即試；攞唔到就 exit 76，唔停模型。
 - 需要幾多顯存：今次 call 嘅引擎取最大嗰個（佢哋輪住跑，唔係加埋）。Paddle 約 12 GiB；Hunyuan 按 slots × 每 slot context 計 KV cache（每 token 約 96 KiB），再加約 3.4 GiB，例如 16 slots × 16384 約 27.4 GiB。Hunyuan 用 CPU 或外部 endpoint、Paddle 用 CPU（`OCR_PADDLE_DEVICE=cpu`／`--device cpu`）就唔計（Linux）。macOS 冇 nvidia-smi，用 `vm_stat` 睇共用記憶體；Linux 讀唔到（冇 nvidia-smi 或者佢答唔到）就當唔夠，照停（模型開緊先停）。
 - 模型開咗未：call 開始嗰陣先睇。`OCR_PHASE_HEALTH_URL` 喺 2 秒內答 2xx、個 host:port 有嘢 listen 緊（例如模型仲載緊），或者 GPU 上面有佢嘅程序（listen 緊嗰個 port 嘅程序、佢嘅子程序，或者命令行寫明 `--port` 係嗰個 port），都當開緊，照上面計使唔使停；停咗就一定開返。冇開（用戶自己停咗）就唔停、唔開、冇暫代服務、冇 watchdog：GPU 夠位就直接跑；唔夠位就 exit 1（`GPU FULL`），照下面退出碼 `1` 列出佔住 GPU 嘅程序同釋放佢嘅命令，乜都唔停。`status.json` 寫 `left-down`，唔係「交接留低冇開」，所以下一次 call 唔會開返佢。冇 `OCR_PHASE_HEALTH_URL` 就分唔到，照舊按顯存決定，停咗都照開返。WSL2（nvidia-smi 列唔到程序）同 macOS（冇 nvidia-smi）淨係靠 health 網址同 port 判斷。每次 call 嘅結果寫喺 RESULT 行尾 `[gpu: …]`（例如 `model up, stopped and started again`、`model not up, left as it was`），同 `status.json` 同 `timings.json` 嘅 `lastWindow`：`modelUp`、`released`、`restored`，`GPU FULL` 嘅話仲有 `heldBy`。
-- 停模型之前先搵模型嘅其他 client（`scripts/_tenant_clients.py`）：有請求喺線上嘅，等佢做完先停；預算唔夠等就 exit 76。最多等到淨低嘅時間仲夠一個窗口：停模型（同等顯存放返出嚟）嘅時間，加今次 call 引擎之中最慢嗰個嘅「載入模型加最長一頁」（`BOOK/reports/ocr-times.json`，未量度用預設值），最少 60 秒；等完唔夠就 exit 76，乜都唔停，因為咁短嘅窗口載唔切模型、一頁都封唔到。預算本身已經唔夠呢個數，就照舊最少留 60 秒。閒置嘅 session 唔使等：停咗模型之後，同一個 port 有暫代服務答 503 加 `Retry-After`（大約窗口長度嘅六分一），叫佢遲啲再試，開返模型之前先關。停模型嘅命令返咗而個 port 仲未放（例如淨係發咗停止訊號），暫代服務最多再試 5 秒先放棄。冇 `OCR_PHASE_HEALTH_URL` 就唔搵 client、冇暫代服務。
+- 停模型之前先搵模型嘅其他 client（`scripts/jyut_ocr/ocr/tenant_clients.py`）：有請求喺線上嘅，等佢做完先停；預算唔夠等就 exit 76。最多等到淨低嘅時間仲夠一個窗口：停模型（同等顯存放返出嚟）嘅時間，加今次 call 引擎之中最慢嗰個嘅「載入模型加最長一頁」（`BOOK/reports/ocr-times.json`，未量度用預設值），最少 60 秒；等完唔夠就 exit 76，乜都唔停，因為咁短嘅窗口載唔切模型、一頁都封唔到。預算本身已經唔夠呢個數，就照舊最少留 60 秒。閒置嘅 session 唔使等：停咗模型之後，同一個 port 有暫代服務答 503 加 `Retry-After`（大約窗口長度嘅六分一），叫佢遲啲再試，開返模型之前先關。停模型嘅命令返咗而個 port 仲未放（例如淨係發咗停止訊號），暫代服務最多再試 5 秒先放棄。冇 `OCR_PHASE_HEALTH_URL` 就唔搵 client、冇暫代服務。
 - runner 喺自己嘅 process group 跑，用窗口私有嘅 GPU 隊列（`OCR_GPU_QUEUE_DIR`）同 `OCR_PHASE_WINDOW`：唔會排喺交接自己嘅 lease 後面塞死，其他 session 照排隊等。runner 命令唔好自己加 `--gpu-queue-dir`。
 - 窗口以外：設咗 `OCR_PHASE_RELEASE_CMD`，直接跑 runner（或者其他 session 嘅 runner）唔會將模型載入塞滿咗嘅 GPU，而係 exit 75，寫明「GPU belongs to the local model; run through run_ocr_phase.py」，摘要尾多一行 `NOT RUN: …, not the same command again`。呢個 75 唔係「時間到」：直接再跑同一條命令只會再延後。`ocr_book.py` 嘅 RESULT 行會寫明要經 `run_ocr_phase.py` 跑，連成條命令列埋；`wait_for_run.py` 讀到亦係咁講。Linux 上 Paddle 用 CPU 唔使模型嘅顯存，唔受呢條限制，照排自己嘅 `local-cpu` 隊。
 - 開返模型之前，要等窗口嘅 OCR 程序全部走晒：runner 成個 process group、runner 報告嘅 Hunyuan broker 同 server（`OCR_PHASE_CHILDREN`），同私有隊列入面每一個 lease。GPU 子程序會繼承 lease，所以 WSL2 列唔到 GPU 程序都照用得。等一陣仲喺度就殺；殺完仲喺度就唔開返模型（exit 3），交俾 watchdog。OCR 模型仲喺 GPU 嗰陣，一定唔開返模型。
@@ -161,7 +161,7 @@ Agent 跑交接嘅規矩：
 
 ## GPU 交接期間嘅其他 client
 
-停本地模型之前，`run_ocr_phase.py` 用 `scripts/_tenant_clients.py` 搵其他用緊模型嘅程式，等佢哋用完先停；停咗之後喺空出嚟嘅 port 開暫代服務。
+停本地模型之前，`run_ocr_phase.py` 用 `scripts/jyut_ocr/ocr/tenant_clients.py` 搵其他用緊模型嘅程式，等佢哋用完先停；停咗之後喺空出嚟嘅 port 開暫代服務。
 
 - **點樣搵**：
   - 「socket」：有 ESTABLISHED TCP 連線去 `OCR_PHASE_HEALTH_URL` 嗰個 host:port 嘅程序。Linux 讀 `/proc/net/tcp`、`/proc/net/tcp6` 同各程序嘅 fd；macOS 用 `lsof`。URL 係 loopback 位址，就連去任何 loopback 位址同一個 port 都計。其他 OS 使用者嘅連線睇唔到係邊個程序，報 pid `-1`，照樣要等。

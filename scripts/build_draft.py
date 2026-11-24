@@ -315,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", default=MANIFEST_NAME, help=f"the page manifest (default {MANIFEST_NAME})")
     parser.add_argument("--output", default=DRAFT_NAME, help=f"the draft (default {DRAFT_NAME})")
     parser.add_argument("--no-deliver", action="store_true",
-                        help="do not copy the draft beside the book's PDF as X-draft.md (scripts/_deliver.py: the "
+                        help="do not copy the draft beside the book's PDF as X-draft.md (scripts/jyut_ocr/finish/deliver.py: the "
                              "PDF the page manifest names; a file there the pipeline did not write is left alone)")
     return parser
 

@@ -258,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "removing page markers (default: keep definitions in place at the page/section foot)")
     parser.add_argument("--no-deliver", action="store_true",
                         help="do not copy final.md and doubts.md beside the book's PDF as X.md and X-doubts.md "
-                             "(scripts/_deliver.py: the PDF the page manifest names; a file there the pipeline did "
+                             "(scripts/jyut_ocr/finish/deliver.py: the PDF the page manifest names; a file there the pipeline did "
                              "not write is left alone)")
     parser.add_argument("--keep-work", action="store_true",
                         help="keep the working files after the delivery: no fifth step (clean_book.py's cleanup of "

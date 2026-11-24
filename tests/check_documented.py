@@ -103,7 +103,7 @@ def main() -> int:
     print(f"{'FAIL' if stale else 'ok  '} the decisions the user ruled on are not called proposed or pending: "
           f"{len(stale)} found")
     unsourced = unsourced_findings({path.relative_to(ROOT): path.read_text(encoding="utf-8")
-                                    for path in sorted((ROOT / "scripts").glob("*.py"))})
+                                    for path in sorted((ROOT / "scripts").rglob("*.py"))})
     for problem in unsourced:
         print("FAIL", problem)
     print(f"{'FAIL' if unsourced else 'ok  '} what the scripts' comments say was found says what it was found on: "
@@ -124,15 +124,15 @@ def main() -> int:
         print("FAIL", problem)
     print(f"{'FAIL' if cited else 'ok  '} every option SKILL.md cites is a script's, every section it sends "
           f"the agent to a heading: {len(cited)} not")
-    steps = skill_steps(skill, {path.name: path.read_text(encoding="utf-8")
-                                for path in sorted((ROOT / "scripts").glob("*.py"))})
+    steps = skill_steps(skill, {path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
+                                for path in sorted((ROOT / "scripts").rglob("*.py"))})
     for problem in steps:
         print("FAIL", problem)
     print(f"{'FAIL' if steps else 'ok  '} every SKILL.md step the scripts cite is the run sheet's step for "
           f"what they cite it for: {len(steps)} not")
     cited += steps
     called = called_off([ROOT / "SKILL.md", *sorted((ROOT / "references").glob("*.md")),
-                         *sorted((ROOT / "scripts").glob("*.py"))])
+                         *sorted((ROOT / "scripts").rglob("*.py"))])
     for problem in called:
         print("FAIL", problem)
     print(f"{'FAIL' if called else 'ok  '} the round-4 fixes, on by default, are not called off by default: "
