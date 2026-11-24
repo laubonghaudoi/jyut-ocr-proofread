@@ -11,19 +11,17 @@ import sys
 from typing import Any, Collection, Mapping, Sequence
 import unicodedata
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-import _punctuation_fusion  # noqa: E402
-from _proofread_core import (  # noqa: E402
+
+from jyut_ocr.proofread import punctuation_fusion as _punctuation_fusion  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     BULLET_MARKS, BULLET_SHAPES, CENSUS_SYSTEM, CHINESE_DIGITS, CJK, DELETED_RUN_LIMIT,
     FALLBACK_MARKS, INSERTION_LIMIT, LEADER, LEADER_MARKS, LEADER_READ, LOOPED_READING,
     NUMERAL_CHARS, OPENING_MARKS, PUNCT_MARKS, PUNCT_SYSTEM, TEXT_SEAMS, engine_gaps, facade_attr,
     gaps_of, profile_section, punctuation_counts, punctuation_mode, strip_fence, table_spans,
 )
-from _proofread_crops import leader_count  # noqa: E402
-from _proofread_variants import variant_fold  # noqa: E402
-from _proofread_furniture import (  # noqa: E402
+from jyut_ocr.proofread.crops import leader_count  # noqa: E402
+from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
+from jyut_ocr.proofread.furniture import (  # noqa: E402
     DEGENERATE_PUNCTUATION_DENSITY, FURNITURE_EDGE, furniture_leftover, _is_furniture,
 )
 

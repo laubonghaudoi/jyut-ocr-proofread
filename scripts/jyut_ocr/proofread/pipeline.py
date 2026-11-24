@@ -16,17 +16,15 @@ import sys
 import time
 from typing import Any, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file, utc_now,
 )
 from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
-from _packet_client import (  # noqa: E402
+from jyut_ocr.proofread.packet_client import (  # noqa: E402
     PacketPending, packet_page_context,
 )
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     ANSWER_DELETION_LIMIT, BULLET_MARKS, CJK, DEFAULT_PAGE_CONCURRENCY, DEGENERATE_NGRAM_RATIO,
     DROP_GRAM, FALLBACK_MARKS, FORMAT_SYSTEM, FORMAT_SYSTEM_REVIEWED, FURNITURE_LABELS,
     INSERTION_LIMIT, LEADER, LOOPED_READING, NO_ANSWER_RETRY_EFFORT, PageJob, ProofreadError,
@@ -37,31 +35,31 @@ from _proofread_core import (  # noqa: E402
     punctuation_counts, punctuation_mode, strip_fence, strip_grounding, strip_paddlex_img_tags,
     summarize_calls, table_spans, _CALL_LEDGER, _LOOP_CUTS,
 )
-from _proofread_client import (  # noqa: E402
+from jyut_ocr.proofread.client import (  # noqa: E402
     Client, ask_lower, effort_policy_record, loop_cut_changes, no_answer, no_answer_cut,
 )
-from _proofread_crops import (  # noqa: E402
+from jyut_ocr.proofread.crops import (  # noqa: E402
     BOUNDARY_NOTES, COLUMN_BREAK_NOTE, block_tiles, boundary_crop, column_reach, crop_block,
     image_size, page_ink_fraction, upscale_crop,
 )
-from _proofread_variants import (  # noqa: E402
+from jyut_ocr.proofread.variants import (  # noqa: E402
     converted_against_b, resolve_variant, variant_fold, variant_model_sites, variant_segment,
 )
-from _proofread_adjudicate import (  # noqa: E402
+from jyut_ocr.proofread.adjudicate import (  # noqa: E402
     BESIDE_COPY_MIN, NEIGHBOUR_WINDOW, WHOLE_CROP_NOTES, adjudicate_segment, block_spans,
     confirm_nothing, judged_misreads, left_out_of, locate_segment, neighbour_copy, propagation_note,
     propagation_spots, read_twice, reading_nearby, restore_merged_characters, segment_crop,
     segment_crop_kind, segment_winner, split_edge_circle, split_lopsided_segments,
     verify_characters, widened_answer,
 )
-from _proofread_furniture import (  # noqa: E402
+from jyut_ocr.proofread.furniture import (  # noqa: E402
     FURNITURE_GRAM, LOOP_MARKUP, ORDER_CONFLICT_FLOOR, READING_ORDER_AGREEMENT,
     UNCORROBORATED_WITNESS, cut_engine_b_loops, engine_b_cut_off, furniture_leftover,
     head_size_matches, is_running_head, learned_band, learned_head_block, learned_leftover,
     learned_record, loop_unit_from_tag, margin_furniture, needs_placed_stem, non_cjk_text,
     order_judgement, readings_dropped, removable_text, unsupported_reading,
 )
-from _proofread_punctuation import (  # noqa: E402
+from jyut_ocr.proofread.punctuation import (  # noqa: E402
     ANY_FORM_PAGE_PLACES, FORM_FOLD, MARK_FORMS, UNMARKED_SAMPLE, agreed_marks, assemble_passes,
     break_lines, deleted_runs, density_limit, engine_b_lines_merged, engine_b_marks_merged,
     engine_b_places, engine_marks_merged, engine_places, engine_reading, extra_copy_doubts,
@@ -69,7 +67,7 @@ from _proofread_punctuation import (  # noqa: E402
     marked_stretch, notation_hint, place_moved_once, punctuate_part, punctuation_delta,
     punctuation_density, punctuation_doubts, unmarked_candidates, whole_page_reason,
 )
-from _proofread_markers import (  # noqa: E402
+from jyut_ocr.proofread.markers import (  # noqa: E402
     FIGURE_AT_GAP, FIGURE_IN_BLOCK, FIGURE_WRITTEN, agreed_note_markers, arabic_figure_kept,
     arabic_figures, ask_note_numbers, bracket_explanation, bracket_kinds, bracketed_pairs,
     bracketed_unwritten, brackets_by_block, circle_withheld, engine_marks, figure_neighbours,
@@ -77,20 +75,20 @@ from _proofread_markers import (  # noqa: E402
     note_markers_by_block, note_question_reason, place_arabic_figures, place_brackets,
     place_note_markers, restore_arabic_figures, restore_note_markers, structure_input_record,
 )
-from _proofread_tables import (  # noqa: E402
+from jyut_ocr.proofread.tables import (  # noqa: E402
     agreed_block_text, ask_first_record, cells_as_read, enforce_recovered_tables, engine_table,
     fix_cell_direction, orient_table, orient_written_tables, orientation_undecided,
     page_print_direction, place_recovered_tables, punctuation_kept, recover_tables,
     split_table_losses, table_block_marks, table_brackets, table_characters_lost, table_marks_lock,
     table_orientation_record, table_tokens, turn_records, _covers,
 )
-from _proofread_table_rebuild import (  # noqa: E402
+from jyut_ocr.proofread.table_rebuild import (  # noqa: E402
     UNREAD_NOTE, edge_verdicts, engine_b_as_settled, engine_b_inside, engine_b_outside,
     engine_b_table_lines, marks_left_out, merged_origins, merged_other_readings, nominate_tables,
     rebuild_lock, rebuild_region, rebuild_table, rebuilt_edges, region_witness, settle_by_union,
     unread_crop, unread_spot, unwritten_readings, window_merge,
 )
-from _proofread_seal import (  # noqa: E402
+from jyut_ocr.proofread.seal import (  # noqa: E402
     content_fidelity_on, decision_provenance, missing_engine_doubt, punctuation_fusion_summary,
     seal_page, sealed_inputs,
 )

@@ -13,21 +13,19 @@ import sys
 from typing import Any, Collection, Mapping, Sequence
 import unicodedata
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     ADJUDICATE_SYSTEM, ANSWER_DELETION_LIMIT, BLIND_SYSTEM, BLIND_USER, CIRCLE_CHARS, CJK,
     DEGENERATE_NGRAM_RATIO, DROP_GRAM, EMPTY_VERDICTS, INSERTION_LIMIT, LOOPED_READING,
     NEARBY_WINDOW, NUMERAL_CHARS, NUMERAL_CONFLICT_LIMIT, RESEARCH_LINE, UNCORROBORATED_MINIMUM,
     UNSEEN_VERDICTS, aggregate_usage, distinct_ngram_ratio, facade_attr, is_numeral_conflict,
     is_rare_codepoint_conflict, norm_for_diff, strip_grounding, verdict_answer,
 )
-from _proofread_crops import (  # noqa: E402
+from jyut_ocr.proofread.crops import (  # noqa: E402
     block_is_vertical, crop_band, crop_block, crop_glyph, upscale_crop,
 )
-from _proofread_variants import (  # noqa: E402
+from jyut_ocr.proofread.variants import (  # noqa: E402
     simplified_as_read, simplified_form, variant_fold,
 )
 

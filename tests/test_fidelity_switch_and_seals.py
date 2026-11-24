@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from jyut_ocr.core import content_fidelity as fidelity  # noqa: E402
-import _packet_client as packets  # noqa: E402
+from jyut_ocr.proofread import packet_client as packets  # noqa: E402
 import book_profile  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 import stitch_tables  # noqa: E402
@@ -235,7 +235,7 @@ class DoubtLabelTests(unittest.TestCase):
         pp_path = Path(pp.__file__)
         source = "".join(
             path.read_text(encoding="utf-8")
-            for path in [pp_path, *sorted(pp_path.parent.glob("_proofread_*.py"))]
+            for path in [pp_path, *sorted((pp_path.parent / "jyut_ocr" / "proofread").glob("*.py"))]
         )
         kinds = set(re.findall(r'"kind":\s*"([a-z-]+)",\s*"detail"', source))
         self.assertIn("non-cjk-text-not-transcribed", kinds)

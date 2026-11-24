@@ -51,6 +51,8 @@ import tempfile
 import threading
 from typing import Any, Mapping, Sequence
 
+from jyut_ocr.paths import script_path
+
 EXIT_PACKETS_PENDING = 10
 # proofread_pages.py: answers pending, and pages failed or blocked too.
 EXIT_PACKETS_PENDING_WITH_FAILURES = 11
@@ -64,7 +66,7 @@ REQUEST_CONTRACT_VERSION = 2
 USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "cached_tokens", "reasoning_tokens")
 TIMING_FIELDS = ("seconds", "waitSeconds", "serverPromptMs", "serverDecodeMs")
 # Compatibility exports: existing callers and answer imports keep these names.
-from _punctuation_fusion import (
+from jyut_ocr.proofread.punctuation_fusion import (
     FUSED_DELIMITER, normalize_fused_answer, split_fused_answer, ask_fused,
 )
 
@@ -614,7 +616,7 @@ class PacketClient:
                 "total_items": len(items), "bundle_count": len(buckets),
                 "request_ids": wanted_ids, "bundles": bundle_summaries,
                 "apply_command": shlex.join([
-                    sys.executable, str(Path(__file__).with_name("apply_packet_answers.py").resolve()),
+                    sys.executable, str(script_path("apply_packet_answers.py").resolve()),
                     str(self.packets_dir), str(wave_dir),
                 ]),
             }

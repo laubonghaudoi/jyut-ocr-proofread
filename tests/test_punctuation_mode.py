@@ -17,8 +17,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _packet_client as packets
-import _punctuation_fusion as fusion
+from jyut_ocr.proofread import packet_client as packets
+from jyut_ocr.proofread import punctuation_fusion as fusion
 import proofread_pages as pp
 import stand_in
 

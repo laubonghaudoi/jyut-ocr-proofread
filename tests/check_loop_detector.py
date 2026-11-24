@@ -69,7 +69,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import proofread_pages as pp  # noqa: E402
-import _loop_watch  # noqa: E402
+from jyut_ocr.proofread import loop_watch as _loop_watch  # noqa: E402
 import stand_in  # noqa: E402
 
 failures = 0

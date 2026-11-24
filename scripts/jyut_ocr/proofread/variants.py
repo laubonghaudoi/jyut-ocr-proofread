@@ -10,18 +10,17 @@ from pathlib import Path
 import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file,
 )
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.paths import reference_path  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     CJK, facade_attr,
 )
 
 
-VARIANT_LIST = Path(__file__).resolve().parent.parent / "references" / "variant-equivalents.json"
+VARIANT_LIST = reference_path("variant-equivalents.json")
 _VARIANT_RULINGS: dict[frozenset, bool] | None = None
 # OpenCC's list of allographs: characters Unicode encodes at different code
 # points that are one character (淸/清, 愼/慎, 旣/既).  Second to the user's own

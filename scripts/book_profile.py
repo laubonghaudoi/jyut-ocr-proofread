@@ -44,14 +44,14 @@ import time
 from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _packet_client import (  # noqa: E402
+from jyut_ocr.proofread.packet_client import (  # noqa: E402
     EXIT_PACKETS_PENDING,
     PacketClient,
     PacketPending,
     packet_page_context,
 )
 import proofread_pages as pp  # noqa: E402
-import _packet_events  # noqa: E402
+from jyut_ocr.proofread import packet_events as _packet_events  # noqa: E402
 
 SCHEMA_VERSION = 2
 DEFAULT_PROBE_PAGES = 8

@@ -70,7 +70,8 @@ import offline  # noqa: E402,F401
 def main() -> int:
     runner = "".join(
         path.read_text(encoding="utf-8")
-        for path in [ROOT / "scripts" / "proofread_pages.py", *sorted((ROOT / "scripts").glob("_proofread_*.py"))]
+        for path in [ROOT / "scripts" / "proofread_pages.py",
+                     *sorted((ROOT / "scripts" / "jyut_ocr" / "proofread").glob("*.py"))]
     )
     skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     references = "".join(path.read_text(encoding="utf-8") for path in sorted((ROOT / "references").glob("*.md")))

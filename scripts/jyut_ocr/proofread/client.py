@@ -19,12 +19,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import sha256_bytes  # noqa: E402
-import _loop_watch  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread import loop_watch as _loop_watch  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     CJK, LOCAL_AGENT_ENV, MEDIA_PIXEL_LIMIT, ProofreadError, QWEN_CODE_MODEL_ENV, SITE_PLACE_KEYS,
     neutralize_multimodal_placeholders, _CALL_LEDGER, _CALL_SITE, _LOOP_CUTS, _large_image_guard,
 )

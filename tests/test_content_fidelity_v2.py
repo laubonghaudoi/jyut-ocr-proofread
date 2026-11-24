@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from jyut_ocr.core import content_fidelity as f
-import _packet_client as packets
+from jyut_ocr.proofread import packet_client as packets
 import proofread_pages as pp
 
 IMAGE = b'synthetic source, no visual accuracy claim'

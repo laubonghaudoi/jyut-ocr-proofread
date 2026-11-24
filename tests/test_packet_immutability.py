@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import _packet_client as pc
+from jyut_ocr.proofread import packet_client as pc
 import apply_packet_answers as apply
 import book_profile
 import proofread_pages as pp
@@ -302,7 +302,7 @@ class PacketImmutabilityTests(unittest.TestCase):
             fcntl.flock(lock, fcntl.LOCK_EX)
             for source in sources:
                 process = subprocess.Popen([sys.executable, "-c", script,
-                    str(Path(pc.__file__).parent), str(self.root), str(source)],
+                    str(Path(pp.__file__).parent), str(self.root), str(source)],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 processes.append(process)
                 self.addCleanup(lambda p=process: p.kill() if p.poll() is None else None)

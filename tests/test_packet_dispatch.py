@@ -19,7 +19,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-import _packet_client as pc  # noqa: E402
+from jyut_ocr.proofread import packet_client as pc  # noqa: E402
 import packet_dispatch as dispatch  # noqa: E402
 
 

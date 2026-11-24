@@ -10,26 +10,24 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Collection, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core import tables as _tables  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     CIRCLE_CHARS, CJK, DROP_GRAM, FURNITURE_LABELS, LOOPED_READING, NUMERAL_CHARS, TEXT_SEAMS,
     facade_attr, is_numeral_conflict, strip_fence,
 )
-from _proofread_crops import (  # noqa: E402
+from jyut_ocr.proofread.crops import (  # noqa: E402
     crop_block, upscale_crop,
 )
-from _proofread_variants import variant_fold  # noqa: E402
-from _proofread_adjudicate import (  # noqa: E402
+from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
+from jyut_ocr.proofread.adjudicate import (  # noqa: E402
     MOVED_SHARE, fuse_numeral_runs, restore_merged_characters, segment_crop,
 )
-from _proofread_furniture import READING_ORDER_AGREEMENT  # noqa: E402
-from _proofread_markers import (  # noqa: E402
+from jyut_ocr.proofread.furniture import READING_ORDER_AGREEMENT  # noqa: E402
+from jyut_ocr.proofread.markers import (  # noqa: E402
     bracket_explanation, mark_explanation,
 )
-from _proofread_tables import (  # noqa: E402
+from jyut_ocr.proofread.tables import (  # noqa: E402
     TABLE_MINIMUM_ROWS, WITNESS_ANCHOR, furniture_row, witness_anchors, witness_refusal,
 )
 

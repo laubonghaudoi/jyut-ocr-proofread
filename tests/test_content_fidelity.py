@@ -12,7 +12,7 @@ from unittest import mock
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from jyut_ocr.core import content_fidelity as fidelity
-import _packet_client as packets
+from jyut_ocr.proofread import packet_client as packets
 import proofread_pages as pp
 
 

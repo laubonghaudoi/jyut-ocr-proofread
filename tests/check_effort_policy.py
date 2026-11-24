@@ -142,8 +142,8 @@ def check_kinds() -> None:
     names is one the policy takes (a kind added later and left out could not
     be given a rung), and the fidelity questions' three with their correction."""
     named = set()
-    paths = [SCRIPTS / name for name in ("proofread_pages.py", "book_profile.py", "_punctuation_fusion.py")]
-    paths += sorted(SCRIPTS.glob("_proofread_*.py"))
+    paths = [SCRIPTS / name for name in ("proofread_pages.py", "book_profile.py")]
+    paths += sorted((SCRIPTS / "jyut_ocr" / "proofread").glob("*.py"))
     for path in paths:
         source = path.read_text(encoding="utf-8")
         named |= set(re.findall(r'\bkind="([a-z+-]+)"', source))

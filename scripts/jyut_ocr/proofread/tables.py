@@ -13,21 +13,19 @@ import sys
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import unicodedata
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import sha256_bytes  # noqa: E402
 from jyut_ocr.core import tables as _tables  # noqa: E402
 from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
-from _packet_client import PacketPending  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.packet_client import PacketPending  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     CHINESE_DIGITS, CJK, INSERTION_LIMIT, ZERO_FORMS, engine_gaps, facade_attr, gaps_of,
     is_numeral_conflict, layout_index, punctuation_counts, table_spans,
 )
-from _proofread_crops import image_size  # noqa: E402
-from _proofread_variants import variant_fold  # noqa: E402
-from _proofread_furniture import is_furniture_text  # noqa: E402
-from _proofread_markers import (  # noqa: E402
+from jyut_ocr.proofread.crops import image_size  # noqa: E402
+from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
+from jyut_ocr.proofread.furniture import is_furniture_text  # noqa: E402
+from jyut_ocr.proofread.markers import (  # noqa: E402
     NOTE_MARK, bracket_kinds, place_brackets,
 )
 

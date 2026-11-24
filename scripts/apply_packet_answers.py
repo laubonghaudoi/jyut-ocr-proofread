@@ -33,11 +33,11 @@ import sys
 from typing import Any, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _packet_client import (  # noqa: E402
+from jyut_ocr.proofread.packet_client import (  # noqa: E402
     PACKET_SCHEMA_VERSION, _atomic_write_bytes, _sha256_bytes, amendment_response_id, answer_response_id,
     answer_sha256, load_answers_map, normalize_fused_answer, normalize_usage, validate_answer_compatibility,
 )
-import _packet_events  # noqa: E402
+from jyut_ocr.proofread import packet_events as _packet_events  # noqa: E402
 
 MAX_MODEL_ID = 256
 

@@ -13,33 +13,32 @@ import re
 import sys
 from typing import Any, Collection, Iterable, Iterator, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes, sha256_file,
 )
 from jyut_ocr.core import draft_contract as _draft_contract  # noqa: E402
 from jyut_ocr.core import tables as _tables  # noqa: E402
-import _loop_watch  # noqa: E402
+from jyut_ocr.proofread import loop_watch as _loop_watch  # noqa: E402
 from jyut_ocr.core import content_fidelity as _content_fidelity  # noqa: E402
 from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
-import _packet_events  # noqa: E402
-import _punctuation_fusion  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread import packet_events as _packet_events  # noqa: E402
+from jyut_ocr.proofread import punctuation_fusion as _punctuation_fusion  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     DEFAULT_MODEL, ENGINE_A_NAME, ENGINE_B_NAME, MISSING_ENGINE_DOUBT, PageJob, SCHEMA_VERSION,
     facade_attr, punctuation_mode,
 )
-from _proofread_variants import (  # noqa: E402
+from jyut_ocr.proofread.variants import (  # noqa: E402
     opencc_allographs, user_variant_rulings, _LIST_SHA256,
 )
-from _proofread_adjudicate import NEIGHBOUR_WINDOW  # noqa: E402
-from _proofread_furniture import learned_heads_seal  # noqa: E402
-from _proofread_markers import figure_evidence_seal  # noqa: E402
-from _proofread_table_rebuild import DRAFT2_KEY  # noqa: E402
+from jyut_ocr.proofread.adjudicate import NEIGHBOUR_WINDOW  # noqa: E402
+from jyut_ocr.proofread.furniture import learned_heads_seal  # noqa: E402
+from jyut_ocr.proofread.markers import figure_evidence_seal  # noqa: E402
+from jyut_ocr.paths import script_path  # noqa: E402
+from jyut_ocr.proofread.table_rebuild import DRAFT2_KEY  # noqa: E402
 
 
-PROOFREAD_SCRIPT_PATH = Path(__file__).with_name("proofread_pages.py")
+PROOFREAD_SCRIPT_PATH = script_path("proofread_pages.py")
 
 
 def sealed_inputs(job: PageJob) -> dict[str, str]:

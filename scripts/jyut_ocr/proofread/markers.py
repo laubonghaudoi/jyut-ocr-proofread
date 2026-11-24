@@ -15,23 +15,21 @@ import sys
 from typing import Any, Collection, Mapping, Sequence
 import unicodedata
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes,
 )
 from jyut_ocr.core import note_markers as _note_markers  # noqa: E402
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     BRACKET_BESIDE, BRACKET_MISREADS, BRACKET_SLIP, CIRCLE_CHARS, CJK, CLOSE_BRACKETS,
     DEGENERATE_NGRAM_RATIO, FURNITURE_LABELS, LEADER, LEADER_READ, LOOPED_READING, NEARBY_WINDOW,
     NUMERAL_CHARS, OPENING_MARKS, OPEN_BRACKETS, OTHER_BRACKETS, UNCORROBORATED_MINIMUM,
     distinct_ngram_ratio, engine_gaps, layout_index, load_blocks, strip_grounding, verdict_answer,
 )
-from _proofread_variants import variant_fold  # noqa: E402
-from _proofread_adjudicate import align_drafts  # noqa: E402
-from _proofread_furniture import margin_blocks  # noqa: E402
-from _proofread_punctuation import (  # noqa: E402
+from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
+from jyut_ocr.proofread.adjudicate import align_drafts  # noqa: E402
+from jyut_ocr.proofread.furniture import margin_blocks  # noqa: E402
+from jyut_ocr.proofread.punctuation import (  # noqa: E402
     engine_b_places, engine_places,
 )
 

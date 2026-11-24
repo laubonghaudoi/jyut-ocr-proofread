@@ -371,7 +371,8 @@ def code_identity() -> dict[str, Any]:
     only the repair tool's own files were hashed."""
     here = Path(__file__).resolve().parent
     paths = sorted(p for p in here.glob("*.py")
-                   if p.name.startswith(("repair_book", "proofread_pages", "_proofread_")))
+                   if p.name in ("repair_book.py", "proofread_pages.py"))
+    paths += sorted((here / "jyut_ocr" / "proofread").glob("*.py"))
     paths += sorted((here / "jyut_ocr" / "repair").glob("*.py"))
     paths += sorted((here / "jyut_ocr" / "core" / name)
                     for name in ("common.py", "content_fidelity.py", "note_markers.py"))

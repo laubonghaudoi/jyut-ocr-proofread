@@ -9,10 +9,8 @@ from pathlib import Path
 import sys
 from typing import Any, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
-from _proofread_core import (  # noqa: E402
+
+from jyut_ocr.proofread.core import (  # noqa: E402
     CJK, INK_MARGIN, MEASURE_WIDTH, RULE_COVERAGE, norm_for_diff, _large_image_guard,
 )
 

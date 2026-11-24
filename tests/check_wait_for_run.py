@@ -920,7 +920,7 @@ def ps_runs(book: Book, problems: list[str]) -> None:
 def code_checks(problems: list[str], wait_for_run) -> None:
     """The wait's codes and steps: the packet transport's exit codes, P's
     long steps, and each exit code in its docstring."""
-    import _packet_client
+    from jyut_ocr.proofread import packet_client as _packet_client
     wanted = {
         "exit 10 and 11 are the packet transport's":
             (wait_for_run.EXIT_PENDING, wait_for_run.EXIT_PENDING_FAILED)

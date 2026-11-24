@@ -70,7 +70,7 @@ def png():
 
 def ask(book, stage, questions, bundles):
     """Ask QUESTIONS by packets; exit 10 with a wave written while any has no answer yet."""
-    import _packet_client as pc
+    from jyut_ocr.proofread import packet_client as pc
     client = pc.PacketClient(book / "packets", max_bundles=bundles, max_items_per_bundle=int(knob(book, "per-bundle", 2)))
     pending = 0
     for text in questions:

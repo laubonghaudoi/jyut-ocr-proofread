@@ -12,20 +12,18 @@ import re
 import sys
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, _SCRIPTS_DIR)
+
 from jyut_ocr.core.common import (  # noqa: E402
     canonical_json_bytes, sha256_bytes,
 )
-from _proofread_core import (  # noqa: E402
+from jyut_ocr.proofread.core import (  # noqa: E402
     ANSWER_DELETION_LIMIT, CJK, DEGENERATE_NGRAM_RATIO, DELETED_RUN_LIMIT, DROP_GRAM,
     FOLIO_MAX_FIGURES, FURNITURE_LABELS, HEAD_SIZE_RATIO, INSERTION_LIMIT, LONE_FOLIO,
     LOOPED_READING, NUMERAL_CHARS, UNCORROBORATED_MINIMUM, WHOLE_PAGE_FURNITURE_LABELS,
     distinct_ngram_ratio, layout_index, profile_section, strip_grounding,
 )
-from _proofread_variants import variant_fold  # noqa: E402
-from _proofread_adjudicate import (  # noqa: E402
+from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
+from jyut_ocr.proofread.adjudicate import (  # noqa: E402
     align_drafts, fuse_numeral_runs, gram_counts,
 )
 
