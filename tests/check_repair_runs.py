@@ -214,9 +214,9 @@ import offline  # noqa: E402,F401
 import repair_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent / "scripts"))
-import _repair_edits as re_  # noqa: E402
-import _repair_rules as rr  # noqa: E402
-import _repair_runs as rn  # noqa: E402
+from jyut_ocr.repair import edits as re_  # noqa: E402
+from jyut_ocr.repair import rules as rr  # noqa: E402
+from jyut_ocr.repair import runs as rn  # noqa: E402
 from jyut_ocr.core import ocr_markdown as om  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 import repair_book  # noqa: E402
@@ -600,8 +600,8 @@ def unit_checks() -> None:
                    rn.tokens("Chu, T. *Local Government*. Harvard, 1962.", "b"))
           and not rn.agree(rn.tokens("30</td><td>29", "a"), rn.tokens("3029", "b")),
           "two readings that cut the same characters into runs differently agree; two figures and one figure do not")
-    import _repair_inputs as ri
-    import _repair_joins as rj
+    from jyut_ocr.repair import inputs as ri
+    from jyut_ocr.repair import joins as rj
     frame = ri.parse_assembly("<!-- page_001 -->\n\n甲\n\n<!-- page_002 -->\n<!-- page_003 -->\n\n乙\n")
     composed = frame.compose({2: "Tang Li-chung\n\n2002\n"})
     check(composed == "<!-- page_001 -->\n\n甲\n\n<!-- page_002 -->\n\nTang Li-chung\n\n2002\n\n<!-- page_003 -->\n\n乙\n"

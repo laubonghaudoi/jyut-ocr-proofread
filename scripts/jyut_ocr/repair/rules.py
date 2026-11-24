@@ -264,10 +264,10 @@ import re
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
 import proofread_pages as pp
-import _book_lint as lint
-import _repair_align as ra
-import _repair_edits as re_
-import _repair_model as rm
+from jyut_ocr.repair import book_lint as lint
+from jyut_ocr.repair import align as ra
+from jyut_ocr.repair import edits as re_
+from jyut_ocr.repair import model as rm
 
 
 # --- common ----------------------------------------------------------------

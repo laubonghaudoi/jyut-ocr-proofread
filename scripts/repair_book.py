@@ -72,17 +72,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import proofread_pages as pp  # noqa: E402
-import _book_lint as lint  # noqa: E402
-import _repair_brackets as rb  # noqa: E402
-import _repair_edits as re_  # noqa: E402
-import _repair_inputs as ri  # noqa: E402
-import _repair_model as rm  # noqa: E402
-import _repair_joins as rj  # noqa: E402
-import _repair_notes as rnotes  # noqa: E402
-import _repair_rules as rr  # noqa: E402
-import _repair_runs as rn  # noqa: E402
-import _repair_structure as rs  # noqa: E402
-import _repair_words as rw  # noqa: E402
+from jyut_ocr.repair import book_lint as lint  # noqa: E402
+from jyut_ocr.repair import brackets as rb  # noqa: E402
+from jyut_ocr.repair import edits as re_  # noqa: E402
+from jyut_ocr.repair import inputs as ri  # noqa: E402
+from jyut_ocr.repair import model as rm  # noqa: E402
+from jyut_ocr.repair import joins as rj  # noqa: E402
+from jyut_ocr.repair import notes as rnotes  # noqa: E402
+from jyut_ocr.repair import rules as rr  # noqa: E402
+from jyut_ocr.repair import runs as rn  # noqa: E402
+from jyut_ocr.repair import structure as rs  # noqa: E402
+from jyut_ocr.repair import words as rw  # noqa: E402
 from jyut_ocr.core.ocr_markdown import parse_page_spec  # noqa: E402
 
 
@@ -371,11 +371,16 @@ def code_identity() -> dict[str, Any]:
     only the repair tool's own files were hashed."""
     here = Path(__file__).resolve().parent
     paths = sorted(p for p in here.glob("*.py")
-                   if p.name.startswith(("_repair", "repair_book", "_book_lint", "proofread_pages", "_proofread_")))
+                   if p.name.startswith(("repair_book", "proofread_pages", "_proofread_")))
+    paths += sorted((here / "jyut_ocr" / "repair").glob("*.py"))
     paths += sorted((here / "jyut_ocr" / "core" / name)
                     for name in ("common.py", "content_fidelity.py", "note_markers.py"))
     paths += [pp.VARIANT_LIST, pp.ALLOGRAPHS, pp.TS_CHARACTERS]
-    names = [f"{path.parent.name}/{path.name}" for path in paths]
+    names = [
+        path.relative_to(here.parent).as_posix()
+        if path.is_relative_to(here.parent) else f"{path.parent.name}/{path.name}"
+        for path in paths
+    ]
     digest = hashlib.sha256()
     for name, path in zip(names, paths):
         digest.update(name.encode() + b"\0" + (path.read_bytes() if path.is_file() else b""))

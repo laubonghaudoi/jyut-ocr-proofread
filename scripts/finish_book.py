@@ -552,7 +552,7 @@ def read_sealed(inputs: Inputs, log: "Log") -> Sealed:
     any, proofread with the switch off, needs none), or a sealed page is not
     the manifest's.  These checks also run before reusing an earlier assembly."""
     import proofread_pages as pp
-    import _repair_inputs as ri
+    from jyut_ocr.repair import inputs as ri
     from jyut_ocr.core import content_fidelity as fidelity
     from jyut_ocr.core.ocr_markdown import load_page_manifest
 
@@ -745,7 +745,7 @@ def assembly_problems(folder: Path, sealed: Sealed, log: "Log") -> list[str]:
     """Why the assembly in FOLDER is not the sealed pages' (empty: it is):
     its page manifest copy, its page list's hashes, a replay of its segments
     against combined-annotated.md, and each assembled page's text."""
-    import _repair_inputs as ri
+    from jyut_ocr.repair import inputs as ri
 
     problems = []
     try:
@@ -1211,7 +1211,7 @@ class Band:
         """Whether TEXT is the band's: copies of a stem (the model's
         positional match), run suffixes and numerals - with a stem copy or
         a suffix among them, or the numerals the page's folio."""
-        import _repair_model as rm
+        from jyut_ocr.repair import model as rm
         rest = _cjk(text)
         if not rest:
             return False
@@ -1234,7 +1234,7 @@ class Band:
     def inside_stem(self, before: str, spot: str, after: str) -> bool:
         """Whether SPOT, between BEFORE and AFTER, lies inside a copy of a
         stem (an answer read at a character of the running head)."""
-        import _repair_model as rm
+        from jyut_ocr.repair import model as rm
         before, spot, after = _cjk(before), _cjk(spot) or "？", _cjk(after)
         probe = before + spot + after
         lo, hi = len(before), len(before) + len(spot)

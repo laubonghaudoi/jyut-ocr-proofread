@@ -419,10 +419,10 @@ import proofread_pages as pp
 from jyut_ocr.core import ocr_markdown as om
 from jyut_ocr.core import tables as _tables
 from jyut_ocr.core.note_markers import NUMBER_RE as NUMERIC_NOTE_RE, marker_key, math_context
-import _repair_align as ra
-import _repair_edits as re_
-import _repair_joins as rj
-import _repair_rules as rr
+from jyut_ocr.repair import align as ra
+from jyut_ocr.repair import edits as re_
+from jyut_ocr.repair import joins as rj
+from jyut_ocr.repair import rules as rr
 
 
 # --- tokens ---------------------------------------------------------------------
@@ -2104,7 +2104,7 @@ class Setting:
         """SCAN as the stage reads it: its text as it stands, or TEXT."""
         pd = rr.page_data(self.book, self.model, scan, self.texts[scan] if text is None else text)
         if scan not in self.folio_forms:
-            import _book_lint as lint
+            from jyut_ocr.repair import book_lint as lint
             self.folio_forms[scan] = lint.folio_forms(pd.entry.get("folio"))
         notation = (getattr(self.book, "profile", None) or {}).get("notation") or {}
         return PageRuns(pd, self.folio_forms[scan], bool(notation.get("doubled") or notation.get("emphasis")))

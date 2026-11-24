@@ -55,7 +55,7 @@ from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import proofread_pages as pp
-import _repair_align as ra
+from jyut_ocr.repair import align as ra
 
 
 SCHEMA_VERSION = 1

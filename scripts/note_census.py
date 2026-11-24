@@ -37,11 +37,11 @@ import sys
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _repair_inputs as ri  # noqa: E402
-import _repair_model as rm  # noqa: E402
-import _repair_notes as rnotes  # noqa: E402
-import _repair_rules as rr  # noqa: E402
-import _repair_runs as rn  # noqa: E402
+from jyut_ocr.repair import inputs as ri  # noqa: E402
+from jyut_ocr.repair import model as rm  # noqa: E402
+from jyut_ocr.repair import notes as rnotes  # noqa: E402
+from jyut_ocr.repair import rules as rr  # noqa: E402
+from jyut_ocr.repair import runs as rn  # noqa: E402
 
 CATEGORIES = ("held", "both-same", "one-engine", "position-apart", "engines-differ", "layout-only")
 

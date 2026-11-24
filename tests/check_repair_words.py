@@ -30,7 +30,7 @@ import sys
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-import _repair_words as rw  # noqa: E402
+from jyut_ocr.repair import words as rw  # noqa: E402
 
 failures = 0
 

@@ -600,7 +600,7 @@ def temporaries(book: Path, repaired: Path, profile: Path | None) -> list[tuple[
     earlier pattern on the shapes alone took .my-notes.tmp, notes.json.tmp
     and finish/.todo.tmp of a made-up book in review."""
     import build_draft
-    import _repair_inputs as ri
+    from jyut_ocr.repair import inputs as ri
 
     def dotted(names: tuple[str, ...], random: bool = False) -> re.Pattern[str]:
         tail = r"(?:\.[a-z0-9_]+)?\.tmp" if random else r"\.tmp"

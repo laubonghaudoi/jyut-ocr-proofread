@@ -543,7 +543,7 @@ HOLD = """import os, sys, time
 hold = os.environ.get("FINISH_HOLD")
 if hold:
     sys.path.insert(0, os.environ["FINISH_HOLD_SCRIPTS"])
-    import _repair_model
+    from jyut_ocr.repair import model as _repair_model
     real = _repair_model.learn
     def learn(*args, **kwargs):
         open(hold + ".reached", "w").close()

@@ -232,8 +232,8 @@ def repair_problems(skill: str, references: str, workflow: str) -> list[str]:
     repair = (scripts / "repair_book.py").read_text(encoding="utf-8")
     stage_switches = sorted(set(re.findall(r'Stage\("[a-z-]+",\s*"(--[a-z-]+)"', repair)))
     other = sorted(set(re.findall(r'add_argument\(\s*"(--[a-z-]+)"', repair)) - set(stage_switches))
-    kinds = tuple_strings((scripts / "_repair_edits.py").read_text(encoding="utf-8"), "DOUBT_KINDS")
-    counters = tuple_strings((scripts / "_book_lint.py").read_text(encoding="utf-8"), "COUNTERS")
+    kinds = tuple_strings((scripts / "jyut_ocr" / "repair" / "edits.py").read_text(encoding="utf-8"), "DOUBT_KINDS")
+    counters = tuple_strings((scripts / "jyut_ocr" / "repair" / "book_lint.py").read_text(encoding="utf-8"), "COUNTERS")
     assert len(stage_switches) >= 8 and len(other) >= 4 and len(kinds) >= 9 and len(counters) >= 20, \
         "the repair tool's switches, doubt kinds and counters were not found"
     return ([f"repair_book.py switch {name} is in neither SKILL.md nor references/"

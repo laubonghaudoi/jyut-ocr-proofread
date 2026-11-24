@@ -139,12 +139,12 @@ import re
 from typing import Any, Callable, Mapping, NamedTuple, Sequence
 
 import proofread_pages as pp
-import _book_lint as lint
+from jyut_ocr.repair import book_lint as lint
 from jyut_ocr.core import ocr_markdown as om
-import _repair_align as ra
-import _repair_edits as re_
-import _repair_model as rm
-import _repair_rules as rr
+from jyut_ocr.repair import align as ra
+from jyut_ocr.repair import edits as re_
+from jyut_ocr.repair import model as rm
+from jyut_ocr.repair import rules as rr
 
 
 HEADING = re.compile(r"^(?P<indent> {0,3})(?P<marks>#{1,6})[ \t]+")

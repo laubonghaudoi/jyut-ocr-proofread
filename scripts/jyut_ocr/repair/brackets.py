@@ -104,9 +104,9 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Sequence
 
-import _repair_rules as rr
-import _repair_runs as rn
-import _repair_edits as re_
+from jyut_ocr.repair import rules as rr
+from jyut_ocr.repair import runs as rn
+from jyut_ocr.repair import edits as re_
 from jyut_ocr.core.note_markers import marker_key
 
 OPEN, CLOSE = "〔", "〕"

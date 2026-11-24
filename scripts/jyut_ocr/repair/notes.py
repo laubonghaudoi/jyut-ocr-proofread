@@ -88,11 +88,11 @@ import unicodedata
 from typing import Any, Mapping, Sequence
 
 from jyut_ocr.core import ocr_markdown as om
-import _repair_edits as re_
-import _repair_rules as rr
-import _repair_runs as rn
+from jyut_ocr.repair import edits as re_
+from jyut_ocr.repair import rules as rr
+from jyut_ocr.repair import runs as rn
 from jyut_ocr.core.note_markers import NOTE_CIRCLED, NUMBER_RE, SUPERSCRIPTS, marker_key, math_context
-from _repair_brackets import UNPAIRED_HEAD
+from jyut_ocr.repair.brackets import UNPAIRED_HEAD
 
 CIRCLED = re.compile(rf"[{NOTE_CIRCLED}]")
 # Plain or superscript figures right after circled glyphs (⑦3, ⑦⁴: one number).

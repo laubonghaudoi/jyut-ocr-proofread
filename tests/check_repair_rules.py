@@ -179,10 +179,10 @@ import offline  # noqa: E402,F401
 import repair_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent / "scripts"))
-import _repair_edits as re_  # noqa: E402
-import _repair_inputs as ri  # noqa: E402
-import _repair_model as rm  # noqa: E402
-import _repair_rules as rr  # noqa: E402
+from jyut_ocr.repair import edits as re_  # noqa: E402
+from jyut_ocr.repair import inputs as ri  # noqa: E402
+from jyut_ocr.repair import model as rm  # noqa: E402
+from jyut_ocr.repair import rules as rr  # noqa: E402
 import proofread_pages as pp  # noqa: E402
 import repair_book  # noqa: E402
 

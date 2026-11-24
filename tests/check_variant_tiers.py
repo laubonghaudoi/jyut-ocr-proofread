@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
 import proofread_pages as pp  # noqa: E402
-import _book_lint as bl  # noqa: E402
+from jyut_ocr.repair import book_lint as bl  # noqa: E402
 import run_regression as rr  # noqa: E402
 
 UPSTREAM_SHA256 = "edd6b79bb319996d54c5d68c99f12bd4bcf66312032e09b684d9da91664acd36"

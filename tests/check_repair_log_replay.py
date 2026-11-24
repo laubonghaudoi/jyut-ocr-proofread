@@ -44,7 +44,7 @@ import offline  # noqa: E402,F401
 import repair_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent / "scripts"))
-import _repair_edits as re_  # noqa: E402
+from jyut_ocr.repair import edits as re_  # noqa: E402
 import repair_book  # noqa: E402
 
 

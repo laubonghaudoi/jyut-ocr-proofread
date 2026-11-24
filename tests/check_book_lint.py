@@ -98,9 +98,9 @@ import offline  # noqa: E402,F401
 import repair_fixture as fx  # noqa: E402
 
 sys.path.insert(0, str(HERE.parent / "scripts"))
-import _book_lint as bl  # noqa: E402
-import _repair_inputs as ri  # noqa: E402
-import _repair_model as rm  # noqa: E402
+from jyut_ocr.repair import book_lint as bl  # noqa: E402
+from jyut_ocr.repair import inputs as ri  # noqa: E402
+from jyut_ocr.repair import model as rm  # noqa: E402
 
 
 FAILURES: list[str] = []

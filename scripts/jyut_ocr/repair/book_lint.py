@@ -40,11 +40,10 @@ import re
 import sys
 from typing import Any, Mapping, Sequence
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import proofread_pages as pp  # noqa: E402
-import _repair_align as ra  # noqa: E402
-import _repair_inputs as ri  # noqa: E402
-import _repair_model as rm  # noqa: E402
+from jyut_ocr.repair import align as ra  # noqa: E402
+from jyut_ocr.repair import inputs as ri  # noqa: E402
+from jyut_ocr.repair import model as rm  # noqa: E402
 
 
 COUNTERS = (

@@ -36,7 +36,7 @@ from collections import defaultdict
 from typing import Any, Iterable, Mapping, Sequence
 
 import proofread_pages as pp
-import _repair_rules as rr
+from jyut_ocr.repair import rules as rr
 
 # Characters numbering differs in: a group whose written characters are all
 # of them (第二集 against 第三集) is numbering, not one reading.
