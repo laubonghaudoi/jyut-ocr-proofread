@@ -107,24 +107,28 @@ from jyut_ocr.proofread.packet_client import (  # noqa: E402
 from jyut_ocr.proofread.core import (  # noqa: E402
     ADJUDICATE_SYSTEM, ANSWER_DELETION_LIMIT, ANSWER_LINE, AUDITOR_SYSTEM, BLIND_SYSTEM, BLIND_USER,
     BRACKET_BESIDE, BRACKET_MISREADS, BRACKET_SLIP, BULLET_MARKS, BULLET_SHAPES, CENSUS_SYSTEM,
-    CHINESE_DIGITS, CIRCLE_CHARS, CJK, CJK_EXTRA, CLOSE_BRACKETS, DEFAULT_EFFORT, DEFAULT_ENDPOINT,
-    DEFAULT_MODEL, DEFAULT_PAGE_CONCURRENCY, DEFAULT_WORKERS, DEGENERATE_NGRAM_RATIO,
-    DELETED_RUN_LIMIT, DROP_GRAM, EMPTY_VERDICTS, ENGINE_A_NAME, ENGINE_B_FOLDER, ENGINE_B_LABELS,
-    ENGINE_B_NAME, FALLBACK_MARKS, FOLIO_MAX_FIGURES, FORMAT_SYSTEM, FORMAT_SYSTEM_REVIEWED,
-    FRONT_MATTER_LABELS, FRONT_MATTER_LIMIT, FURNITURE_LABELS, GROUNDING_LINE, HEAD_SIZE_RATIO,
-    INK_MARGIN, INSERTION_LIMIT, LARGE_IMAGE_PIXEL_THRESHOLD, LEADER, LEADER_MARKS, LEADER_READ,
-    LOCAL_AGENT_ENV, LONE_FOLIO, LOOPED_READING, MEASURE_WIDTH, MEDIA_PIXEL_LIMIT,
-    MISSING_ENGINE_DOUBT, MULTIMODAL_PLACEHOLDER_RE, NEARBY_WINDOW, NO_ANSWER_RETRY_EFFORT,
-    NUMERAL_CHARS, NUMERAL_CONFLICT_LIMIT, OPENING_MARKS, OPEN_BRACKETS, OTHER_BRACKETS,
-    PADDLEX_IMG_LINE_RE, PADDLEX_IMG_TAG_RE, PUNCT, PUNCT_MARKS, PUNCT_SYSTEM, PageJob,
+    CENSUS_SYSTEM_SPACE_CLAUSE, CHINESE_DIGITS, CIRCLE_CHARS, CJK, CJK_EXTRA, CLOSE_BRACKETS,
+    DEFAULT_EFFORT, DEFAULT_ENDPOINT, DEFAULT_MODEL, DEFAULT_PAGE_CONCURRENCY, DEFAULT_WORKERS,
+    DEGENERATE_NGRAM_RATIO, DELETED_RUN_LIMIT, DROP_GRAM, EMPTY_VERDICTS, ENGINE_A_NAME,
+    ENGINE_B_FOLDER, ENGINE_B_LABELS, ENGINE_B_NAME, FALLBACK_MARKS, FOLIO_MAX_FIGURES,
+    FORMAT_SYSTEM, FORMAT_SYSTEM_REVIEWED, FORMAT_SYSTEM_REVIEWED_SPACE_CLAUSE,
+    FORMAT_SYSTEM_SPACE_CLAUSE, FRONT_MATTER_LABELS, FRONT_MATTER_LIMIT, FURNITURE_LABELS,
+    GROUNDING_LINE, HEAD_SIZE_RATIO, IDEOGRAPHIC_SPACE, INK_MARGIN, INSERTION_LIMIT,
+    LARGE_IMAGE_PIXEL_THRESHOLD, LEADER, LEADER_MARKS, LEADER_READ, LOCAL_AGENT_ENV, LONE_FOLIO,
+    LOOPED_READING, MEASURE_WIDTH, MEDIA_PIXEL_LIMIT, MISSING_ENGINE_DOUBT,
+    MULTIMODAL_PLACEHOLDER_RE, NEARBY_WINDOW, NO_ANSWER_RETRY_EFFORT, NUMERAL_CHARS,
+    NUMERAL_CONFLICT_LIMIT, OPENING_MARKS, OPEN_BRACKETS, OTHER_BRACKETS, PADDLEX_IMG_LINE_RE,
+    PADDLEX_IMG_TAG_RE, PUNCT, PUNCT_MARKS, PUNCT_SYSTEM, PUNCT_SYSTEM_SPACE_CLAUSE, PageJob,
     ProofreadError, QWEN_CODE_MODEL_ENV, RARE_CODEPOINT, RESEARCH_LINE, ROLE_SAMPLE_PAGES,
     RULE_COVERAGE, SCHEMA_VERSION, SENTENCE_MARKS, SHORT_DOC_MAX_PAGES, SITE_PLACE_KEYS,
-    STRUCTURE_SYSTEM, STRUCTURE_SYSTEM_REVIEWED, TEXT_AUTHORITY, TEXT_SEAMS, UNCORROBORATED_MINIMUM,
-    UNSEEN_VERDICTS, WHOLE_PAGE_FURNITURE_LABELS, WRITER_SYSTEM, ZERO_FORMS, aggregate_usage,
-    call_site, distinct_ngram_ratio, engine_gaps, facade_attr, front_matter_research, gaps_of,
-    in_context, is_lone_circle, is_numeral_conflict, is_rare_codepoint_conflict, layout_index,
-    load_blocks, neutralize_multimodal_placeholders, norm_for_diff, profile_section,
-    punctuation_counts, punctuation_mode, set_facade, strip_fence, strip_grounding,
+    SPACE_CLAUSE_MARKS, STRUCTURE_SYSTEM, STRUCTURE_SYSTEM_REVIEWED,
+    STRUCTURE_SYSTEM_REVIEWED_SPACE_CLAUSE, STRUCTURE_SYSTEM_SPACE_CLAUSE, TEXT_AUTHORITY,
+    TEXT_SEAMS, UNCORROBORATED_MINIMUM, UNSEEN_VERDICTS, WHOLE_PAGE_FURNITURE_LABELS,
+    WRITER_SYSTEM, WRITER_SYSTEM_SPACE_CLAUSE, ZERO_FORMS, aggregate_usage, call_site,
+    distinct_ngram_ratio, engine_gaps, facade_attr, front_matter_research, gaps_of, in_context,
+    is_lone_circle, is_numeral_conflict, is_rare_codepoint_conflict, layout_index, load_blocks,
+    neutralize_multimodal_placeholders, norm_for_diff, profile_section, punctuation_counts,
+    punctuation_mode, set_facade, space_clause_enabled, strip_fence, strip_grounding,
     strip_paddlex_img_tags, summarize_calls, table_spans, verdict_answer, _CALL_LEDGER, _CALL_SITE,
     _LARGE_IMAGE_SEM, _LOOP_CUTS, _PADDLEX_IMG_TAG_PATTERN, _large_image_guard, _reviewed_prompt,
 )
@@ -186,9 +190,10 @@ from jyut_ocr.proofread.punctuation import (  # noqa: E402
     engine_b_marks_merged, engine_b_places, engine_marks_merged, engine_places, engine_reading,
     extra_copies, extra_copy_doubts, furniture_unexplained, gap_as_written, gap_marks, gap_print,
     gap_sides, leader_list_breaks, leader_rewrites, leader_runs, leaders_written, mark_changes,
-    mark_places, marked_stretch, marks_as_written, notation_hint, other_print, parse_census,
-    place_moved_once, punctuate_part, punctuation_delta, punctuation_density, punctuation_doubts,
-    punctuation_pass_ok, realign_answer, seam_sides, seat_marks, tied_marks, unmarked_candidates,
+    mark_places, marked_stretch, marks_as_written, normalize_cjk_clause_spaces, notation_hint,
+    other_print, parse_census, place_moved_once, punctuate_part, punctuation_delta,
+    punctuation_density, punctuation_doubts, punctuation_pass_ok, realign_answer,
+    restore_clause_spaces, seam_sides, seat_marks, tied_marks, unmarked_candidates,
     whole_page_reason,
 )
 from jyut_ocr.proofread.markers import (  # noqa: E402
@@ -443,6 +448,10 @@ def build_parser() -> argparse.ArgumentParser:
                              f"ask the punctuation question for the {UNMARKED_SAMPLE} longest blocks first and, "
                              "when every one is answered as printed without marks, take the page's other "
                              "blocks without marks, unasked; off by default")
+    parser.add_argument("--space-clause", action="store_true", dest="space_clause", default=False,
+                        help="count and insert printed one-cell Chinese clause-pause spaces as full-width "
+                             "ideographic space U+3000 (also turned on when book-profile.json reports "
+                             "notation.spaceClause); off by default")
     parser.add_argument("--no-unread-table-characters", action="store_true",
                         help="the user's headerCharacters ruling (2026-09-27) off: a rebuilt table that "
                              "writes a character no engine read in its region is refused, as before, "

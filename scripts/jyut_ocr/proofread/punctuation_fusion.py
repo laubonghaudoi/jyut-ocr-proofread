@@ -17,15 +17,15 @@ def normalize_fused_answer(raw: Any) -> str:
     """Canonicalize a `census+punctuate` answer into `census\\n---PUNCTUATED---\\npunctuated`."""
     if isinstance(raw, Mapping):
         census_part = str(raw.get("census") or "").strip()
-        punct_part = str(raw.get("punctuated") or "").strip()
+        punct_part = str(raw.get("punctuated") or "").strip(" \t\r\n")
         return f"{census_part}\n{FUSED_DELIMITER}\n{punct_part}"
-    text = str(raw or "").strip()
+    text = str(raw or "").strip(" \t\r\n")
     if text.startswith("{") and text.endswith("}"):
         with contextlib.suppress(ValueError, TypeError):
             parsed = json.loads(text)
             if isinstance(parsed, Mapping) and ("census" in parsed or "punctuated" in parsed):
                 census_part = str(parsed.get("census") or "").strip()
-                punct_part = str(parsed.get("punctuated") or "").strip()
+                punct_part = str(parsed.get("punctuated") or "").strip(" \t\r\n")
                 return f"{census_part}\n{FUSED_DELIMITER}\n{punct_part}"
     return text
 
@@ -35,7 +35,7 @@ def split_fused_answer(text: str, fallback_span: str) -> tuple[str, str]:
     normalized = normalize_fused_answer(text)
     if FUSED_DELIMITER in normalized:
         left, _, right = normalized.partition(FUSED_DELIMITER)
-        punct = right.strip()
+        punct = right.strip(" \t\r\n")
         if punct in ("無標點", "無", "(無標點)"):
             punct = fallback_span
         return left.strip(), punct
@@ -53,7 +53,7 @@ def split_fused_answer(text: str, fallback_span: str) -> tuple[str, str]:
             in_header = False
             body_lines.append(line)
     census_text = "\n".join(census_lines).strip()
-    punct_text = "\n".join(body_lines).strip()
+    punct_text = "\n".join(body_lines).strip(" \t\r\n")
     if punct_text in ("", "無標點", "無", "(無標點)"):
         punct_text = fallback_span
     return census_text, punct_text

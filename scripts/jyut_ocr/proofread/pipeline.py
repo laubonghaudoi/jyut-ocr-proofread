@@ -26,14 +26,17 @@ from jyut_ocr.proofread.packet_client import (  # noqa: E402
 )
 from jyut_ocr.proofread.core import (  # noqa: E402
     ANSWER_DELETION_LIMIT, BULLET_MARKS, CJK, DEFAULT_PAGE_CONCURRENCY, DEGENERATE_NGRAM_RATIO,
-    DROP_GRAM, FALLBACK_MARKS, FORMAT_SYSTEM, FORMAT_SYSTEM_REVIEWED, FURNITURE_LABELS,
-    INSERTION_LIMIT, LEADER, LOOPED_READING, NO_ANSWER_RETRY_EFFORT, PageJob, ProofreadError,
-    SCHEMA_VERSION, SITE_PLACE_KEYS, STRUCTURE_SYSTEM, STRUCTURE_SYSTEM_REVIEWED, TEXT_AUTHORITY,
-    UNCORROBORATED_MINIMUM, WRITER_SYSTEM, aggregate_usage, call_site, distinct_ngram_ratio,
-    engine_gaps, facade_attr, front_matter_research, gaps_of, in_context, is_lone_circle,
-    is_numeral_conflict, is_rare_codepoint_conflict, layout_index, load_blocks, profile_section,
-    punctuation_counts, punctuation_mode, strip_fence, strip_grounding, strip_paddlex_img_tags,
-    summarize_calls, table_spans, _CALL_LEDGER, _LOOP_CUTS,
+    DROP_GRAM, FALLBACK_MARKS, FORMAT_SYSTEM, FORMAT_SYSTEM_REVIEWED,
+    FORMAT_SYSTEM_REVIEWED_SPACE_CLAUSE, FORMAT_SYSTEM_SPACE_CLAUSE, FURNITURE_LABELS,
+    IDEOGRAPHIC_SPACE, INSERTION_LIMIT, LEADER, LOOPED_READING, NO_ANSWER_RETRY_EFFORT, PageJob,
+    ProofreadError, SCHEMA_VERSION, SITE_PLACE_KEYS, STRUCTURE_SYSTEM, STRUCTURE_SYSTEM_REVIEWED,
+    STRUCTURE_SYSTEM_REVIEWED_SPACE_CLAUSE, STRUCTURE_SYSTEM_SPACE_CLAUSE, TEXT_AUTHORITY,
+    UNCORROBORATED_MINIMUM, WRITER_SYSTEM, WRITER_SYSTEM_SPACE_CLAUSE, aggregate_usage, call_site,
+    distinct_ngram_ratio, engine_gaps, facade_attr, front_matter_research, gaps_of, in_context,
+    is_lone_circle, is_numeral_conflict, is_rare_codepoint_conflict, layout_index, load_blocks,
+    profile_section, punctuation_counts, punctuation_mode, space_clause_enabled, strip_fence,
+    strip_grounding, strip_paddlex_img_tags, summarize_calls, table_spans, _CALL_LEDGER,
+    _LOOP_CUTS,
 )
 from jyut_ocr.proofread.client import (  # noqa: E402
     Client, ask_lower, effort_policy_record, loop_cut_changes, no_answer, no_answer_cut,
@@ -65,7 +68,8 @@ from jyut_ocr.proofread.punctuation import (  # noqa: E402
     engine_b_places, engine_marks_merged, engine_places, engine_reading, extra_copy_doubts,
     furniture_unexplained, leader_list_breaks, leader_rewrites, mark_changes, mark_places,
     marked_stretch, notation_hint, place_moved_once, punctuate_part, punctuation_delta,
-    punctuation_density, punctuation_doubts, unmarked_candidates, whole_page_reason,
+    punctuation_density, punctuation_doubts, restore_clause_spaces, unmarked_candidates,
+    whole_page_reason,
 )
 from jyut_ocr.proofread.markers import (  # noqa: E402
     FIGURE_AT_GAP, FIGURE_IN_BLOCK, FIGURE_WRITTEN, agreed_note_markers, arabic_figure_kept,
@@ -478,11 +482,15 @@ def _transcribe_page(page: _PageState) -> None:
     hint = (f"OCR 底稿（提示，非權威）：\n---\n{page.draft}\n---\n\n" if page.draft2 is None else
             f"OCR 底稿 A（提示，非權威）：\n---\n{page.draft}\n---\n\n"
             f"OCR 底稿 B（提示，非權威）：\n---\n{page.draft2}\n---\n\n")
+    space_clause = space_clause_enabled(page.arguments)
+    writer_system = WRITER_SYSTEM_SPACE_CLAUSE if space_clause else WRITER_SYSTEM
     page.writer_text, page.last_message = page.client.ask_answering(
-        WRITER_SYSTEM, hint + "睇頁圖，輸出呢一頁嘅忠實 Markdown 轉錄。",
+        writer_system, hint + "睇頁圖，輸出呢一頁嘅忠實 Markdown 轉錄。",
         page.render_bytes, page.arguments.max_tokens, kind="writer")
     page.add(page.last_message)
     page.writer_text = strip_fence(page.writer_text)
+    if space_clause and page.writer_text:
+        page.writer_text = restore_clause_spaces("", page.writer_text, whole_page=True)
     if not page.writer_text and not page.non_cjk:
         raise ProofreadError("writer returned empty output")
     if not page.writer_text:
@@ -2403,7 +2411,9 @@ def _merge_tables(page: _PageState, merge: _MergeState) -> None:
     # The whole-page formatter is told to write a doubled circle as 。。, as
     # the punctuator is.
     merge.format_input, merge.punct_locked = page.resolved, False
-    merge.format_system = FORMAT_SYSTEM
+    merge.format_system = (
+        FORMAT_SYSTEM_SPACE_CLAUSE if space_clause_enabled(page.arguments) else FORMAT_SYSTEM
+    )
     merge.punctuated = []
     # The blocks listing entries with leaders, given engine A's line breaks
     # (break_lines).
@@ -2429,6 +2439,7 @@ def _merge_tables(page: _PageState, merge: _MergeState) -> None:
 
 def _merge_punctuation(page: _PageState, merge: _MergeState) -> None:
     """Run per-block punctuation passes, rule mark/bracket/figure placement, and edge text."""
+    space_clause = space_clause_enabled(page.arguments)
     if page.spans is not None:
         heads = set(profile_section(page.arguments, "layout").get("runningHeads") or [])
         hint = notation_hint(page.arguments)
@@ -2484,16 +2495,16 @@ def _merge_punctuation(page: _PageState, merge: _MergeState) -> None:
         # The rule agreedMarks (C1): a block whose marks both engines read
         # alike (agreed_marks) is written with them, its census and
         # punctuate calls not made.  Not on a book whose profile saw
-        # doubled circles or emphasis marks: an engine's 。 there does not
-        # say whether one circle or two is printed, and neither engine reads
-        # the marks beside each character.
+        # doubled circles, emphasis marks or space clauses: an engine's 。
+        # there does not say whether one circle or two is printed, and
+        # neither engine reads emphasis marks or clause spaces reliably.
         notation = profile_section(page.arguments, "notation")
         agreed: dict[int, str] = {}
         # The blocks taken only with --same-print-marks (agreed_marks, same_print).
         agreed_print: set[int] = set()
         # The blocks taken only with --same-marks-any-form (agreed_marks, FORM_FOLD).
         agreed_form: set[int] = set()
-        if page.draft2 is not None and not (notation.get("doubled") or notation.get("emphasis")):
+        if page.draft2 is not None and not (notation.get("doubled") or notation.get("emphasis") or space_clause):
             found_a = engine_places(engine_gaps(page.draft)[0], merge.segments, merge.pieces, page.blocks)
             readings = [engine_reading(page.draft, found_a[0] if found_a else None, span_starts[-1]),
                         engine_reading(page.draft2, engine_b_places(engine_gaps(page.draft2)[0], merge.segments, merge.pieces),
@@ -2533,13 +2544,14 @@ def _merge_punctuation(page: _PageState, merge: _MergeState) -> None:
         # marks on, the longest UNMARKED_SAMPLE of the blocks engine A read
         # as characters alone are asked with the page's other blocks, and
         # the rest wait for their answers (unmarked_candidates).  Not on a
-        # book whose profile saw doubled circles or emphasis marks, which
-        # no engine reads: the sample would find them, a wave later.
+        # book whose profile saw doubled circles, emphasis marks or space
+        # clauses, which no engine reads: the sample would find them, a
+        # wave later.
         waiting: list[int] = []
         sampled: set[int] = set()
         unmarked: set[int] = set()
         if getattr(page.arguments, "unmarked_page_sample", False) and not (
-                notation.get("doubled") or notation.get("emphasis")):
+                notation.get("doubled") or notation.get("emphasis") or space_clause):
             candidates = unmarked_candidates(page.blocks, page.spans, [index for index in merge.to_punctuate
                                                              if index not in agreed], page.draft2)
             if len(candidates) > UNMARKED_SAMPLE:
@@ -2640,7 +2652,11 @@ def _merge_punctuation(page: _PageState, merge: _MergeState) -> None:
                 record["tile"] = tile_number
             page.punctuation_passes.append(record)
         for index in merge.to_punctuate:
-            merge.punctuated[index], unread = assemble_passes(page.spans[index], pieces_out[index])
+            merge.punctuated[index], unread = assemble_passes(
+                page.spans[index], pieces_out[index], space_clause=space_clause
+            )
+            if space_clause:
+                merge.punctuated[index] = merge.punctuated[index].strip(IDEOGRAPHIC_SPACE)
             if unread:
                 # Realigned passes left characters between them that no
                 # pass read: they stand, with no mark.
@@ -2823,7 +2839,9 @@ def _merge_punctuation(page: _PageState, merge: _MergeState) -> None:
                 if (kept.get("placed") in FIGURE_AT_GAP and kept["block"] in first_of
                         and kept["block"] not in tokens):
                     kept["given"] = first_of[kept["block"]] + kept["blockGap"]
-        merge.format_system, merge.punct_locked = STRUCTURE_SYSTEM, True
+        merge.format_system, merge.punct_locked = (
+            STRUCTURE_SYSTEM_SPACE_CLAUSE if space_clause else STRUCTURE_SYSTEM
+        ), True
     merge.placeholders = merge.punct_locked and bool(page.tables)
     if page.recovery_packet_pending or page.rebuild_packet_pending:
         raise PacketPending("table-wave")
@@ -2935,10 +2953,15 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
     # (removable_text) - the hint asking it to delete running heads was
     # left beside a prompt and a check that forbade any deletion, so a
     # formatter that did as the hint said was refused.
+    space_clause = space_clause_enabled(page.arguments)
     furniture_reviewed = page.content_recovery is not None
     if furniture_reviewed:
-        merge.format_system = {FORMAT_SYSTEM: FORMAT_SYSTEM_REVIEWED,
-                         STRUCTURE_SYSTEM: STRUCTURE_SYSTEM_REVIEWED}[merge.format_system]
+        merge.format_system = {
+            FORMAT_SYSTEM: FORMAT_SYSTEM_REVIEWED,
+            STRUCTURE_SYSTEM: STRUCTURE_SYSTEM_REVIEWED,
+            FORMAT_SYSTEM_SPACE_CLAUSE: FORMAT_SYSTEM_REVIEWED_SPACE_CLAUSE,
+            STRUCTURE_SYSTEM_SPACE_CLAUSE: STRUCTURE_SYSTEM_REVIEWED_SPACE_CLAUSE,
+        }[merge.format_system]
     keep_or_delete = ("保留全部來源覆核後嘅字、數字、算式同符號" if furniture_reviewed
                       else "刪走欄外書眉／頁碼")
     layout = profile_section(page.arguments, "layout")
@@ -2950,6 +2973,9 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
     if layout.get("runningHeads") and not furniture_reviewed:
         layout_hint += ("以下字串喺本書量度到係書眉（同一頁重複或者差唔多每頁都有）："
                         + "、".join(layout["runningHeads"][:8]) + "；出現喺正文以外就刪走。\n")
+    if space_clause and merge.punct_locked:
+        layout_hint += ("文本入面嘅全形空格「　」（U+3000）係句讀停頓位，同段內原樣保留；"
+                        "如該處實為新段落／標題分界，改用換行分段，行首同行尾唔留「　」。\n")
     # Switch --learned-heads: a page whose every block with text was the
     # learned running head has nothing left for the structure pass, which
     # given nothing answers nothing, a failed pass (measured on the
@@ -2995,6 +3021,8 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
     note_blocks = note_block_texts(page.blocks)
     if not silent and not misplaced:
         formatted, markers_restored = restore_note_markers(sanctioned, formatted, note_blocks)
+        if space_clause:
+            formatted = restore_clause_spaces(sanctioned, formatted, whole_page=not merge.punct_locked)
     # The book's recurring n-grams are no text the answer may lack as
     # many times as they hold a character: furniture_unexplained tests a
     # deleted stretch against them instead.
@@ -3197,6 +3225,8 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
         retry_markers: list[dict[str, Any]] = []
         if not silent_retry and not misplaced:
             retry, retry_markers = restore_note_markers(sanctioned, retry, note_blocks)
+            if space_clause:
+                retry = restore_clause_spaces(sanctioned, retry, whole_page=not merge.punct_locked)
         ok2, reason2 = ((False, "retry: " + silent_retry) if silent_retry
                         else (False, "retry: " + misplaced) if misplaced
                         else verify_characters(sanctioned, retry, removable))

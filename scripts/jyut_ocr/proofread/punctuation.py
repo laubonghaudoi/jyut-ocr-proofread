@@ -12,12 +12,15 @@ from typing import Any, Collection, Mapping, Sequence
 import unicodedata
 
 
+from jyut_ocr.core import tables as _tables  # noqa: E402
 from jyut_ocr.proofread import punctuation_fusion as _punctuation_fusion  # noqa: E402
 from jyut_ocr.proofread.core import (  # noqa: E402
-    BULLET_MARKS, BULLET_SHAPES, CENSUS_SYSTEM, CHINESE_DIGITS, CJK, DELETED_RUN_LIMIT,
-    FALLBACK_MARKS, INSERTION_LIMIT, LEADER, LEADER_MARKS, LEADER_READ, LOOPED_READING,
-    NUMERAL_CHARS, OPENING_MARKS, PUNCT_MARKS, PUNCT_SYSTEM, TEXT_SEAMS, engine_gaps, facade_attr,
-    gaps_of, profile_section, punctuation_counts, punctuation_mode, strip_fence, table_spans,
+    BULLET_MARKS, BULLET_SHAPES, CENSUS_SYSTEM, CENSUS_SYSTEM_SPACE_CLAUSE, CHINESE_DIGITS, CJK,
+    DELETED_RUN_LIMIT, FALLBACK_MARKS, IDEOGRAPHIC_SPACE, INSERTION_LIMIT, LEADER, LEADER_MARKS,
+    LEADER_READ, LOOPED_READING, NUMERAL_CHARS, OPENING_MARKS, PUNCT_MARKS, PUNCT_SYSTEM,
+    PUNCT_SYSTEM_SPACE_CLAUSE, SPACE_CLAUSE_MARKS, TEXT_SEAMS, ZERO_FORMS, engine_gaps,
+    facade_attr, gaps_of, profile_section, punctuation_counts, punctuation_mode,
+    space_clause_enabled, strip_fence, table_spans,
 )
 from jyut_ocr.proofread.crops import leader_count  # noqa: E402
 from jyut_ocr.proofread.variants import variant_fold  # noqa: E402
@@ -27,6 +30,104 @@ from jyut_ocr.proofread.furniture import (  # noqa: E402
 
 
 SENTENCE_PUNCT = "。，、；：？！"
+_CJK_NEIGHBOUR_CHARS = "\u3400-\u9fff\u3005-\u3007\U00020000-\U0003ffff\u25cb\u25ef\uff10"
+_CJK_OPEN_QUOTES = "「『《〈〔【［“‘"
+_CJK_CLOSE_QUOTES = "」』》〉〕】］”’"
+_CJK_SPACE_CLAUSE_RE = re.compile(
+    rf"(?:(?<=[{_CJK_NEIGHBOUR_CHARS}])[ \t]+(?=[{_CJK_NEIGHBOUR_CHARS}{_CJK_OPEN_QUOTES}])"
+    rf"|(?<=[{_CJK_CLOSE_QUOTES}])[ \t]+(?=[{_CJK_NEIGHBOUR_CHARS}]))"
+)
+_MULTI_IDEOGRAPHIC_SPACE_RE = re.compile(r"[ \t]*\u3000[ \t\u3000]*")
+_MD_BLOCK_FULLWIDTH_DELIM_RE = re.compile(
+    r"^((?: {0,3}#{1,6}|[ \t]*(?:[-+*]|\d+[.)])|[ \t]*>))\u3000+"
+)
+_MD_BLOCK_LEADING_FULLWIDTH_RE = re.compile(
+    r"^((?: {0,3}#{1,6}[ \t]+|[ \t]*(?:[-+*]|\d+[.)])[ \t]+|[ \t]*>[ \t]*)?)\u3000+"
+)
+
+
+def normalize_cjk_clause_spaces(
+    text: str, *, trim_leading: bool = True, trim_trailing: bool = True
+) -> str:
+    """Normalize clause-pause spaces in a single-line or multi-line CJK span:
+    collapse runs containing U+3000 to a single U+3000, promote ASCII spaces
+    standing between CJK neighbours to U+3000 (while keeping Western and numeric
+    ASCII spaces untouched), and strip edge spaces as requested."""
+    out_lines: list[str] = []
+    for line in text.split("\n"):
+        cleaned = _MULTI_IDEOGRAPHIC_SPACE_RE.sub(IDEOGRAPHIC_SPACE, line)
+        cleaned = _CJK_SPACE_CLAUSE_RE.sub(IDEOGRAPHIC_SPACE, cleaned)
+        cleaned = cleaned.lstrip(" \t\u3000" if trim_leading else " \t")
+        cleaned = cleaned.rstrip(" \t\u3000" if trim_trailing else " \t")
+        out_lines.append(cleaned)
+    return "\n".join(out_lines)
+
+
+def restore_clause_spaces(
+    sanctioned: str, formatted: str, *, whole_page: bool = False
+) -> str:
+    """Preserve Stage A's verified U+3000 clause spaces in Stage B's formatted
+    Markdown where two CJK neighbours stay on the same prose/heading line, while
+    dropping U+3000 cleanly where Stage B broke a paragraph/heading/list or put
+    text inside a table, and fixing Markdown block delimiters to ASCII space."""
+    if not formatted:
+        return formatted
+    masked = _tables.mask_fences(formatted)
+    raw_lines = formatted.split("\n")
+    mask_lines = masked.split("\n")
+    norm_lines: list[str] = []
+    for raw_line, mask_line in zip(raw_lines, mask_lines):
+        if raw_line != mask_line or raw_line.lstrip().startswith("```") or raw_line.lstrip().startswith("~~~"):
+            norm_lines.append(raw_line)
+            continue
+        fixed = _MD_BLOCK_FULLWIDTH_DELIM_RE.sub(r"\1 ", raw_line)
+        fixed = _MD_BLOCK_LEADING_FULLWIDTH_RE.sub(r"\1", fixed)
+        fixed = _MULTI_IDEOGRAPHIC_SPACE_RE.sub(IDEOGRAPHIC_SPACE, fixed)
+        if whole_page and "|" not in fixed and "<" not in fixed:
+            fixed = _CJK_SPACE_CLAUSE_RE.sub(IDEOGRAPHIC_SPACE, fixed)
+        fixed = fixed.rstrip(" \t\u3000")
+        norm_lines.append(fixed)
+    formatted = "\n".join(norm_lines)
+    if not sanctioned or IDEOGRAPHIC_SPACE not in sanctioned:
+        return formatted
+    s_chars, s_gaps = engine_gaps(sanctioned)
+    f_chars, f_gaps = engine_gaps(formatted)
+    if not s_chars or not f_chars:
+        return formatted
+    tables = table_spans(formatted)
+    f_masked = _tables.mask_fences(formatted)
+    gap_offsets: list[int] = []
+    pos = 0
+    for idx, gap in enumerate(f_gaps):
+        gap_offsets.append(pos)
+        pos += len(gap) + (1 if idx < len(f_chars) else 0)
+    matcher = difflib.SequenceMatcher(None, s_chars, f_chars, autojunk=False)
+    place = {block.a + k: block.b + k for block in matcher.get_matching_blocks() for k in range(block.size)}
+    changed = False
+    for i in range(1, len(s_chars)):
+        if IDEOGRAPHIC_SPACE not in s_gaps[i]:
+            continue
+        j_prev, j_curr = place.get(i - 1), place.get(i)
+        if j_prev is None or j_curr != j_prev + 1:
+            continue
+        start = gap_offsets[j_curr]
+        end = start + len(f_gaps[j_curr])
+        if any(a <= start <= b for a, b in tables) or f_masked[start:end] != formatted[start:end]:
+            continue
+        gap = f_gaps[j_curr]
+        if "\n" in gap or "|" in gap or "<" in gap or ">" in gap:
+            continue
+        wanted = _MULTI_IDEOGRAPHIC_SPACE_RE.sub(IDEOGRAPHIC_SPACE, s_gaps[i]).strip(" \t")
+        if re.sub(r"[ \t\u3000]+", "", wanted) == re.sub(r"[ \t\u3000]+", "", gap) and gap != wanted:
+            f_gaps[j_curr] = wanted
+            changed = True
+    if not changed:
+        return formatted
+    rebuilt = "".join(f_gaps[k] + f_chars[k] for k in range(len(f_chars))) + f_gaps[-1]
+    return "\n".join(
+        line if line != mline else _MD_BLOCK_LEADING_FULLWIDTH_RE.sub(r"\1", line).rstrip(" \t\u3000")
+        for line, mline in zip(rebuilt.split("\n"), _tables.mask_fences(rebuilt).split("\n"))
+    )
 
 
 def punctuation_density(text: str) -> float:
@@ -118,6 +219,8 @@ def notation_hint(arguments: Any) -> str:
         lines.append(f"抽樣 {total or '若干'} 個 block 之中有 {shown.get(emphasis, '幾')} 個報告有圈點"
                      f"（一串字逐個字旁邊印{emphasis}）：只有裁圖上真係逐個字旁邊都印咗先照寫，"
                      f"{'圈寫「。」' if emphasis == '圈' else '點寫「、」'}，逐個跟圖，唔好推廣去冇印嘅字。")
+    if notation.get("spaceClause"):
+        lines.append("本書抽樣見到空格斷句：句逗停頓處空出一整格漢字位，寫一個全形空格「　」（U+3000），唔好用半形空格。")
     return ("\n".join(lines) + "\n") if lines else ""
 
 
@@ -130,11 +233,11 @@ def census_tolerance(census: int) -> int:
     return max(2, census // 4)
 
 
-def mark_places(text: str) -> int:
+def mark_places(text: str, *, space_clause: bool = False) -> int:
     """How many marks TEXT carries as the census counts them: places, where a
     doubled circle 。。 is one (the census reports 雙圈 apart), and so is a
     bullet printed twice (⦿⦿, bullet_runs)."""
-    marks = sum(punctuation_counts(text).values())
+    marks = sum(punctuation_counts(text, space_clause=space_clause).values())
     return marks - text.count("。。") - sum(len(run) - 1 for _, run in bullet_runs(text))
 
 
@@ -860,16 +963,22 @@ def realign_answer(block_span: str, lo: int, hi: int, answer: str, reach: int) -
     return a, b, sum(1 for x, y in zip(CJK(answer), block_span[a:b]) if x != y)
 
 
-def seat_marks(answer: str, stretch: str) -> str:
+def seat_marks(answer: str, stretch: str, *, space_clause: bool = False) -> str:
     """ANSWER's marks on STRETCH's characters, by position: the answer's k-th
     character stands for STRETCH's k-th (realign_answer found them the same
     but for variant forms).  The characters written are always STRETCH's."""
-    chars, marks = anchored_marks(answer)
+    vocab = SPACE_CLAUSE_MARKS if space_clause else PUNCT_MARKS
+    chars, marks = anchored_marks(answer, vocab)
     after, before = tied_marks(len(stretch), marks, {k: k for k in range(min(len(chars), len(stretch)))})
     return "".join(before[k] + stretch[k] + after[k] for k in range(len(stretch)))
 
 
-def assemble_passes(span: str, parts: Sequence[tuple[str, int, int, int, int]]) -> tuple[str, list[tuple[int, int]]]:
+def assemble_passes(
+    span: str,
+    parts: Sequence[tuple[str, int, int, int, int]],
+    *,
+    space_clause: bool = False,
+) -> tuple[str, list[tuple[int, int]]]:
     """A block's punctuated text from its passes, each (text, a, b, lo, hi): the
     text of SPAN's characters [a, b) it read - its own stretch [lo, hi), or
     another where its answer was realigned (realign_answer).  The passes'
@@ -880,10 +989,11 @@ def assemble_passes(span: str, parts: Sequence[tuple[str, int, int, int, int]]) 
     SPAN no pass read, which keep no mark."""
     if all((a, b) == (lo, hi) for _, a, b, lo, hi in parts):
         return "".join(text for text, *_ in parts), []
+    vocab = SPACE_CLAUSE_MARKS if space_clause else PUNCT_MARKS
     after, before = [""] * len(span), [""] * len(span)
     reader: list[bool | None] = [None] * len(span)
     for text, a, b, lo, hi in parts:
-        chars, marks = anchored_marks(text)
+        chars, marks = anchored_marks(text, vocab)
         own_after, own_before = tied_marks(b - a, marks, {k: k for k in range(min(len(chars), b - a))})
         for k in range(b - a):
             outside = not (lo <= a + k < hi)
@@ -900,8 +1010,13 @@ def assemble_passes(span: str, parts: Sequence[tuple[str, int, int, int, int]]) 
     return "".join(before[k] + span[k] + after[k] for k in range(len(span))), merged
 
 
-def agreed_readings(block_span: str, first: tuple[str, Sequence[int]], second: tuple[str, Sequence[int]]
-                    ) -> tuple[str, int, list[int]] | None:
+def agreed_readings(
+    block_span: str,
+    first: tuple[str, Sequence[int]],
+    second: tuple[str, Sequence[int]],
+    *,
+    space_clause: bool = False,
+) -> tuple[str, int, list[int]] | None:
     """The marks two punctuation answers put at the same place, each (text on
     BLOCK_SPAN's characters, the stretch [a, b) it read): the text of the
     stretch both read, with those marks, how many, and the stretch.  A circle
@@ -911,9 +1026,10 @@ def agreed_readings(block_span: str, first: tuple[str, Sequence[int]], second: t
     a, b = max(a_1, a_2), min(b_1, b_2)
     if a >= b:
         return None
+    vocab = SPACE_CLAUSE_MARKS if space_clause else PUNCT_MARKS
 
     def tied(text: str, length: int) -> tuple[list[str], list[str]]:
-        chars, marks = anchored_marks(text)
+        chars, marks = anchored_marks(text, vocab)
         return tied_marks(length, marks, {k: k for k in range(min(len(chars), length))})
 
     def both(x: str, y: str) -> str:
@@ -986,11 +1102,19 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
     the first answer left out.
     """
     used: list[dict[str, Any]] = []
+    space_clause = space_clause_enabled(arguments)
+    trim_lead = block is None or block[1] == 0
+
+    def clean_answer(raw: str) -> str:
+        stripped = strip_fence(raw)
+        if not space_clause:
+            return stripped.strip()
+        return normalize_cjk_clause_spaces(stripped, trim_leading=trim_lead, trim_trailing=True)
 
     def judge(text: str) -> tuple[bool, str, str, dict[str, Any] | None]:
         """punctuation_pass_ok on TEXT, or on its realigned reading (BLOCK):
         (ok, reason, the text kept, the realignment)."""
-        ok, reason = punctuation_pass_ok(span, text, limit, census)
+        ok, reason = punctuation_pass_ok(span, text, limit, census, space_clause=space_clause)
         if ok or block is None or not reason.startswith("characters"):
             return ok, reason, text, None
         whole, lo, hi, reach = block
@@ -998,12 +1122,13 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         if not found:
             return ok, reason, text, None
         a, b, folded = found
-        seated = seat_marks(text, whole[a:b])
-        if not punctuation_pass_ok(whole[a:b], seated, limit, census)[0]:
+        seated = seat_marks(text, whole[a:b], space_clause=space_clause)
+        if not punctuation_pass_ok(whole[a:b], seated, limit, census, space_clause=space_clause)[0]:
             return ok, reason, text, None
         return True, "", seated, {"read": [a, b], "range": [lo, hi], "variantsFolded": folded}
 
-    punct_system = PUNCT_SYSTEM
+    census_system = CENSUS_SYSTEM_SPACE_CLAUSE if space_clause else CENSUS_SYSTEM
+    punct_system = PUNCT_SYSTEM_SPACE_CLAUSE if space_clause else PUNCT_SYSTEM
     leaders = facade_attr("leader_count", leader_count)(crop)
     show = doubled_shown(arguments)
     # Census first: how many marks are PRINTED here. A count read from the
@@ -1022,7 +1147,7 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
             leaders=leaders,
             show_doubled=show,
             max_tokens=arguments.max_tokens,
-            census_system=CENSUS_SYSTEM,
+            census_system=census_system,
             punct_system=punct_system,
         )
         used.append(m)
@@ -1037,8 +1162,13 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
             fusion["fallbackReason"] = problem
             fused = False
     if not fused:
+        census_user = (
+            "數清楚呢個 block 印咗幾多個標點符號或者空格斷句。"
+            if space_clause
+            else "數清楚呢個 block 印咗幾多個標點符號。"
+        )
         census_text, m = client.ask_answering(
-            CENSUS_SYSTEM, "數清楚呢個 block 印咗幾多個標點符號。", crop, arguments.max_tokens, kind="census")
+            census_system, census_user, crop, arguments.max_tokens, kind="census")
         used.append(m)
     census = parse_census(census_text)
     doubled_census = parse_census(census_text, DOUBLED_LINE)
@@ -1053,7 +1183,10 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
     counted = {"censusConvention": "places", "doubledCensus": doubled_census,
                "punctuationMode": getattr(arguments, "punctuation_mode", "auto"),
                "punctuationModeEffective": punctuation_mode(arguments, client), "fusion": fusion}
-    if shape_line and any(c in PUNCT_MARKS or c in BULLET_MARKS for c in shape_line.group(1)):
+    if shape_line and (
+        any(c in PUNCT_MARKS or c in BULLET_MARKS for c in shape_line.group(1))
+        or (space_clause and "空格" in shape_line.group(1))
+    ):
         counted["censusShapes"] = shape_line.group(1).strip()[:40]
     if leaders is not None:
         counted["leaderCensus"] = leaders
@@ -1066,15 +1199,20 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         return span, {"ok": True, "marks": 0, "places": 0, "census": 0, "reason": "no printed marks", **counted}, used
     told = census_hint(census, doubled_census, show) + (
         f"裁圖上量到 {leaders} 串點（導引點線或者刪節號），每串寫「……」。\n" if leaders else "")
+    punct_tail = (
+        "睇裁圖，逐欄加返頁上印咗嘅標點同全形空格斷句「　」（U+3000）；唔准加、刪、改任何漢字。"
+        if space_clause
+        else "睇裁圖，逐欄加返頁上印咗嘅標點；唔准加、刪、改任何漢字。"
+    )
     if fused:
         out = fused_out
     else:
-        ask = (f"已定嘅字（唔准改）：\n---\n{span}\n---\n" + told + hint +
-               "睇裁圖，逐欄加返頁上印咗嘅標點；唔准加、刪、改任何漢字。")
+        ask = f"已定嘅字（唔准改）：\n---\n{span}\n---\n" + told + hint + punct_tail
         out, m = client.ask_answering(punct_system, ask, crop, arguments.max_tokens, kind="punctuate")
         used.append(m)
-    out = strip_fence(out).strip()
-    first = {"firstAnswerMarks": sum(punctuation_counts(out).values()), "firstAnswerDoubled": out.count("。。")}
+    out = clean_answer(out)
+    first = {"firstAnswerMarks": sum(punctuation_counts(out, space_clause=space_clause).values()),
+             "firstAnswerDoubled": out.count("。。")}
     answered = out
     ok_p, reason_p, out, realigned = judge(out)
     # The first answer on the block's characters and the stretch it read,
@@ -1083,7 +1221,7 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
                   if ok_p and block is not None else None)
     agreement = None
     if ok_p and census is not None:
-        places = mark_places(out)
+        places = mark_places(out, space_clause=space_clause)
         if abs(places - census) > census_tolerance(census):
             reason_p = f"{places} places marked but {census} counted on the page"
             ok_p = False
@@ -1095,16 +1233,20 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
         if fused:
             fusion["fallbackReason"] = "punctuation-validation"
         realigned = None
+        retry_tail = (
+            "淨係加圖上印咗嘅標點同全形空格斷句「　」（U+3000），字要同上面一模一樣、次序都唔准變。重新輸出。"
+            if space_clause
+            else "淨係加圖上印咗嘅標點，字要同上面一模一樣、次序都唔准變。重新輸出。"
+        )
         # The retry is told the census too (it was not, and a retry after a
         # count refusal then wrote to no number at all).
         retry, m = client.ask_answering(
             punct_system,
             f"已定嘅字（唔准改）：\n---\n{span}\n---\n"
-            f"你上一次嘅輸出被拒絕，原因：{reason_p}。" + told + hint +
-            "淨係加圖上印咗嘅標點，字要同上面一模一樣、次序都唔准變。重新輸出。",
+            f"你上一次嘅輸出被拒絕，原因：{reason_p}。" + told + hint + retry_tail,
             crop, arguments.max_tokens, kind="punctuate-retry")
         used.append(m)
-        retry = strip_fence(retry).strip()
+        retry = clean_answer(retry)
         ok_r, _, kept_retry, realigned_retry = judge(retry)
         if ok_r and realigned_retry is None:
             out, ok_p, reason_p, realigned = kept_retry, True, reason_p + " (after retry)", realigned_retry
@@ -1113,7 +1255,9 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
             if ok_r and first_read is not None:
                 # A retry that reads another stretch than its tile's: only
                 # what it and the first answer agree on (agreed_readings).
-                agreement = agreed_readings(block[0], first_read, (kept_retry, realigned_retry["read"]))
+                agreement = agreed_readings(
+                    block[0], first_read, (kept_retry, realigned_retry["read"]), space_clause=space_clause
+                )
     record = {"ok": ok_p, "census": census, "reason": reason_p, **counted, **first}
     if ok_p and refused:
         # The first answer, refused, when the retry was kept: sealed too, so
@@ -1136,12 +1280,13 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
             "淨係加圖上印咗嘅標點，字要同上面一模一樣、次序都唔准變。重新輸出。",
             crop, arguments.max_tokens, kind="punctuate-shape")
         used.append(m)
-        again = strip_fence(again).strip()
+        again = clean_answer(again)
         good, _, kept_again, realigned_again = judge(again)
-        good = good and (census is None or abs(mark_places(kept_again) - census)
+        good = good and (census is None or abs(mark_places(kept_again, space_clause=space_clause) - census)
                          <= census_tolerance(census))
         nearer = abs(again.count("。。") - doubled_census) < abs(out.count("。。") - doubled_census)
-        record["shapeRetry"] = {"doubled": again.count("。。"), "marks": sum(punctuation_counts(again).values()),
+        record["shapeRetry"] = {"doubled": again.count("。。"),
+                                "marks": sum(punctuation_counts(again, space_clause=space_clause).values()),
                                 "kept": bool(good and nearer)}
         if good and nearer:
             out, realigned = kept_again, realigned_again
@@ -1170,7 +1315,7 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
                                      "doubledCircles": doubled}
     if ok_p and realigned:
         record["realigned"] = realigned
-    record["marks"] = sum(punctuation_counts(out).values())
+    record["marks"] = sum(punctuation_counts(out, space_clause=space_clause).values())
     # How many of the marks are doubled circles: a census that counts each as
     # one mark sees half of them (measured on a sealed page: census 23 where
     # 38 marks were kept, 15 doubled circles among them - 23 counting each as
@@ -1179,10 +1324,12 @@ def punctuate_part(client: "Client", arguments: Any, crop: bytes | None, span: s
     # And the places they hold as the places census counts them (mark_places:
     # a doubled circle one, a bullet printed twice one), which the pass was
     # held to: what the seal holds the kept stretch to (punctuation_doubts).
-    record["places"] = mark_places(out)
+    record["places"] = mark_places(out, space_clause=space_clause)
     # The leaders and bullets kept (decisions D4, D5), for decisionChanges.
     record["leaders"] = punctuation_counts(out)[LEADER]
     record["bullets"] = sum(out.count(bullet) for bullet in BULLET_MARKS)
+    if space_clause:
+        record["clauseSpaces"] = out.count(IDEOGRAPHIC_SPACE)
     return out, record, used
 
 
@@ -1321,7 +1468,7 @@ def mark_changes(text: str, base: int, block: int | None, passes: Sequence[Mappi
 
 
 def punctuation_pass_ok(span: str, out: str, limit: float | None = None,
-                        census: int | None = None) -> tuple[bool, str]:
+                        census: int | None = None, *, space_clause: bool = False) -> tuple[bool, str]:
     """Exact character sequence, marks within the degenerate bound.
 
     A count read off the image outranks the density bound: when the marks
@@ -1332,7 +1479,7 @@ def punctuation_pass_ok(span: str, out: str, limit: float | None = None,
         if Counter(CJK(out)) == Counter(CJK(span)):
             return False, "characters reordered"
         return False, "characters changed"
-    if census is not None and abs(mark_places(out) - census) <= census_tolerance(census):
+    if census is not None and abs(mark_places(out, space_clause=space_clause) - census) <= census_tolerance(census):
         return True, ""
     density = punctuation_density(out)
     if density > (DEGENERATE_PUNCTUATION_DENSITY if limit is None else limit):

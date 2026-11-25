@@ -15,7 +15,7 @@ For each of your `bundle-XX.json` files:
 
 Rules:
 
-- The image is the authority. Write characters and marks as printed, keeping variant character forms and old punctuation. Never add, drop or modernise characters. Where an item locks its characters, change none of them.
+- The image is the authority. Write characters and marks as printed, keeping variant character forms and old punctuation. Where an item asks for printed Chinese one-cell clause-pause or item-separating spaces, write fullwidth `　` (`U+3000`), keeping ASCII `' '` (`U+0020`) only for Markdown block delimiters (`## `, `- `) and Western words/units. Never add, drop or modernise characters. Where an item locks its characters, change none of them.
 - Answer every item of every one of your bundles. An image that is hard to read, or that does not settle the question, is no reason to leave an item out or to stop: give the answer the item's own instructions name for that case (an adjudication whose crop does not show the spot is answered `定案：睇唔到`), else your best reading. The scripts check every answer and ask again where they must.
 - Where an item hands you text it calls settled or locked (layout and `format` items, punctuation items), copy that text into your answer exactly and add only what the item asks for, judged from the image. You are not asked to read every character again, and a long page is no reason to leave the item out: copy the text out of the bundle file with a few lines of your own code if that is surer than retyping it (that is allowed; the skill's scripts are not yours to run).
 - Never decide a reading from the OCR text alone, and never answer an item whose image you have not looked at.

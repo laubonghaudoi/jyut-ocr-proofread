@@ -85,7 +85,8 @@ NOTATION_SYSTEM = """你係古籍標點體例調查員。畀你一個版面 bloc
 符號：<圖上出現過嘅符號，用以下寫法列出：。 。。 ， 、 ； ： ？ ！ （ ） 「 」 『 』（兩個圈連住就寫 。。）；一個都冇就寫 無>
 雙圈：<有／冇>（兩個圈連住印，喺句末或者句中）
 圈點：<冇／圈／點>（連續一串字，每個字旁邊都印住圈或者點，用嚟強調，唔係斷句；有就答係圈定係點）
-點數：<整數>（圖上符號總數；兩個圈連住計兩個；圈點每個都計）"""
+點數：<整數>（圖上符號總數；兩個圈連住計兩個；圈點每個都計）
+空格斷句：<有／冇>（無句讀圈點，而喺句逗停頓處空出一整格漢字位斷句；普通字距同段首縮進唔計）"""
 
 NOTATION_SYSTEM_SINGLE = NOTATION_SYSTEM.replace("。 。。 ，", "。 ，").replace(
     "（兩個圈連住就寫 。。）", ""
@@ -440,12 +441,14 @@ def parse_notation(text: str, doubled_only: bool = True) -> dict[str, Any]:
     none = "無" in marks_line and not marks
     if doubled_only and none and line("雙圈").startswith("有") and count:
         marks, none = ["。"], False
+    space_clause = line("空格斷句").startswith("有")
     return {
         "marks": marks,
         "none": none,
         "doubled": line("雙圈").startswith("有") and not none,
         "emphasis": emphasis if not none else None,
         "count": count if not none else None,
+        **({"spaceClause": True} if space_clause else {}),
     }
 
 
@@ -512,6 +515,7 @@ def survey_notation(
         blocks = pp.in_context(pool, run, jobs) if jobs else []
     seen = Counter(mark for b in blocks for mark in b["marks"])
     doubled = sum(1 for b in blocks if b["doubled"])
+    space_clause = sum(1 for b in blocks if b.get("spaceClause"))
     emphasis = Counter(b["emphasis"] for b in blocks if b["emphasis"])
     ratios = sorted(b["perCharacter"] for b in blocks if b["perCharacter"] is not None)
     top_emphasis = emphasis.most_common(1)[0] if emphasis else None
@@ -532,6 +536,8 @@ def survey_notation(
         "maxMarksPerCharacter": max_per_char,
         "medianMarksPerCharacter": statistics.median(ratios) if ratios else None,
         "doubledOnlyRead": doubled_only,
+        **({"spaceClause": space_clause >= min_blocks, "spaceClauseBlocks": space_clause}
+           if space_clause else {}),
         "blocks": blocks,
     }
 

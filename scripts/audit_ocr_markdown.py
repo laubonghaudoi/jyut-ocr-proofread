@@ -874,13 +874,25 @@ def _residue_issues(
     for index, line in enumerate(lines):
         body = line_body(line)
         line_number = index + 1
-        if body.endswith((" ", "\t")):
+        if body.endswith((" ", "\t", "\u3000")):
             issues.append(
                 Issue(
                     "error",
                     "trailing-whitespace",
                     line_number,
                     "line ends with horizontal whitespace",
+                )
+            )
+        if not protected[index] and re.match(
+            r"^ {0,3}#{1,6}\u3000|^[ \t]*(?:[-+*]|\d+[.)])\u3000|^[ \t]*>\u3000",
+            body,
+        ):
+            issues.append(
+                Issue(
+                    "error",
+                    "fullwidth-markdown-delimiter",
+                    line_number,
+                    "Markdown block marker uses fullwidth U+3000 instead of ASCII space",
                 )
             )
         if re.search(r" +\t", body):

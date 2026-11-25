@@ -71,7 +71,7 @@ Render 由 `survey_pdf.py PDF BOOK` 做（純 CPU，`--jobs` 係同時幾多個 
   - 學唔到嘅情況：書眉出現少過三頁、讀錯到同邊個書眉都唔似、或者書眉後面多咗一兩個雜字，嗰頁照舊問一題。冇書眉嘅書乜都學唔到，`learnedHeads` 冇 `placed` 呢個 key，同以前一樣。
 - **engines**：邊個引擎讀呢本書讀得好啲（`preferEngine`）；`<=4` 頁嘅短檔自動跳過，用 `adjudicate`：有分歧就直接問。
 - **variants**：兩個字形嘅分歧（粵/粤、既/旣），逐對列出，附幾頁嘅裁圖。
-- **notation**：本書印乜符號（圈、點、雙圈、旁點、括號）同密度。
+- **notation**：本書印乜符號（圈、點、雙圈、旁點、括號）、有冇舊式空格斷句（`spaceClause`：句逗停頓處空出一整格漢字位斷句）同密度。
 
 A 套佢一樣出 packet 題（exit `10`）；B 套經 http 問模型。`--workers` 要等於 server 嘅並行數：`env.sh` 有 `PROOFREAD_MAX_INFLIGHT`（安裝器 `--local-model-concurrency N` 寫）就唔使畀，`--backend http` 預設用佢；冇就照 `SKILL.md` 一問用戶。
 
@@ -293,7 +293,8 @@ Stdout 淨係一行 `[finish] RESULT exit=N ...` 加檔案路徑；每步輸出�
 - `--no-unread-table-characters`：關 headerCharacters：重建嘅表寫咗冇引擎讀到嘅字就唔收。
 - `--same-print-marks`（預設關）：agreedMarks 唔收嘅 block，如果兩個引擎喺每個空位讀到同一樣嘅印刷字（數字、拉丁字、註號），就照用引擎 A 嘅標點，唔問模型；比較時唔計註號，因為兩個引擎寫同讀錯註號都唔同，而註號另外還原；封條記 `samePrintMarks: "on"`，開咗嘅頁同關咗嘅頁互相唔算 current；呢啲 block 喺 `censusNotAsked` 記做 `engines-agree-print`。
 - `--same-marks-any-form`（預設關；`ocr_batch.py` 對新書會加）：兩個引擎寫同一個符號但形式唔同，都當一致，唔問模型：半形同全形（`,` `:` `;` `?` `!`）、直引號同彎引號、方括號嘅三種寫法（`[`、〔、【），同引擎 B 喺標題行頭寫嘅 Markdown `#`。頁面照引擎 A 嘅形式寫，連埋兩個引擎都讀到嘅引號、方括號、破折號同間隔號；數字、拉丁字、「□」同註號照舊由後面嘅規則處理。尖括號唔摺：`<` `>` 亦係引擎嘅 markup，而且一個引擎寫《》、另一個寫〈〉嗰陣要睇圖。淨係得一處標點嘅 block（規則本身要兩處）：嗰頁其他取用咗嘅 block 合共有 20 處標點先取用；兩個引擎都冇標點嘅 block 照舊問。pass 記 `censusNotAsked` 嘅 `rule` 係 `engines-agree-form`，封條記 `sameMarksAnyForm`。實測（8 冊現代簡體橫排書各 20 頁，2026-11-19）：校對題由 1,375 條減到 761 條（少 45%）；定稿 124,391 個字有 88 個唔同，主要係攞返答題者漏咗嘅方括號（【】由 322 個變 366 個），疑問由 539 項減到 490 項。28 案評測用返同一批答案重播：27 案輸出一樣，一案 CER 由 3.63% 跌到 2.81%，合計 CER 寬容 15.03% 變 15.01%。
-- `--unmarked-page-sample`（預設關）：無標點嘅頁少問啲。成頁兩個引擎各自讀到嘅標點都唔多過兩個，而且引擎 A 讀成淨係得字（冇標點、數字、拉丁字、註號）嘅 block 多過三個，就先問最長嗰三個 block 嘅標點題，連同頁上其他 block 一齊問；三個都答冇標點，其餘嗰啲 block 照原文寫、唔問（`censusNotAsked` 記 `page-unmarked-sample`）；有一個答有標點，或者答案被拒，其餘就喺下一個 wave 照常問。Profile 見到雙圈或者旁點嘅書唔用。封條記 `unmarkedPageSample: "on"`，開咗嘅頁同關咗嘅頁互相唔算 current。適合無標點嘅古書；有標點嘅書引擎多數讀到標點，呢個開關唔會生效。A 套新書照 `SKILL.md` 第 4 步，連同 `--same-print-marks` 一齊加：28 案實測，強模型同細模型開咗都冇跌準確度（`CHANGELOG.md`）。
+- `--unmarked-page-sample`（預設關）：無標點嘅頁少問啲。成頁兩個引擎各自讀到嘅標點都唔多過兩個，而且引擎 A 讀成淨係得字（冇標點、數字、拉丁字、註號）嘅 block 多過三個，就先問最長嗰三個 block 嘅標點題，連同頁上其他 block 一齊問；三個都答冇標點，其餘嗰啲 block 照原文寫、唔問（`censusNotAsked` 記 `page-unmarked-sample`）；有一個答有標點，或者答案被拒，其餘就喺下一個 wave 照常問。Profile 見到雙圈、旁點或者空格斷句嘅書唔用。封條記 `unmarkedPageSample: "on"`，開咗嘅頁同關咗嘅頁互相唔算 current。適合無標點嘅古書；有標點嘅書引擎多數讀到標點，呢個開關唔會生效。A 套新書照 `SKILL.md` 第 4 步，連同 `--same-print-marks` 一齊加：28 案實測，強模型同細模型開咗都冇跌準確度（`CHANGELOG.md`）。
+- `--space-clause`（預設關；`book-profile.json` 嘅 `notation.spaceClause` 係 `true` 嗰陣自動開）：點算同補回舊式「空出一整格漢字位斷句」嘅中文句逗停頓空格，寫成全形空格 `　`（`U+3000`），同時保留 Markdown 語法分隔符（`## `、`- `）同西文單詞／單位間距做半形空格 ` `（`U+0020`）；排版步將某處改成分段換行時自動唔留行首行尾 `　`，同段內漏走或誤寫成半形嘅句讀空格會對住標點步原位還原。封條記 `spaceClause: "on"`（每段 pass 另記 `clauseSpaces`），開咗嘅頁同關咗嘅頁互相唔算 current；主要畀 `<=4` 頁冇跑 profile 嘅空格斷句短檔或者單頁實驗明確開啟。
 - `--punctuation-mode auto|split|fused`：逐頁校對嘅標點提問方式，預設 `auto`（packet 融合、http 拆分）；兩個 backend 都可以明確揀 `split` 或 `fused`。格式錯先回退拆分，內容守門及重試不變；詳見〈逐頁校對（proofread_pages.py）〉。
 - `--content-fidelity on`：完整性 v2（預設 `off`）；`--table-orientation as-printed`：保留物理格網，唔轉直排表（預設 `auto`）。
 - `--effort-policy KIND=RUNG,...`（環境變數 `PROOFREAD_EFFORT_POLICY`；預設冇，淨係 `--backend http` 用）：量度用嘅開關，新書唔使加。指定邊類題第一次用邊一級 effort 去問，例如 `census=low,format=low`；`RUNG` 係 `xhigh`、`medium`、`low` 或者 `none`，`KIND` 係 `--help` 列嘅題型（寫錯會即刻 exit 2，一頁都唔問）。`--reasoning-effort` 照舊係所有題嘅最高一級，policy 只可以調低；冇列嘅題型照用 `--reasoning-effort`，重試（`punctuate-retry`、`format-retry` 等）係另一個題型，所以唔列就即係重試用返最高一級。答案撞 `max_tokens` 照舊淨係向下一級。設咗就記入每頁封條嘅 `effortPolicy`（同 `reasoningEffort` 並排）同 run report，run report 嘅每類題多一個 `efforts`（每一級問咗幾多次）；同 effort 一樣唔入 provenance，續跑唔會因為佢唔同而重做已封嘅頁。`book_profile.py` 有同一個開關（佢問嘅題型係 `notation`）。未有適用於各書同模型嘅建議值，要逐類對住原圖及固定評分規則量度品質同時間先好用喺正式跑書。

@@ -516,10 +516,10 @@ class PageJob:
 
 
 def strip_fence(text: str) -> str:
-    text = text.strip()
+    text = text.strip(" \t\r\n")
     text = re.sub(r"\A```[a-zA-Z]*\n?", "", text)
     text = re.sub(r"\n?```\Z", "", text)
-    return text.strip()
+    return text.lstrip(" \t\r\n").rstrip()
 
 
 def norm_for_diff(text: str) -> str:
@@ -771,7 +771,68 @@ STRUCTURE_SYSTEM_REVIEWED = _reviewed_prompt(STRUCTURE_SYSTEM, [
     ("唯一準你刪嘅係頁面家具；正文一個字（包括外文同數字）、一個符號都唔准動。\n",
      "本階段唔准刪字或符號；家具判斷只由整頁圖像覆核處理。\n")])
 
+# Space-clause prompt variants (used only when space_clause_enabled is True,
+# keeping historical prompt bytes identical on normal books).
+CENSUS_SYSTEM_SPACE_CLAUSE = _reviewed_prompt(CENSUS_SYSTEM, [
+    ("淨係做一件事：數清楚圖上**印咗**標點符號嘅位置——圈「。」、點「，」、頓號「、」、\n"
+     "括號「︵︶」（一對計兩處）、引號等等。逐欄由右至左、由上至下數。\n",
+     "淨係做一件事：數清楚圖上**印咗**標點符號或者**空格斷句**嘅位置——圈「。」、點「，」、頓號「、」、\n"
+     "括號「︵︶」（一對計兩處）、引號，以及句逗停頓處空出一整格漢字位嘅空格斷句。逐欄由右至左、由上至下數。\n"
+     "- **空格斷句**：句逗停頓處空出一整格漢字位計一處（同一處停頓連續多格留白亦只計一處；"
+     "前一欄最底一格寫滿字、下一欄欄頂空一格承接上句停頓亦計一處）。普通字距、段首空兩格縮進、"
+     "行尾餘白同西文單詞間距一律唔計；已經印咗句讀符號嘅位置只計嗰個符號，唔重複計空格。\n"),
+    ("形狀：<出現過嘅符號種類，例如 。、（）；冇就寫 無>",
+     "形狀：<出現過嘅符號種類，例如 。、（）；有空格斷句就寫 空格；冇就寫 無>"),
+])
+PUNCT_SYSTEM_SPACE_CLAUSE = _reviewed_prompt(PUNCT_SYSTEM, [
+    ("你唯一嘅工作係加返頁圖上**印咗**嘅標點：圈「。」、點「，」、頓號「、」、括號、引號等等。\n",
+     "你唯一嘅工作係加返頁圖上**印咗**嘅標點（圈「。」、點「，」、頓號「、」、括號、引號等）"
+     "同埋**空格斷句**（句逗停頓處空出一整格漢字位）。\n"
+     "- **全形空格同半形空格要分清語境**：中文句逗停頓處空出一整格漢字位（包括前一欄最底一格寫滿、"
+     "下一欄欄頂空一格承接上句嘅句讀停頓），以及中文並列詞項、名錄或題號後印出嘅單格空位，"
+     "一律寫**一個全形空格「　」（U+3000）**，絕唔好用半形空格「 」。"
+     "半形空格「 」（U+0020）只用於西文單詞／縮寫之間或者西文數字單位之間。"
+     "普通字距、段首縮進同行尾餘白唔寫空格；已經印咗句讀符號嘅位置唔好再補空格。\n"),
+])
+FORMAT_SYSTEM_SPACE_CLAUSE = _reviewed_prompt(FORMAT_SYSTEM, [
+    ("   一串點（目錄、表格入面嘅導引點線，或者刪節號）寫「……」，唔理印咗幾多粒點。\n",
+     "   一串點（目錄、表格入面嘅導引點線，或者刪節號）寫「……」，唔理印咗幾多粒點。\n"
+     "   原書若以空出一整格漢字位斷句（空格斷句）或分隔中文並列項，句內該處寫一個全形空格「　」（U+3000），"
+     "唔好用半形空格；段首縮進改用 Markdown 空行分段表示，行首同行尾唔留「　」；"
+     "Markdown 語法分隔符（如 `## `、`- `）同西文單詞間距用半形空格「 」（U+0020）。\n"),
+])
+FORMAT_SYSTEM_REVIEWED_SPACE_CLAUSE = _reviewed_prompt(FORMAT_SYSTEM_REVIEWED, [
+    ("   一串點（目錄、表格入面嘅導引點線，或者刪節號）寫「……」，唔理印咗幾多粒點。\n",
+     "   一串點（目錄、表格入面嘅導引點線，或者刪節號）寫「……」，唔理印咗幾多粒點。\n"
+     "   原書若以空出一整格漢字位斷句（空格斷句）或分隔中文並列項，句內該處寫一個全形空格「　」（U+3000），"
+     "唔好用半形空格；段首縮進改用 Markdown 空行分段表示，行首同行尾唔留「　」；"
+     "Markdown 語法分隔符（如 `## `、`- `）同西文單詞間距用半形空格「 」（U+0020）。\n"),
+])
+STRUCTURE_SYSTEM_SPACE_CLAUSE = _reviewed_prompt(STRUCTURE_SYSTEM, [
+    ("**絕對唔准改字、加字，亦唔准改標點**：每一個「。」「，」「、」括號都要原封不動保留喺原位，\n"
+     "唔准加、唔准刪、唔准搬。標點已經逐欄對過圖，你再改就係倒退。\n",
+     "**絕對唔准改字、加字，亦唔准改標點或句內全形空格**：每一個「。」「，」「、」括號同句內全形空格「　」（U+3000）\n"
+     "都要原封不動保留喺原位，唔准刪走、唔准改成半形空格，亦唔准喺冇印空格處憑空加「　」。\n"
+     "唯一例外係某個「　」正好落喺新段落、新標題或者新 list 項嘅分界處（例如欄頂縮進實為換段），"
+     "嗰處改用換行分段表示，新行行首同舊行行尾唔留「　」；Markdown 語法分隔符（`## `、`- `、`1. `）同西文單詞間距用半形空格「 」。\n"),
+])
+STRUCTURE_SYSTEM_REVIEWED_SPACE_CLAUSE = _reviewed_prompt(STRUCTURE_SYSTEM_REVIEWED, [
+    ("**絕對唔准改字、加字，亦唔准改標點**：每一個「。」「，」「、」括號都要原封不動保留喺原位，\n"
+     "唔准加、唔准刪、唔准搬。標點已經逐欄對過圖，你再改就係倒退。\n",
+     "**絕對唔准改字、加字，亦唔准改標點或句內全形空格**：每一個「。」「，」「、」括號同句內全形空格「　」（U+3000）\n"
+     "都要原封不動保留喺原位，唔准刪走、唔准改成半形空格，亦唔准喺冇印空格處憑空加「　」。\n"
+     "唯一例外係某個「　」正好落喺新段落、新標題或者新 list 項嘅分界處（例如欄頂縮進實為換段），"
+     "嗰處改用換行分段表示，新行行首同舊行行尾唔留「　」；Markdown 語法分隔符（`## `、`- `、`1. `）同西文單詞間距用半形空格「 」。\n"),
+])
+WRITER_SYSTEM_SPACE_CLAUSE = _reviewed_prompt(WRITER_SYSTEM, [
+    ("- 原書有標點就照抄；原書冇標點就唔好加。唔好現代化、改寫或潤飾。\n",
+     "- 原書有標點就照抄；原書冇標點就唔好加。原書若以空出一整格漢字位斷句（空格斷句）或分隔中文並列項，"
+     "句內該處寫一個全形空格「　」（U+3000），唔好用半形空格；段首縮進改用 Markdown 空行分段表示，行首同行尾唔留「　」；"
+     "Markdown 語法分隔符（`## `、`- `）同西文單詞間距用半形空格「 」（U+0020）。唔好現代化、改寫或潤飾。\n"),
+])
 
+
+IDEOGRAPHIC_SPACE = "\u3000"
 SENTENCE_MARKS = "。，、；：？！（）「」『』《》〈〉"
 # Printed item bullets, kept as printed (decision D5), and the dots of a leader
 # or an ellipsis, always written 「……」 whatever their number (decision D4).
@@ -794,12 +855,14 @@ LEADER_MARKS = "…⋯"
 LEADER = "……"
 # The marks the punctuation step counts and keeps.
 PUNCT_MARKS = SENTENCE_MARKS + BULLET_MARKS + LEADER_MARKS
+SPACE_CLAUSE_MARKS = PUNCT_MARKS + IDEOGRAPHIC_SPACE
 FURNITURE_LABELS = frozenset({"header", "footer", "number", "seal", "image", "figure", "table"})
 
 
-def punctuation_counts(text: str) -> Counter:
+def punctuation_counts(text: str, *, space_clause: bool = False) -> Counter:
     """The marks in TEXT; a run of leader dots is one mark, 「……」 (D4: a
-    leader is written so whatever its number of dots)."""
+    leader is written so whatever its number of dots).  With SPACE_CLAUSE, each
+    ideographic space U+3000 is counted too."""
     counts: Counter = Counter()
     # Not "", which is `in` every string: a leader opening TEXT went uncounted.
     previous = "\n"
@@ -810,6 +873,8 @@ def punctuation_counts(text: str) -> Counter:
                     counts[LEADER] += 1
             else:
                 counts[c] += 1
+        elif space_clause and c == IDEOGRAPHIC_SPACE:
+            counts[IDEOGRAPHIC_SPACE] += 1
         previous = c
     return counts
 
@@ -852,6 +917,13 @@ def punctuation_mode(arguments: Any, client: Any = None) -> str:
 
 def profile_section(arguments: Any, key: str) -> dict[str, Any]:
     return ((getattr(arguments, "profile_data", None) or {}).get(key)) or {}
+
+
+def space_clause_enabled(arguments: Any) -> bool:
+    """Whether printed one-cell Chinese clause-pause spaces are counted and
+    inserted as U+3000 (from --space-clause or the profile's notation.spaceClause)."""
+    return bool(getattr(arguments, "space_clause", False)
+                or profile_section(arguments, "notation").get("spaceClause"))
 
 
 # How far a block's size per character may be from a running head's measured

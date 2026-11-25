@@ -26,7 +26,7 @@ from jyut_ocr.proofread import packet_events as _packet_events  # noqa: E402
 from jyut_ocr.proofread import punctuation_fusion as _punctuation_fusion  # noqa: E402
 from jyut_ocr.proofread.core import (  # noqa: E402
     DEFAULT_MODEL, ENGINE_A_NAME, ENGINE_B_NAME, MISSING_ENGINE_DOUBT, PageJob, SCHEMA_VERSION,
-    facade_attr, punctuation_mode,
+    facade_attr, punctuation_mode, space_clause_enabled,
 )
 from jyut_ocr.proofread.variants import (  # noqa: E402
     opencc_allographs, user_variant_rulings, _LIST_SHA256,
@@ -284,7 +284,7 @@ OPTIONAL_PROVENANCE += ("engineAConfirmsFirstAnswer", "censusSkipOverCeiling")
 OPTIONAL_PROVENANCE += ("samePrintMarks",)
 # Switch --same-marks-any-form (agreed_marks, FORM_FOLD).
 OPTIONAL_PROVENANCE += ("sameMarksAnyForm",)
-OPTIONAL_PROVENANCE += ("unmarkedPageSample",)
+OPTIONAL_PROVENANCE += ("unmarkedPageSample", "spaceClause")
 # The round-4 fixes, on by default since the user's decision of 2026-09-30
 # (after the round-4 benchmark), each with the provenance key it seals when
 # on.  --no-<switch> turns one off.  Provenance records each one's state
@@ -435,6 +435,9 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # on, a sample of the blocks is asked and the rest are taken as
         # unmarked when the sample is (unmarked_candidates).  Only when on.
         **({"unmarkedPageSample": "on"} if getattr(arguments, "unmarked_page_sample", False) else {}),
+        # Switch --space-clause (or profile notation.spaceClause): one-cell
+        # Chinese clause-pause spaces counted and inserted as U+3000.  Only when on.
+        **({"spaceClause": "on"} if space_clause_enabled(arguments) else {}),
         # Engine A's figures written where they are the only reading of their
         # print (--keep-arabic-numerals): the book's figures and the glyphs
         # engine B writes for them, from the drafts (figure_evidence), so a
