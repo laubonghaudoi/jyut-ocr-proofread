@@ -201,7 +201,8 @@ def body_tail(setting: rs.Setting, scan: int) -> tuple[str, int]:
     return "", len(lines)
 
 
-def boundary(setting: rs.Setting, prev: int, scan: int, finals: str) -> tuple[str, dict[str, Any]]:
+def boundary(setting: rs.Setting, prev: int, scan: int, finals: str,
+             *, table_boundary: bool = False) -> tuple[str, dict[str, Any]]:
     """The label of the boundary between marker pages PREV and SCAN and its
     evidence (the module's docstring)."""
     before, after = setting.texts[prev], setting.texts[scan]
@@ -217,6 +218,8 @@ def boundary(setting: rs.Setting, prev: int, scan: int, finals: str) -> tuple[st
                                 "setAside": aside, "kinds": list(kinds)}
     if notes:
         evidence["footNotes"] = notes
+    if table_boundary:
+        evidence["tableBoundary"] = True
     contents = set(setting.model.get("contentsPages") or [])
     if prev in contents and scan in contents:
         label, rule = ("list-new" if kinds[1] == "list" else "paragraph"), "T"
@@ -225,7 +228,7 @@ def boundary(setting: rs.Setting, prev: int, scan: int, finals: str) -> tuple[st
     elif kinds[1] == "list" and kinds[0] == "list" and same_list(last_line(before), head):
         label, rule = "list-new", "L"
     elif not done and tail and aside == notes and not {prev, scan} & contents and kinds[0] != "table" \
-            and kinds[1] == "prose" and not NOTE_HEAD.match(head):
+            and not table_boundary and kinds[1] == "prose" and not NOTE_HEAD.match(head):
         label, rule = "join", "J"
     else:
         label, rule = "paragraph", "P"
@@ -245,6 +248,10 @@ def joins(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: 
     labels: dict[int, str] = {}
     evidence: dict[str, Any] = {}
     markers = [s for s in sorted(book.pages) if book.pages[s].marker]
+    combined_lines = om.split_lines(book.assembly.compose(texts))
+    combined_markers, _ = om.find_page_markers(combined_lines)
+    marker_by_page = {m.page: m for m in combined_markers}
+    table_lines = om.html_table_lines(combined_lines)
     for n, scan in enumerate(order):
         if n == 0:
             labels[scan] = "start"
@@ -257,7 +264,12 @@ def joins(book: Any, model: Mapping[str, Any], texts: Mapping[int, str], order: 
             evidence[str(scan)] = {"label": "paragraph", "rule": "gap",
                                    "why": f"the pages between {prev} and {scan} are not in this run"}
             continue
-        label, found = boundary(setting, prev, scan, finals)
+        marker = marker_by_page.get(scan)
+        table_boundary = (
+            marker is not None
+            and om.join_touches_table(combined_lines, marker, table_lines)
+        )
+        label, found = boundary(setting, prev, scan, finals, table_boundary=table_boundary)
         labels[scan] = label
         evidence[str(scan)] = {"label": label, **found}
         if label == "join" and found["kinds"][0] == "list":

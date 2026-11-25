@@ -660,6 +660,29 @@ def load_boundary_manifest(path: Path) -> dict[int, str]:
     return parse_boundary_manifest(path.read_bytes())
 
 
+def _line_is_table_for_boundary(
+    lines: Sequence[str], index: int, table_lines: frozenset[int]
+) -> bool:
+    body = line_body(lines[index])
+    return (
+        is_table_row(body)
+        or index in table_lines
+        or _tables.HTML_TABLE_LINE_RE.match(body) is not None
+    )
+
+
+def join_touches_table(
+    lines: Sequence[str], marker: PageMarker, table_lines: frozenset[int]
+) -> bool:
+    """Whether joining across MARKER would splice a Markdown or HTML table line."""
+    previous, _ = _join_previous(lines, marker.line_index)
+    following, _ = _nearest_nonblank(lines, marker.line_index + 1, 1)
+    return any(
+        index is not None and _line_is_table_for_boundary(lines, index, table_lines)
+        for index in (previous, following)
+    )
+
+
 def boundary_contract_problems(
     lines: Sequence[str], markers: Sequence[PageMarker], boundaries: dict[int, str]
 ) -> list[str]:
@@ -736,18 +759,14 @@ def boundary_contract_problems(
                 f"boundary {page} uses list-new but following line is not a list item"
             )
         if label == "table-cont" and not all(
-            is_table_row(line_body(lines[index]))
-            or index in table_lines
-            or _tables.HTML_TABLE_LINE_RE.match(line_body(lines[index]))
+            _line_is_table_for_boundary(lines, index, table_lines)
             for index in (previous, following)
         ):
             problems.append(
                 f"boundary {page} uses table-cont but both sides are not table rows"
             )
         if label == "join" and any(
-            is_table_row(line_body(lines[index]))
-            or index in table_lines
-            or _tables.HTML_TABLE_LINE_RE.match(line_body(lines[index]))
+            _line_is_table_for_boundary(lines, index, table_lines)
             for index in (previous, following)
         ):
             problems.append(

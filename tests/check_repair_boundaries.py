@@ -245,6 +245,22 @@ def list_after_spec() -> dict[int, dict[str, Any]]:
     return spec
 
 
+def html_table_spec() -> dict[int, dict[str, Any]]:
+    """A multi-line HTML <table> spanning three body pages (scans 15-17), with
+    plain wrapped cell text across both page breaks and no sentence-final mark."""
+    spec = fx.make_spec()
+    spec[15]["items"] = [
+        ("para", prose(1501, 40, True), True),
+        ("line", f"<table><tr><td>{prose(1502, 20, False)}"),
+    ]
+    spec[16]["items"] = [("line", prose(1601, 40, False))]
+    spec[17]["items"] = [
+        ("line", f"{prose(1701, 20, False)}</td></tr></table>"),
+        ("para", prose(1702, 40, True), True),
+    ]
+    return spec
+
+
 def boundary_checks(tmp: Path) -> None:
     spec = boundary_spec()
     result = repair(tmp, spec, "boundaries")
@@ -342,6 +358,14 @@ def boundary_checks(tmp: Path) -> None:
     result = repair(tmp, list_after_spec(), "list-after")
     check(result.labels[17] == "paragraph" and result.rule_of(17) == "P" and result.status == 0,
           f"P: a list item after unfinished text is `paragraph` ({result.labels[17]}, {result.rule_of(17)})")
+
+    result = repair(tmp, html_table_spec(), "html-table")
+    check(result.status == 0 and result.report["checks"]["boundaryContract"]["passed"] is True
+          and result.labels[16] == "paragraph" and result.labels[17] == "paragraph"
+          and result.evidence["16"].get("tableBoundary") is True
+          and result.evidence["17"].get("tableBoundary") is True,
+          f"P: multi-page HTML table with plain continuation lines never proposes join "
+          f"({[result.labels.get(k) for k in (16, 17)]}, exit {result.status})")
 
     result = repair(tmp, fx.make_spec(), "subset", "--pages", "5-7,9-10")
     check(result.labels.get(5) == "start" and result.labels.get(9) == "paragraph" and result.rule_of(9) == "gap",
