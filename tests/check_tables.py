@@ -2255,6 +2255,138 @@ def check_window_table_marks_unread() -> None:
           "table-marks-unread")
 
 
+MERGED_GRID = ("<table><tr><td>科目</td><td>課本</td><td>冊數</td></tr>"
+               "<tr><td rowspan=\"2\">國文</td><td>讀本</td><td>四</td></tr>"
+               "<tr><td>習字帖</td><td>二</td></tr>"
+               "<tr><td>算術</td><td>珠算課本</td><td>一</td></tr></table>")
+MERGED_FLAT = "科目課本冊數國文讀本四習字帖二算術珠算課本一"
+
+
+def check_refused_grid_built_or_said() -> None:
+    """--build-refused-tables: a table block whose grid was refused goes to the
+    structure pass as bare text, to be built from the image.  An answer that
+    writes it as running text passes every check, and the page was sealed like
+    any other, its table gone and nothing saying so.  The shape measured on a
+    modern book: the same page's structure question asked twelve times, three
+    answers held no table - "the text given has none of the table's figures".
+    With the switch the question is asked once more, for the table alone; a
+    retry that builds it is the page's, one that does not leaves the first
+    answer, and the page then carries the doubt table-not-built."""
+    blocks = [("doc_title", TITLE, BOX["title"]), ("table", MERGED_GRID, BOX["table"]),
+              ("text", PROSE, BOX["prose"])]
+    b_text = f"{TITLE}\n{MERGED_FLAT}\n{PROSE}"
+    switch = ("--build-refused-tables",)
+
+    # The switch seals in decision_provenance, while packet_request_config keeps
+    # existing question IDs stable so prior answers replay without re-asking.
+    args_off = pp.build_parser().parse_args(["r", "d", "o", "--backend", "packet"])
+    args_on = pp.build_parser().parse_args(["r", "d", "o", "--backend", "packet", "--build-refused-tables"])
+    assert "buildRefusedTables" not in pp.decision_provenance(args_off)
+    assert pp.decision_provenance(args_on)["buildRefusedTables"] == "on"
+    assert pp.packet_request_config(args_off) == pp.packet_request_config(args_on)
+
+    def built(user_text: str) -> str:
+        return between(user_text).replace(MERGED_FLAT, "\n" + MERGED_GRID + "\n")
+
+    def kinds(client: FakeClient) -> list[str]:
+        return [kind for kind, _ in client.calls]
+
+    def doubt_kinds(record: dict) -> list[str]:
+        return [d["kind"] for d in record["doubts"]]
+
+    # Without the switch: as it was - no second question, no doubt, no seal of the switch.
+    client = page_client(format=[between])
+    text, record = run_page(blocks, b_text, client)
+    assert "merged layout unverified" in record["tablesRejected"][0]["reason"], record["tablesRejected"]
+    assert "format-retry" not in kinds(client) and "table-not-built" not in doubt_kinds(record)
+    assert "buildRefusedTables" not in record["provenance"] and not pp.table_spans(text), text
+
+    # The retry builds the table: it is the page's, and nothing is in doubt.
+    client = page_client(format=[between], **{"format-retry": [built]})
+    text, record = run_page(blocks, b_text, client, switches=switch)
+    assert kinds(client).count("format-retry") == 1, kinds(client)
+    assert record["provenance"]["buildRefusedTables"] == "on"
+    assert len(pp.table_spans(text)) == 1 and 'rowspan="2">國文' in text, text
+    assert text.index(TITLE) < text.index("<table") < text.index(PROSE), text
+    assert record["formatterRetryReason"].startswith("no table built: "), record["formatterRetryReason"]
+    assert "4 rows in 3 columns" in record["formatterRetryReason"], record["formatterRetryReason"]
+    assert "table-not-built" not in doubt_kinds(record) and "structure-rejected" not in doubt_kinds(record)
+    retry_prompt = next(u for kind, u in client.calls if kind == "format-retry")
+    assert pp.TABLE_NOT_BUILT_RETRY in retry_prompt and "被拒絕" not in retry_prompt, retry_prompt
+    assert MERGED_FLAT in between(retry_prompt), retry_prompt
+
+    # The retry builds none either: the first answer stands, and the page says what it lacks.
+    client = page_client(format=[between], **{"format-retry": [between]})
+    text, record = run_page(blocks, b_text, client, switches=switch)
+    assert kinds(client).count("format-retry") == 1 and not pp.table_spans(text), text
+    assert pp.CJK(text) == pp.CJK(TITLE + MERGED_FLAT + PROSE), text
+    doubt = [d["detail"] for d in record["doubts"] if d["kind"] == "table-not-built"]
+    assert len(doubt) == 1 and "block 1" in doubt[0] and "4 rows in 3 columns" in doubt[0], doubt
+    assert "merged layout unverified" in doubt[0], doubt
+    assert "structure-rejected" not in doubt_kinds(record), record["doubts"]
+    assert record["formatterRetryRefusal"] == "the retry built no table either", record["formatterRetryRefusal"]
+
+    # A retry the checks refuse (it wrote a character nobody read) does not cost the page its first answer.
+    client = page_client(format=[between], **{"format-retry": [lambda u: built(u) + "\n杜撰"]})
+    text, record = run_page(blocks, b_text, client, switches=switch)
+    assert "杜撰" not in text and pp.CJK(text) == pp.CJK(TITLE + MERGED_FLAT + PROSE), text
+    assert "table-not-built" in doubt_kinds(record) and "structure-rejected" not in doubt_kinds(record)
+    assert record["formatterRetryRefusal"] and "built no table" not in record["formatterRetryRefusal"]
+
+    # A first answer that builds the table is asked nothing more.
+    client = page_client(format=[built], **{"format-retry": [between]})
+    text, record = run_page(blocks, b_text, client, switches=switch)
+    assert "format-retry" not in kinds(client) and len(pp.table_spans(text)) == 1, text
+    assert "table-not-built" not in doubt_kinds(record)
+
+    # A block labelled a table whose markup is one row is no table owed: not asked again.
+    one_row = [("doc_title", TITLE, BOX["title"]), ("table", html([["科目", "課本", "冊數"]]), BOX["table"]),
+               ("text", PROSE, BOX["prose"])]
+    client = page_client(format=[between], **{"format-retry": [between]})
+    text, record = run_page(one_row, f"{TITLE}\n科目課本冊數\n{PROSE}", client, switches=switch)
+    assert "1 row(s)" in record["tablesRejected"][0]["reason"], record["tablesRejected"]
+    assert "format-retry" not in kinds(client) and "table-not-built" not in doubt_kinds(record)
+    assert pp.refused_grid({"text": MERGED_GRID}) == (4, 3, 0)
+    assert pp.refused_grid({"text": html([["甲", "12.5"], ["乙", "7"]])}) == (2, 2, 2)
+    assert pp.refused_grid({"text": html([["甲"], ["乙"]])}) is None and pp.refused_grid({"text": "甲乙"}) is None
+    print("refused grids: with --build-refused-tables an answer without the table is asked once more; "
+          "a page left without it carries table-not-built")
+
+
+def check_refused_grid_marks_any_form() -> None:
+    """--same-marks-any-form, in a table built from the image: a mark the two
+    engines wrote in two forms is a mark both read.  The shape measured on a
+    modern book: engine A read a table's 注： and engine B the colon as ASCII;
+    seven of nine answers that built the table wrote the colon the page
+    prints and were refused for it - a mark "added"."""
+    grid = MERGED_GRID.replace("<tr><td>算術</td><td>珠算課本</td><td>一</td></tr>",
+                               "<tr><td>注：</td><td colspan=\"2\">珠算課本另購</td></tr>")
+    flat = "科目課本冊數國文讀本四習字帖二注珠算課本另購"
+    blocks = [("doc_title", TITLE, BOX["title"]), ("table", grid, BOX["table"]), ("text", PROSE, BOX["prose"])]
+    b_text = f"{TITLE}\n科目課本冊數國文讀本四習字帖二注:珠算課本另購\n{PROSE}"
+
+    def built(user_text: str) -> str:
+        return between(user_text).replace(flat, "\n" + grid + "\n")
+
+    # Without the switch engine B's ASCII colon is no mark it read: the table is refused for it.
+    client = page_client(format=[built], **{"format-retry": [between]})
+    text, record = run_page(blocks, b_text, client)
+    assert record["formatterRetryReason"] == "changed punctuation: added ：×1", record["formatterRetryReason"]
+    assert not pp.table_spans(text) and record["tableMarksAllowed"] == "", (text, record["tableMarksAllowed"])
+    # With it the colon is one both read: the table stands, the mark sealed as allowed.
+    client = page_client(format=[built], **{"format-retry": [between]})
+    text, record = run_page(blocks, b_text, client, switches=("--same-marks-any-form",))
+    assert [kind for kind, _ in client.calls].count("format-retry") == 0, record["formatterRetryReason"]
+    assert len(pp.table_spans(text)) == 1 and "注：" in text and record["tableMarksAllowed"] == "：", text
+    # A mark only one engine read is still not the table's to carry.
+    alone = b_text.replace("注:", "注")
+    client = page_client(format=[built], **{"format-retry": [between]})
+    text, record = run_page(blocks, alone, client, switches=("--same-marks-any-form",))
+    assert record["formatterRetryReason"] == "changed punctuation: added ：×1", record["formatterRetryReason"]
+    print("refused grids: with --same-marks-any-form a mark the engines wrote in two forms may stand in the "
+          "table built from the image")
+
+
 if __name__ == "__main__":
     check_single_line_orientation()
     check_figure_grouping()
@@ -2297,4 +2429,6 @@ if __name__ == "__main__":
     check_union_outside_in_engine_b_order()
     check_window_block_spans()
     check_window_table_marks_unread()
+    check_refused_grid_built_or_said()
+    check_refused_grid_marks_any_form()
     print("all table checks passed")

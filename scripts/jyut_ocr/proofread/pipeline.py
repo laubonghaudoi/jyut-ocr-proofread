@@ -80,11 +80,12 @@ from jyut_ocr.proofread.markers import (  # noqa: E402
     place_note_markers, restore_arabic_figures, restore_note_markers, structure_input_record,
 )
 from jyut_ocr.proofread.tables import (  # noqa: E402
-    agreed_block_text, ask_first_record, cells_as_read, enforce_recovered_tables, engine_table,
-    fix_cell_direction, orient_table, orient_written_tables, orientation_undecided,
-    page_print_direction, place_recovered_tables, punctuation_kept, recover_tables,
-    split_table_losses, table_block_marks, table_brackets, table_characters_lost, table_marks_lock,
-    table_orientation_record, table_tokens, turn_records, _covers,
+    TABLE_NOT_BUILT_RETRY, agreed_block_text, ask_first_record, cells_as_read,
+    enforce_recovered_tables, engine_table, fix_cell_direction, orient_table, orient_written_tables,
+    orientation_undecided, page_print_direction, place_recovered_tables, punctuation_kept,
+    recover_tables, refused_grid, split_table_losses, table_block_marks, table_brackets,
+    table_characters_lost, table_marks_lock, table_orientation_record, table_tokens, turn_records,
+    _covers,
 )
 from jyut_ocr.proofread.table_rebuild import (  # noqa: E402
     UNREAD_NOTE, edge_verdicts, engine_b_as_settled, engine_b_inside, engine_b_outside,
@@ -2927,6 +2928,18 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
             "唔准拆返做 Markdown 表（Markdown 表表達唔到合併格），亦唔准寫成散文；"
             "兩個表就寫兩個表，唔准併埋一個；格入面嘅字一個都唔准改、唔准倒轉。\n"
             "表格入面嘅字已經包含喺上面『已定嘅字』入面，唔好喺表外重複寫一次。\n")
+    # Switch --build-refused-tables: the table blocks whose grid was refused (or not used)
+    # and whose own markup is a table (refused_grid) - the tables the structure pass is
+    # told below to build from the image.  Found on a modern book (2026-11-19): asked the
+    # same page's structure question twelve times, three answerers wrote such a table's
+    # text as a paragraph - "the text given has no figures, it cannot be laid in cells" -
+    # and the page was sealed as any other, its table and the figures in it gone with no
+    # doubt; on the benchmark's table cases the same question decided the table scores.
+    grids_to_build = ([(index, grid) for index, block in enumerate(page.blocks)
+                       if block.get("label") == "table" and index not in page.table_sources
+                       and index not in merge.absorbed_into and index not in page.learned_dropped
+                       for grid in [refused_grid(block)] if grid]
+                      if getattr(page.arguments, "build_refused_tables", False) else [])
     if any(block.get("label") == "table" and index not in page.table_sources and index not in merge.absorbed_into
            for index, block in enumerate(page.blocks)):
         # Tables the formatter must build from the image: the engine's grid
@@ -3066,10 +3079,14 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
                           and index not in merge.absorbed_into and index not in page.learned_dropped
                           and index not in merge.to_punctuate]
         if refused_blocks and page.draft2 is not None:
+            # Switch --same-marks-any-form: the two readings with their forms made
+            # one, as the punctuation step compares them (table_block_marks).
+            as_one = ((lambda text: text.translate(FORM_FOLD))
+                      if getattr(page.arguments, "same_marks_any_form", False) else (lambda text: text))
             refused_marks = table_block_marks(
                 page.spans, refused_blocks, merge.punctuated,
-                (engine_marks_merged(page.draft, merge.segments, merge.pieces, page.blocks),
-                 engine_b_marks_merged(page.draft2, merge.segments, merge.pieces)))
+                (engine_marks_merged(as_one(page.draft), merge.segments, merge.pieces, page.blocks),
+                 engine_b_marks_merged(as_one(page.draft2), merge.segments, merge.pieces)))
     # The marks of REFUSED_MARKS the accepted answer's tables carry, sealed.
     table_marks_allowed: dict[str, Counter] = {}
 
@@ -3165,6 +3182,16 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
         ok = False
         reason = (f"deleted {len(gone_furniture)} character(s) outside the page's furniture "
                   f"({gone_furniture[:18]}…)")
+    # Switch --build-refused-tables: an answer every check passed that holds no table
+    # beyond the recovered ones, on a page with a table to build, is asked again for that
+    # alone.  It stays the page's answer unless the retry builds the table (below).
+    unbuilt = None
+    if ok and grids_to_build and len(table_spans(formatted)) <= len(page.tables):
+        unbuilt = (formatted, reason)
+        ok = False
+        rows, cols, _ = grids_to_build[0][1]
+        reason = (f"no table built: the page has a table to build from the image (the engine read "
+                  f"{rows} rows in {cols} columns there) and the answer holds none")
     if not ok:
         # Why the first answer was refused, sealed: the page's text may be
         # the retry's, and without this nobody can tell afterwards what the
@@ -3191,6 +3218,19 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
                 + ("你上一次諗得太耐，喺 token 上限之前冇寫出答案。唔使逐個字再諗，直接對住頁圖輸出。\n"
                    if cut_off else
                    "你上一次交咗個空白答案，一個字都冇寫。直接對住頁圖輸出。\n")
+                + (f"睇頁圖，加版面結構（heading／段落／list／表格），{keep_or_delete}。標點原封不動。"
+                   if merge.punct_locked else f"睇頁圖，加返句讀同版面結構，{keep_or_delete}。"),
+                page.render_bytes, page.arguments.max_tokens, kind="format-retry")
+        elif unbuilt:
+            # The question again, with what the first answer lacked and the one
+            # reason the answerers gave for it (TABLE_NOT_BUILT_RETRY): nothing of
+            # the general retry's list applies to an answer every check passed.
+            retry, page.last_message = page.client.ask_answering(
+                merge.format_system,
+                (f"字同標點都已定（唔准改）：\n---\n{merge.format_input}\n---\n{table_hint}{layout_hint}\n"
+                 if merge.punct_locked else
+                 f"已定嘅字（唔准改）：\n---\n{merge.format_input}\n---\n{table_hint}\n{merge.whole_page_hint}")
+                + TABLE_NOT_BUILT_RETRY
                 + (f"睇頁圖，加版面結構（heading／段落／list／表格），{keep_or_delete}。標點原封不動。"
                    if merge.punct_locked else f"睇頁圖，加返句讀同版面結構，{keep_or_delete}。"),
                 page.render_bytes, page.arguments.max_tokens, kind="format-retry")
@@ -3252,12 +3292,32 @@ def _merge_format_and_enforce(page: _PageState, merge: _MergeState) -> None:
         if still_furniture:
             ok2, reason2 = False, (f"retry still deleted {len(still_furniture)} character(s) outside "
                                    f"the page's furniture ({still_furniture[:18]}…)")
-        if ok2 and retry.strip():
+        if unbuilt and not (ok2 and retry.strip() and len(table_spans(retry)) > len(page.tables)):
+            # Asked again for the table alone: a retry without one, or one a check
+            # refuses, leaves the first answer the page's.
+            (formatted, reason), ok = unbuilt, True
+            page.retry_refusal = (reason2 if not ok2 else "the retry answered nothing" if not retry.strip()
+                                  else "the retry built no table either")
+            page.rejected_retry = retry
+        elif ok2 and retry.strip():
             formatted, ok, reason = retry, True, reason2 + " (after retry)"
             placement_notes, markers_restored = retry_notes, retry_markers
         else:
             page.retry_refusal = reason2 if not ok2 else "the retry answered nothing"
             page.rejected_retry = retry
+    if ok and grids_to_build and len(table_spans(formatted)) <= len(page.tables):
+        # Twice asked and no table: the page says so.  Its table's text stands as the
+        # structure pass wrote it, and what the engine read in the cells besides
+        # characters - the figures - is not on the page.
+        for index, (rows, cols, figures) in grids_to_build:
+            why = next((entry["reason"] for entry in page.tables_rejected
+                        if entry.get("block") == layout_index(page.blocks, index)), "its grid was not used")
+            page.doubts.append({"kind": "table-not-built", "detail": (
+                f"TABLE NOT BUILT: block {layout_index(page.blocks, index)}: the engine read a table here "
+                f"({rows} rows in {cols} columns, {figures} figure(s) in its cells) whose grid was refused "
+                f"({why[:160]}); the structure pass, asked twice, wrote no table for it. Its text stands "
+                "as running text and the figures of its cells are not on the page: read the table off "
+                "the page image")})
     page.rejected_output = None if ok else formatted
     # What the accepted answer's tables lack of the table blocks it was
     # given (unexplained): a doubt, below, not a refusal.

@@ -228,7 +228,8 @@ PROFILE_MIN_PAGES = 5               # book_profile.py is left out for a file of 
 SINGLE_DRAFTS = {"apple-vision": "ocr-vision", "hunyuan": "ocr-hunyuan"}
 OVER = ("delivered", "failed")
 # What proofread_pages.py is given for a book with no sealed page under the packet backend (SKILL.md, step 4).
-NEW_BOOK_SWITCHES = ["--same-print-marks", "--unmarked-page-sample", "--same-marks-any-form"]
+NEW_BOOK_SWITCHES = ["--same-print-marks", "--unmarked-page-sample", "--same-marks-any-form",
+                     "--build-refused-tables"]
 RESULT_LINE = re.compile(r"RESULT exit=(\d+)")
 
 

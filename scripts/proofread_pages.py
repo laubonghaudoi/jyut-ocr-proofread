@@ -216,21 +216,21 @@ from jyut_ocr.proofread.tables import (  # noqa: E402
     FIRST_LINE, FIRST_RECORD_SYSTEM, GROUP_MARKS, MIRRORED, NOTE_FIGURES, ORIENT_EVIDENCE_LINE,
     ORIENT_LINE, ORIENT_SYSTEM, PRINT_DIRECTION_ASPECT, PRINT_DIRECTION_LEAD,
     PRINT_DIRECTION_MINIMUM, PRINT_DIRECTION_SKIP, READING_ORDER_PAIRS, READING_ORDER_SHARE,
-    SINGLE_LINE_KEPT, SUPERSCRIPT_FIGURES, TABLE_BRACKET_REACH, TABLE_MINIMUM_ROWS, TABLE_TOKEN,
-    TABLE_TURNS, TEXTCIRCLED, TOTAL_LABELS, TURN_AXIS, VOUCH_CELLS_DIFFER, VOUCH_CELL_DISTANCE,
-    WITNESS_ANCHOR, WRITTEN_TABLE_TURNS, WRITTEN_TURN_UNCHECKED, agreed_block_text,
-    ask_first_record, bare_cell_note_calls, bare_note_call, cells_as_read,
-    cells_turned_as_recovered, chinese_figure, circled_figure, direction_candidates,
-    enforce_recovered_tables, engine_table, figure_groups, first_table, fix_cell_direction,
-    furniture_row, grouping_fits, orient_table, orient_written_tables, orientation_undecided,
-    page_print_direction, parse_direction_answers, parse_table_visual_verdict,
-    parse_visual_direction_answers, place_recovered_tables, punctuation_kept, reading_order_turn,
-    reading_order_votes, recover_tables, recovered_runs, restate_table, rotate_table,
-    single_line_grid, split_table_losses, table_block_marks, table_brackets, table_characters_lost,
-    table_edges, table_marks_lock, table_orientation_record, table_places, table_signature,
-    table_tokens, totals_axis, turn_records, turned_round, vouched_grid, witness_anchors,
-    witness_figures, witness_line_axis, witness_refusal, written_cells, _cell_key, _covers,
-    _turned_place,
+    SINGLE_LINE_KEPT, SUPERSCRIPT_FIGURES, TABLE_BRACKET_REACH, TABLE_MINIMUM_ROWS,
+    TABLE_NOT_BUILT_RETRY, TABLE_TOKEN, TABLE_TURNS, TEXTCIRCLED, TOTAL_LABELS, TURN_AXIS,
+    VOUCH_CELLS_DIFFER, VOUCH_CELL_DISTANCE, WITNESS_ANCHOR, WRITTEN_TABLE_TURNS,
+    WRITTEN_TURN_UNCHECKED, agreed_block_text, ask_first_record, bare_cell_note_calls,
+    bare_note_call, cells_as_read, cells_turned_as_recovered, chinese_figure, circled_figure,
+    direction_candidates, enforce_recovered_tables, engine_table, figure_groups, first_table,
+    fix_cell_direction, furniture_row, grouping_fits, orient_table, orient_written_tables,
+    orientation_undecided, page_print_direction, parse_direction_answers,
+    parse_table_visual_verdict, parse_visual_direction_answers, place_recovered_tables,
+    punctuation_kept, reading_order_turn, reading_order_votes, recover_tables, recovered_runs,
+    refused_grid, restate_table, rotate_table, single_line_grid, split_table_losses,
+    table_block_marks, table_brackets, table_characters_lost, table_edges, table_marks_lock,
+    table_orientation_record, table_places, table_signature, table_tokens, totals_axis,
+    turn_records, turned_round, vouched_grid, witness_anchors, witness_figures, witness_line_axis,
+    witness_refusal, written_cells, _cell_key, _covers, _turned_place,
 )
 from jyut_ocr.proofread.table_rebuild import (  # noqa: E402
     DRAFT2_KEY, NOT_A_TABLE, REBUILD_AS_PRINTED_SYSTEM, REBUILD_SYSTEM, REBUILT_ANCHOR,
@@ -242,11 +242,12 @@ from jyut_ocr.proofread.table_rebuild import (  # noqa: E402
     unread_crop, unread_sites, unread_spot, unwritten_readings, window_merge,
 )
 from jyut_ocr.proofread.seal import (  # noqa: E402
-    CONTENT_FIDELITY_KEY, INFORMATIONAL_PROVENANCE, LEGACY_ABSENT_KEYS, LEGACY_REASON,
-    OPTIONAL_PROVENANCE, PROVENANCE_ABSENT_MEANS, ROUND4_DEFAULTS, SEALED_ON, content_fidelity_on,
-    decision_provenance, draft_digest, missing_engine_doubt, output_lock, packet_request_config,
-    page_spans, profile_digest_matches, profile_fingerprint, punctuation_fusion_summary,
-    round4_split, seal_page, sealed_inputs, sum_fusion_summaries, validate_completion,
+    BUILD_REFUSED_TABLES_KEY, CONTENT_FIDELITY_KEY, INFORMATIONAL_PROVENANCE, LEGACY_ABSENT_KEYS,
+    LEGACY_REASON, OPTIONAL_PROVENANCE, PROVENANCE_ABSENT_MEANS, ROUND4_DEFAULTS, SEALED_ON,
+    content_fidelity_on, decision_provenance, draft_digest, missing_engine_doubt, output_lock,
+    packet_request_config, page_spans, profile_digest_matches, profile_fingerprint,
+    punctuation_fusion_summary, round4_split, seal_page, sealed_inputs, sum_fusion_summaries,
+    validate_completion,
 )
 from jyut_ocr.proofread.pipeline import (  # noqa: E402
     proofread_page, _proofread_page_inner,
@@ -443,6 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also take the engines' marks, with no punctuation question, for a block where the two "
                              "engines differ only in the form of a mark or of print: ASCII for full-width marks, "
                              "straight for curly quotation marks, the square bracket's three shapes; off by default")
+    parser.add_argument("--build-refused-tables", action="store_true", dest="build_refused_tables", default=False,
+                        help="where the engine wrote a table whose grid was refused and the structure answer "
+                             "holds no table for it, ask the structure question once more, saying so; a page "
+                             "left without the table gets the doubt table-not-built; off by default")
     parser.add_argument("--unmarked-page-sample", action="store_true", dest="unmarked_page_sample", default=False,
                         help=f"on a page neither engine read more than {UNMARKED_PAGE_MARKS} punctuation marks on, "
                              f"ask the punctuation question for the {UNMARKED_SAMPLE} longest blocks first and, "

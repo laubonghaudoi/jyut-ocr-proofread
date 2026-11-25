@@ -252,6 +252,38 @@ def vouched_grid(table: "_tables.Table", witness: str | None) -> tuple["_tables.
     return None, nearest[1] if nearest else "engine B wrote no grid"
 
 
+# Switch --build-refused-tables: what the structure question says when it is asked again
+# because its first answer built no table where the engine's grid was refused.  The
+# answerer is not the first one and has not seen that answer.  Found on a modern book
+# (2026-11-19): the answerers that wrote such a table as a paragraph said the text given
+# held none of the table's figures, so it could not be laid in cells without changing it.
+TABLE_NOT_BUILT_RETRY = (
+    "呢一頁之前答過一次，其他都啱，但頁上嗰個表格冇寫成表格：嗰段字寫咗做散文。"
+    "今次要將嗰個表對住頁圖寫返做表格，用上面已定嘅字填格（有合併格寫 HTML `<table>`，冇就寫 Markdown 表）。"
+    "表入面嘅阿拉伯數字、百分號呢類唔喺已定嘅字入面，呢個唔係唔重建嘅理由：照頁圖排好啲格，文字用已定嘅字。"
+    "頁圖嗰個位如果真係冇表格，就當佢係正文照寫。\n")
+
+
+def refused_grid(block: Mapping[str, Any]) -> tuple[int, int, int] | None:
+    """(rows holding text, columns, figures) of the grid engine A wrote for the table block
+    BLOCK, where the markup itself is a table - TABLE_MINIMUM_ROWS rows of text or more in two
+    columns or more - whatever its grid was refused for; None where it is not (no table markup,
+    one row, one column).  --build-refused-tables asks for the table again only where this
+    holds: a block the layout model labelled a table over a line or two of text is no table
+    the structure pass owes the page."""
+    markup = str(block.get("text") or "")
+    if "<table" not in markup:
+        return None
+    table = _tables.parse_html_table(markup, source_breaks=True)
+    if table is None:
+        return None
+    rows = len({cell.row for cell in table.cells if cell.text.strip()})
+    if rows < TABLE_MINIMUM_ROWS or table.cols < 2:
+        return None
+    figures = sum(len(re.findall(r"[0-9]+(?:[.,][0-9]+)*", cell.text)) for cell in table.cells)
+    return rows, table.cols, figures
+
+
 def engine_table(html_text: str, witness: str | None = None, heads: Sequence[str] = (),
                  furniture: frozenset[str] | set[str] = frozenset()) -> tuple[str | None, str]:
     """Convert one engine <table> to page markup, or explain the refusal.
@@ -2168,6 +2200,15 @@ def table_block_marks(spans: Sequence[str], indices: Iterable[int], given: Seque
     text (SPANS, the blocks' stretches in order) a mark counts as often as
     both engines wrote it there - one engine's reading of a mark is not
     enough, and none where either reading is None.
+
+    With --same-marks-any-form the readings are of the engines' texts with
+    their forms made one (FORM_FOLD), so a mark the two engines wrote in two
+    forms is one mark both read, in its full-width form, the one a page
+    prints.  Found on a modern book (2026-11-19): engine A read a table's 注：
+    and engine B the same colon as ASCII, which is no mark the step counts
+    (anchored_marks); of nine answers that built that table from the image,
+    seven wrote the colon and were refused for it - "added ：×1" - and the
+    page went to a second question for one mark both engines had read.
     """
     found: Counter = Counter()
     if len(readings) != 2 or any(reading is None for reading in readings):

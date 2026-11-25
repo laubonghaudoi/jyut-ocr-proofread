@@ -285,6 +285,8 @@ OPTIONAL_PROVENANCE += ("samePrintMarks",)
 # Switch --same-marks-any-form (agreed_marks, FORM_FOLD).
 OPTIONAL_PROVENANCE += ("sameMarksAnyForm",)
 OPTIONAL_PROVENANCE += ("unmarkedPageSample", "spaceClause")
+# Switch --build-refused-tables (refused_grid).
+OPTIONAL_PROVENANCE += ("buildRefusedTables",)
 # The round-4 fixes, on by default since the user's decision of 2026-09-30
 # (after the round-4 benchmark), each with the provenance key it seals when
 # on.  --no-<switch> turns one off.  Provenance records each one's state
@@ -346,6 +348,7 @@ LEGACY_REASON = "legacy seal, accepted as sealed; made before the rules "
 # the skill sealed every page before the switch, is judged by its evidence),
 # a run with it off takes either.
 CONTENT_FIDELITY_KEY = "contentFidelity"
+BUILD_REFUSED_TABLES_KEY = "buildRefusedTables"
 
 
 def content_fidelity_on(arguments: Any) -> bool:
@@ -372,10 +375,11 @@ def sum_fusion_summaries(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 
 def packet_request_config(arguments: Any) -> dict[str, str]:
     """The part of decision_provenance a packet request ID is bound to: what
-    decides an answer, not the informational keys nor the fidelity switch
-    (the question asked is the same either way)."""
+    decides an answer, not the informational keys nor the fidelity or
+    refused-table switches (the question asked is the same either way)."""
     config = {key: value for key, value in decision_provenance(arguments).items()
-              if key not in INFORMATIONAL_PROVENANCE and key != CONTENT_FIDELITY_KEY}
+              if key not in INFORMATIONAL_PROVENANCE
+              and key not in (CONTENT_FIDELITY_KEY, BUILD_REFUSED_TABLES_KEY)}
     # Packet's historical default was fusion. The exact same question keeps
     # its stored answer ID, whether requested as auto or explicitly fused.
     if punctuation_mode(arguments) == "fused":
@@ -431,6 +435,9 @@ def decision_provenance(arguments: Any) -> dict[str, str]:
         # Switch --same-marks-any-form: the engines' marks also where the two
         # wrote one mark in two forms (agreed_marks with FORM_FOLD).  Only when on.
         **({"sameMarksAnyForm": "on"} if getattr(arguments, "same_marks_any_form", False) else {}),
+        # Switch --build-refused-tables: a structure answer with no table where the engine's
+        # grid was refused is asked again, and a page left without the table says so.
+        **({BUILD_REFUSED_TABLES_KEY: "on"} if getattr(arguments, "build_refused_tables", False) else {}),
         # Switch --unmarked-page-sample: on a page neither engine read marks
         # on, a sample of the blocks is asked and the rest are taken as
         # unmarked when the sample is (unmarked_candidates).  Only when on.

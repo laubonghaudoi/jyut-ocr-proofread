@@ -364,7 +364,8 @@ class WholeBatchTests(BatchCase):
                                          str(b.work / name / "proofread"), "--draft2-directory",
                                          str(b.work / name / "ocr-hunyuan")])
             self.assertEqual(first[5:], ["--max-bundles", "20", "--max-items-per-bundle", "10", "--same-print-marks",
-                                         "--unmarked-page-sample", "--same-marks-any-form"])
+                                         "--unmarked-page-sample", "--same-marks-any-form",
+                                         "--build-refused-tables"])
             self.assertTrue(all(call["argv"] == first for call in b.calls("proofread_pages.py", name)))
             self.assertEqual(b.calls("book_profile.py", name)[0]["argv"][4:], ["--max-bundles", "20"])
             self.assertEqual(b.calls("finish_book.py", name)[0]["argv"], [str(b.work / name)])

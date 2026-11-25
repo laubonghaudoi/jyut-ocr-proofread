@@ -1159,6 +1159,7 @@ KINDS: dict[str, tuple[str, str]] = {
     "table-orientation-turned": ("tables", "結構步自己寫嘅表，淨係憑引擎 B 嘅讀法轉咗方向（引擎 B 逐條橫行讀直排表都會咁數），要對圖核有冇轉錯"),
     "table-note-marker-unverified": ("tables", "表格格仔入面嘅註號係引擎 A 讀嘅，冇核過（大過二十嘅圈碼成日讀錯）"),
     "table-rebuild-refused": ("tables", "表重建唔收"),
+    "table-not-built": ("tables", "引擎讀到表格，但結構步問咗兩次都冇寫成表：表入面嘅數字唔喺頁上面，要對圖補"),
     "table-rebuilt-unvouched": ("tables", "重建嘅表冇第二個讀法證實"),
     "cell-direction-undecided": ("tables", "表格一格字嘅讀向定唔到"),
     "table-continuation-merged": ("tables", "跨頁表併咗做一張（接口要核）"),
