@@ -39,6 +39,12 @@ from jyut_ocr.core.ocr_markdown import (
     parse_boundary_manifest,
     split_lines,
 )
+from jyut_ocr.core.tables import (
+    HTML_TABLE_OPEN_RE,
+    HTML_TABLE_RE,
+    mask_fences,
+    parse_html_table,
+)
 
 
 DELIMITER_PAIRS = (
@@ -643,6 +649,229 @@ def _markdown_structure_issues(
                     "table-column-count",
                     start + offset + 1,
                     f"{scope}: table row has {observed} cell(s); expected {expected}",
+                )
+            )
+    issues.extend(_html_table_issues(text, lines, protected, scope))
+    return issues
+
+
+_HTML_TAG_TOKEN_RE = re.compile(
+    r"<(?P<slash>/?)(?P<tag>table|thead|tbody|tfoot|tr|td|th)\b[^>]*>",
+    re.IGNORECASE,
+)
+_NUMERAL_OR_UNIT_NEIGHBORS = frozenset(
+    "〇零一二三四五六七八九十百千萬億廿卅卌卄"
+    "0123456789０１２３４５６７８９"
+    "年第月日號頁卷條款度％%點分角元仙尺寸里畝頃兩錢斤"
+)
+_DENSE_SIDE_DOT_RE = re.compile(r"(?:[\u3400-\u9fff\U00020000-\U0003ffff]。){4,}")
+_EMPTY_PAREN_RE = re.compile(r"（[ \t]*）|\([ \t]*\)|（[口□ \t]+）|\([口□ \t]+\)")
+_SUSPICIOUS_KOU_RUN_RE = re.compile(r"口{2,}(?!聲聲|相傳)")
+_REPO_METADATA_TAIL_RE = re.compile(
+    r"Anna['’]s Archive|annas-archive|annas-blog\.org|"
+    r'"filename_decoded"\s*:|"ipfs_cid"\s*:|"md5"\s*:\s*"[0-9a-f]{32}"',
+    re.IGNORECASE,
+)
+_INTRA_LINE_DUPLICATE_RE = re.compile(
+    r"([\u3400-\u9fff\U00020000-\U0003ffff]{18,})[，。、；： \t\u3000]*\1"
+)
+
+
+def _offset_to_line_number(masked_text: str, offset: int) -> int:
+    return masked_text.count("\n", 0, offset) + 1
+
+
+def _mask_protected_lines(lines: Sequence[str], protected: Sequence[bool]) -> str:
+    return "\n".join(
+        " " * len(line_body(line)) if is_protected else line_body(line)
+        for line, is_protected in zip(lines, protected)
+    )
+
+
+def _html_table_tag_balance_problem(markup: str) -> str | None:
+    stack: list[str] = []
+    for match in _HTML_TAG_TOKEN_RE.finditer(markup):
+        closing = bool(match.group("slash"))
+        tag = match.group("tag").lower()
+        if not closing:
+            stack.append(tag)
+            continue
+        if not stack or stack[-1] != tag:
+            expected = f"</{stack[-1]}>" if stack else "no closing tag"
+            return f"unexpected </{tag}> (expected {expected})"
+        stack.pop()
+    if stack:
+        return f"unclosed <{stack[-1]}> inside HTML table"
+    return None
+
+
+def _html_table_issues(
+    text: str,
+    lines: Sequence[str],
+    protected: Sequence[bool],
+    scope: str,
+) -> list[Issue]:
+    if "<table" not in text.lower() and "</table" not in text.lower():
+        return []
+    masked = mask_fences(_mask_protected_lines(lines, protected))
+    closed_spans: list[tuple[int, int]] = []
+    issues: list[Issue] = []
+    for match in HTML_TABLE_RE.finditer(masked):
+        closed_spans.append((match.start(), match.end()))
+        line_number = _offset_to_line_number(masked, match.start())
+        markup = match.group(0)
+        tag_problem = _html_table_tag_balance_problem(markup)
+        if tag_problem is not None:
+            issues.append(
+                Issue(
+                    "error",
+                    "unclosed-html-table",
+                    line_number,
+                    f"{scope}: {tag_problem}",
+                )
+            )
+            continue
+        parsed = parse_html_table(markup)
+        if parsed is None:
+            issues.append(
+                Issue(
+                    "error",
+                    "unclosed-html-table",
+                    line_number,
+                    f"{scope}: HTML <table> contains no valid rows",
+                )
+            )
+            continue
+        for problem in parsed.problems:
+            issues.append(
+                Issue(
+                    "error",
+                    "html-table-column-mismatch",
+                    line_number,
+                    f"{scope}: HTML table {problem}",
+                )
+            )
+
+    for open_match in HTML_TABLE_OPEN_RE.finditer(masked):
+        pos = open_match.start()
+        if any(start <= pos < end for start, end in closed_spans):
+            continue
+        issues.append(
+            Issue(
+                "error",
+                "unclosed-html-table",
+                _offset_to_line_number(masked, pos),
+                f"{scope}: opening <table> has no matching </table>",
+            )
+        )
+    return issues
+
+
+def _final_review_warning_issues(text: str, scope: str) -> list[Issue]:
+    """Emit non-fatal final-mode warnings for high-frequency OCR proofreading traps."""
+
+    lines = split_lines(text)
+    protected = _protected_lines(lines)
+    defined_footnotes = _defined_footnote_labels(lines, protected)
+    issues: list[Issue] = []
+
+    h1_seen = False
+    prev_heading_level = 0
+    for index, line in enumerate(lines):
+        if protected[index]:
+            continue
+        body = line_body(line)
+        line_number = index + 1
+        heading_match = HEADING_RE.match(body)
+        if heading_match is not None:
+            stripped_heading = body.lstrip(" ")
+            level = len(stripped_heading) - len(stripped_heading.lstrip("#"))
+            if level == 1:
+                if h1_seen:
+                    issues.append(
+                        Issue(
+                            "warning",
+                            "multiple-h1",
+                            line_number,
+                            f"{scope}: additional H1 '# ' heading; verify whether "
+                            "it should be '##' or removed as running furniture",
+                        )
+                    )
+                h1_seen = True
+            if prev_heading_level and level > prev_heading_level + 1:
+                issues.append(
+                    Issue(
+                        "warning",
+                        "heading-level-jump",
+                        line_number,
+                        f"{scope}: heading jumps from H{prev_heading_level} to H{level}",
+                    )
+                )
+            prev_heading_level = level
+
+        stripped_links = _strip_links_and_defined_footnotes(body, defined_footnotes)
+        if _EMPTY_PAREN_RE.search(stripped_links):
+            issues.append(
+                Issue(
+                    "warning",
+                    "empty-parentheses",
+                    line_number,
+                    f"{scope}: empty or placeholder parentheses; verify whether "
+                    "embedded Latin text or a note was dropped",
+                )
+            )
+        has_isolated_circle = any(
+            body[pos] == "〇"
+            and (body[pos - 1] if pos > 0 else "") not in _NUMERAL_OR_UNIT_NEIGHBORS
+            and (body[pos + 1] if pos + 1 < len(body) else "")
+            not in _NUMERAL_OR_UNIT_NEIGHBORS
+            for pos in range(len(body))
+        )
+        if has_isolated_circle or _DENSE_SIDE_DOT_RE.search(body):
+            issues.append(
+                Issue(
+                    "warning",
+                    "suspicious-circle-punctuation",
+                    line_number,
+                    f"{scope}: isolated '〇' or dense per-character '。' run; "
+                    "verify sentence-period vs numeral zero or side-dot emphasis",
+                )
+            )
+        if _SUSPICIOUS_KOU_RUN_RE.search(body):
+            issues.append(
+                Issue(
+                    "warning",
+                    "suspicious-kou-run",
+                    line_number,
+                    f"{scope}: consecutive '口' characters; verify against scan "
+                    "whether source prints '口' or illegible square '□'",
+                )
+            )
+        if _ordinary_line(line, protected[index]) and _INTRA_LINE_DUPLICATE_RE.search(
+            body
+        ):
+            issues.append(
+                Issue(
+                    "warning",
+                    "adjacent-duplicate-span",
+                    line_number,
+                    f"{scope}: repeated 18+ character CJK span within one paragraph; "
+                    "verify dual-engine alignment overlap",
+                )
+            )
+
+    tail_start = max(0, len(lines) - 30)
+    for index in range(tail_start, len(lines)):
+        if protected[index]:
+            continue
+        body = line_body(lines[index])
+        if _REPO_METADATA_TAIL_RE.search(body):
+            issues.append(
+                Issue(
+                    "warning",
+                    "repository-metadata-tail",
+                    index + 1,
+                    f"{scope}: digital repository metadata tail appears in final text",
                 )
             )
     return issues
@@ -1252,6 +1481,7 @@ def audit_text(
     )
     if resolved_mode == "final":
         issues.extend(_delimiter_issues(structural_text, structural_scope))
+        issues.extend(_final_review_warning_issues(structural_text, structural_scope))
     issues.extend(
         _duplicate_paragraph_issues(
             structural_text, duplicate_min_characters, structural_scope

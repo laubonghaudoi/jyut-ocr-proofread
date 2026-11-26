@@ -107,6 +107,36 @@ def pdftoppm_version() -> str:
     return first or f"{tool} (version unknown)"
 
 
+BOILERPLATE_TEXT_RE = re.compile(
+    r"Anna['’]s Archive|annas-archive|annas-blog\.org|"
+    r'"filename_decoded"\s*:|"ipfs_cid"\s*:',
+    re.IGNORECASE,
+)
+
+
+def detect_boilerplate_pages(pdf_path: Path, selected: Sequence[int]) -> list[int]:
+    """Check the first two and last two selected PDF pages for born-digital repository boilerplate."""
+    tool = shutil.which("pdftotext")
+    if not tool or not selected:
+        return []
+    boundary_pages = sorted(set(selected[:2]) | set(selected[-2:]))
+    candidates: list[int] = []
+    for page_no in boundary_pages:
+        try:
+            proc = subprocess.run(
+                [tool, "-f", str(page_no), "-l", str(page_no), str(pdf_path), "-"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0 and BOILERPLATE_TEXT_RE.search(proc.stdout or ""):
+            candidates.append(page_no)
+    return candidates
+
+
 def pdf_facts(pdf_path: Path) -> dict[str, Any]:
     """Page count and nominal page size straight from pdfinfo."""
     result = subprocess.run(
@@ -986,6 +1016,11 @@ def main(argv: list[str] | None = None) -> int:
     for page in pages:
         by_hash.setdefault(page.render_sha256, []).append(page.scan_page)
     duplicate_renders = [v for v in by_hash.values() if len(v) > 1]
+    boilerplate_candidates = (
+        detect_boilerplate_pages(pdf_path, [p.scan_page for p in pages])
+        if pdf_path is not None
+        else []
+    )
 
     render_meta: dict[str, Any]
     if source_kind == "images-dir":
@@ -1029,6 +1064,7 @@ def main(argv: list[str] | None = None) -> int:
             "note": "candidates only; confirm against the page image before "
             "recording any of these as fact (e.g. marker_expected=false)",
             "blank_pages": blank_candidates,
+            "boilerplate_pages": boilerplate_candidates,
             "spread_pages": spread_candidates,
             "duplicate_renders": duplicate_renders,
         },
@@ -1044,6 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  report     : {report_path}", flush=True)
     print(
         f"  candidates : {len(blank_candidates)} blank, "
+        f"{len(boilerplate_candidates)} boilerplate, "
         f"{len(spread_candidates)} spread, {len(duplicate_renders)} duplicate "
         "(all need visual confirmation)",
         flush=True,

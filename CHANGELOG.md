@@ -1,5 +1,15 @@
 # 更新摘要
 
+## Unreleased — 實戰校對陷阱收斂：HTML 表格結構審查、final 模式七項覆核警告、數位倉儲尾頁候選同校勘規則補充
+
+- 背景：逐頁對照 37 冊（逾 6,500 頁）晚清至民國掃描文獻審核雙引擎機校稿（`machine` → `proofread`），反覆見到八類跨書系統性錯漏：多處 `# ` 氾濫與標題跳級、影子圖書館英文／JSON 元數據尾頁混入正文、直排內嵌西文漏讀成空括號或 `口口`／`□□`、無框線固定欄位名錄表跨頁結構分裂與 HTML `<table>` 未驗欄寬、跨頁接縫書眉頁碼黏入句中、孤立 `〇` 誤代句號 `。` 與行側著重密點誤生句號串、雙引擎同段局部重影衍文，以及鉛字 180° 倒植與原印跳頁號誤判缺頁。
+- `scripts/audit_ocr_markdown.py`：
+  - 接入 `jyut_ocr.core.tables`，對保護區與 code fence 以外嘅 HTML `<table>` 檢查標籤配平（`unclosed-html-table`）同計入 `rowspan`／`colspan` 後嘅每行欄寬一致性（`html-table-column-mismatch`），列為 `error`（實測 11 冊已精校書共 28 張 HTML 表零誤報）。
+  - 於 `--mode final` 新增七項高信噪比 `warning`（唔改動 `AUDIT-FINAL` error 計數）：`multiple-h1`、`heading-level-jump`、`empty-parentheses`（豁免全形表式留空 `（　）`）、`suspicious-circle-punctuation`（非數字語境孤立 `〇` 或連續四字以上逐字句號串）、`suspicious-kou-run`（豁免「口口聲聲」等真詞）、`adjacent-duplicate-span`（同段緊接重出 18 字以上漢字）及 `repository-metadata-tail`。實測：11 冊精校完本（2,073 頁）中 9 冊零警告、僅 2 處單發真疑點；8 冊未精校機校書則全數精準命中多處 `# `（7–60 處）、孤立 `〇`（27–42 處）、密點句號串（247–289 處）、同段重影（2–13 處）及元數據尾頁。
+- `scripts/survey_pdf.py`：新增 `detect_boilerplate_pages`，用 `pdftotext` 檢查首尾各兩頁是否附有現代數位倉儲元數據文字層，記入 `survey-report.json` 嘅 `boilerplate_pages` 候選（唔靜默刪頁，交視覺確認）。
+- `references/`：於 `common-ocr-traps.md`、`jyut-ocr-detailed-rules.md`、`packet-worker.md` 同 `structured-workflow.md` 補入上述泛化規則同多代理分片增量存盤 checkpoint／接縫核驗守則。
+- 測試：`tests/test_ocr_markdown_scripts.py` 新增三組單元測試覆蓋 HTML 表格檢查、七項 final warning 同豁免例，以及 `survey_pdf` 尾頁偵測。
+
 ## Unreleased — 表格冇重建到唔再靜靜雞過：`--build-refused-tables`；表入面嘅標點唔理全形半形（issue #10）
 
 - 背景：引擎寫咗表格、但格仔俾 script 否決嘅 block（合併格冇第二個來源證實、格入面有斷行），係交畀結構步（排版題）對住頁圖重建。兩個問題令個表成日冇咗：
